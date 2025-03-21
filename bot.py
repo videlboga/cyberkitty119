@@ -5,8 +5,8 @@ import tempfile
 import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import requests
 import yt_dlp
 import gdown
@@ -14,6 +14,10 @@ from pydub import AudioSegment
 from telethon.sync import TelegramClient
 import openai
 import asyncio
+import time
+import json
+import datetime
+from typing import Dict, List, Tuple, Optional, Union
 
 # Настройка логирования
 logging.basicConfig(
@@ -33,8 +37,22 @@ TELEGRAM_API_HASH = os.getenv('TELEGRAM_API_HASH')
 TELEGRAM_PHONE_NUMBER = os.getenv('TELEGRAM_PHONE_NUMBER')
 
 # Добавляем конфигурацию для OpenRouter API
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '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')
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+# Если ключ не указан в .env, используем запасной вариант
+if not OPENROUTER_API_KEY:
+    OPENROUTER_API_KEY = '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'
+    logger.warning("Используется встроенный API ключ OpenRouter, рекомендуется указать свой ключ в .env файле")
+    
 OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'deepseek/deepseek-chat:free')
+# Резервные модели, если основная недоступна
+OPENROUTER_FALLBACK_MODELS = [
+    'deepseek/deepseek-chat:free',
+    'anthropic/claude-3-haiku:free',
+    'anthropic/claude-instant-1.2',
+    'google/gemma-7b-it:free',
+    'mistralai/mistral-7b-instruct:free',
+    'meta-llama/llama-3-8b-instruct:free'
+]
 
 # Создание директорий для хранения файлов
 VIDEOS_DIR = Path("videos")
@@ -58,7 +76,7 @@ RELAY_CHAT_ID = -1002616815315  # ID релейного чата (супергр
 forwarded_videos = {}
 
 # Добавляем словарь для хранения последних транскрипций пользователей
-user_transcriptions = {}  # {user_id: {'raw': '...', 'formatted': '...', 'path': '...'}}
+user_transcriptions = {}  # {user_id: {'raw': '...', 'formatted': '...', 'path': '...', 'brief_summary': '...', 'detailed_summary': '...'}}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет приветственное сообщение при команде /start."""
@@ -336,16 +354,8 @@ async def format_transcript_with_llm(raw_transcript: str) -> str:
         Отформатированная транскрипция.
     """
     try:
-        # Настраиваем клиент OpenAI для работы с OpenRouter
-        client = openai.OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_API_KEY,
-            # Добавляем необходимые заголовки для OpenRouter
-            default_headers={
-                "HTTP-Referer": "https://github.com/videlboga/cyberkitty119",  # Ваш домен
-                "X-Title": "Transkribator Bot"  # Название вашего приложения
-            }
-        )
+        # Создаем фиктивный клиент для совместимости с другими функциями
+        client = None
         
         # Если транскрипция слишком большая, разделим ее на части
         max_chunk_size = 15000  # Максимальный размер части в символах
@@ -386,26 +396,83 @@ async def format_transcript_chunk(client, chunk: str) -> str:
 
 {chunk}"""
 
-        # Отправляем запрос
-        response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model=OPENROUTER_MODEL,
-            messages=[
+        # Проверяем API ключ - он должен начинаться с "sk-or-"
+        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "" or not OPENROUTER_API_KEY.startswith("sk-or-"):
+            logger.error(f"API ключ OpenRouter отсутствует или имеет неверный формат: {OPENROUTER_API_KEY[:5]}...")
+            return "Произошла ошибка при форматировании транскрипции: отсутствует или неверный API ключ. Проверьте настройки бота."
+
+        # Вывод в лог информации о ключе (без показа полного значения) и его длине
+        logger.info(f"Используется API ключ: {OPENROUTER_API_KEY[:8]}...{OPENROUTER_API_KEY[-4:]} (длина: {len(OPENROUTER_API_KEY)})")
+        
+        # Обновляем API ключ в переменной окружения для текущего процесса
+        os.environ['OPENROUTER_API_KEY'] = OPENROUTER_API_KEY
+        logger.info(f"Переменная окружения OPENROUTER_API_KEY обновлена: {os.getenv('OPENROUTER_API_KEY')[:8]}...")
+
+        # Создаем запрос строго по документации OpenRouter
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/videlboga/cyberkitty119",
+            "X-Title": "Transkribator Bot"
+        }
+        
+        payload = {
+            "model": OPENROUTER_MODEL,
+            "messages": [
                 {"role": "system", "content": "Ты эксперт по обработке и форматированию транскрипций видео. Твоя задача - сделать сырую транскрипцию более читаемой, сохраняя при этом исходное содержание и все таймкоды в формате [ЧЧ:ММ:СС]."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,  # Низкая температура для более детерминированных результатов
-            max_tokens=4096
+            "temperature": 0.3,
+            "max_tokens": 4096
+        }
+        
+        # Выводим детальную информацию о запросе для диагностики
+        logger.info(f"URL запроса: https://openrouter.ai/api/v1/chat/completions")
+        logger.info(f"Модель: {OPENROUTER_MODEL}")
+        logger.info(f"Первые 10 символов заголовка Authorization: {headers['Authorization'][:15]}...")
+        
+        # Выполняем запрос через requests, точно по документации
+        import json
+        logger.info(f"Выполняю прямой запрос к OpenRouter API")
+        
+        # Вариант 1: используя json параметр (рекомендуется для requests)
+        response = await asyncio.to_thread(
+            requests.post,
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=payload
         )
         
-        # Извлекаем ответ
-        formatted_text = response.choices[0].message.content
+        # Если первый вариант не сработал, пробуем второй вариант как в документации
+        if response.status_code == 401:
+            logger.warning("Первый вариант запроса вернул 401, пробую альтернативный метод с data=json.dumps()")
+            response = await asyncio.to_thread(
+                requests.post,
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                data=json.dumps(payload)
+            )
         
-        logger.info(f"Транскрипция успешно отформатирована (было {len(chunk)} символов, стало {len(formatted_text)} символов)")
-        return formatted_text
+        # Проверяем ответ с подробным логированием
+        logger.info(f"Код ответа API: {response.status_code}")
+        logger.info(f"Заголовки ответа: {response.headers}")
+        logger.info(f"Текст ответа: {response.text[:200]}...")
+        
+        if response.status_code == 200:
+            result = response.json()
+            formatted_text = result['choices'][0]['message']['content']
+            logger.info(f"Транскрипция успешно отформатирована (было {len(chunk)} символов, стало {len(formatted_text)} символов)")
+            return formatted_text
+        else:
+            # Более детальная информация об ошибке
+            error_details = f"Код: {response.status_code}, Ответ: {response.text}"
+            logger.error(f"API вернуло ошибку: {error_details}")
+            # В случае ошибки возвращаем исходный текст
+            logger.info("Возвращаю исходный текст без форматирования")
+            return chunk
         
     except Exception as e:
-        logger.error(f"Ошибка при обработке части транскрипции: {e}")
+        logger.error(f"Ошибка при обработке части транскрипции: {e}", exc_info=True)
         # В случае ошибки возвращаем исходный текст
         return chunk
 
@@ -746,20 +813,47 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
                 'raw_path': str(raw_transcript_path),
                 'timestamp': asyncio.get_event_loop().time()
             }
+        else:
+            # Если не удалось получить user_id, используем chat_id
+            user_id = chat_id
+            user_transcriptions[chat_id] = {
+                'raw': full_transcript_with_timestamps,
+                'formatted': formatted_transcript,
+                'path': str(transcript_path),
+                'raw_path': str(raw_transcript_path),
+                'timestamp': asyncio.get_event_loop().time()
+            }
         
         # Отправляем транскрипцию пользователю
         await progress_message.edit_text("Транскрипция готова!")
         
         # Если текст слишком длинный, отправляем файлом
         if len(formatted_transcript) > 4000:
-            await context.bot.send_document(
+            sent_message = await context.bot.send_document(
                 chat_id=chat_id,
                 document=open(transcript_path, "rb"),
                 filename=f"Транскрипция_{video_path.stem}.txt",
                 caption="Транскрипция видео (как файл, т.к. текст слишком длинный)"
             )
         else:
-            await context.bot.send_message(chat_id=chat_id, text=f"Транскрипция видео:\n\n{formatted_transcript}")
+            sent_message = await context.bot.send_message(chat_id=chat_id, text=f"Транскрипция видео:\n\n{formatted_transcript}")
+        
+        # Создаем кнопки для запроса саммори
+        # Используем str(user_id) для гарантии, что user_id не None
+        keyboard = [
+            [
+                InlineKeyboardButton("Краткое саммори", callback_data=f"brief_summary_{chat_id}"),
+                InlineKeyboardButton("Подробное саммори", callback_data=f"detailed_summary_{chat_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Отправляем сообщение с кнопками для выбора типа саммори
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Вы можете получить краткое или подробное саммори транскрипции:",
+            reply_markup=reply_markup
+        )
         
         # Добавляем подсказку о возможности получить сырую версию
         await context.bot.send_message(
@@ -940,6 +1034,345 @@ async def monitor_relay_chat(client, application):
         await asyncio.sleep(30)
         asyncio.create_task(monitor_relay_chat(client, application))
 
+async def generate_summary(transcript: str, is_detailed: bool = False) -> str:
+    """
+    Генерирует саммори транскрипции с использованием LLM через OpenRouter API.
+    
+    Args:
+        transcript: Текст транскрипции
+        is_detailed: True для подробного саммори, False для краткого
+        
+    Returns:
+        Текст саммори
+    """
+    try:
+        # Проверяем наличие транскрипции
+        if not transcript or len(transcript.strip()) < 50:
+            logger.error(f"Транскрипция слишком короткая или пустая: '{transcript[:100]}...'")
+            return "Не удалось создать саммори: транскрипция слишком короткая или пустая."
+            
+        logger.info(f"Начинаю создание {'подробного' if is_detailed else 'краткого'} саммори для текста длиной {len(transcript)} символов")
+        
+        # Проверяем валидность API-ключа
+        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "":
+            logger.error("API ключ OpenRouter отсутствует или неверный")
+            return "Не удалось создать саммори: отсутствует или неверный API ключ. Проверьте настройки бота."
+            
+        # Выводим замаскированную версию ключа для диагностики
+        logger.info(f"API ключ OpenRouter: {OPENROUTER_API_KEY[:8]}...{OPENROUTER_API_KEY[-4:]}")
+        
+        # Мы будем использовать только прямые запросы, поэтому клиент не нужен
+        # Создаем фиктивный клиент для совместимости с другими функциями
+        client = None
+            
+        # Если транскрипция слишком большая, разделим ее на части
+        max_chunk_size = 15000  # Максимальный размер части в символах
+        if len(transcript) > max_chunk_size:
+            logger.info(f"Транскрипция слишком большая ({len(transcript)} символов), разделяю на части для саммори")
+            chunks = [transcript[i:i+max_chunk_size] for i in range(0, len(transcript), max_chunk_size)]
+            
+            # Обрабатываем каждую часть и собираем промежуточные результаты
+            intermediate_summaries = []
+            for i, chunk in enumerate(chunks):
+                logger.info(f"Обрабатываю часть {i+1} из {len(chunks)} для саммори")
+                chunk_summary = await generate_chunk_summary(client, chunk, is_detailed, is_intermediate=True)
+                if chunk_summary.startswith("Произошла ошибка"):
+                    logger.error(f"Ошибка обработки части {i+1}")
+                    return chunk_summary
+                intermediate_summaries.append(chunk_summary)
+            
+            # Теперь делаем финальное саммори на основе промежуточных
+            combined_intermediate = "\n\n".join(intermediate_summaries)
+            logger.info(f"Создаю финальное саммори на основе {len(intermediate_summaries)} промежуточных результатов")
+            final_summary = await generate_chunk_summary(client, combined_intermediate, is_detailed, is_final=True)
+            return final_summary
+        else:
+            logger.info(f"Транскрипция имеет приемлемый размер ({len(transcript)} символов), создаю саммори напрямую")
+            return await generate_chunk_summary(client, transcript, is_detailed)
+            
+    except Exception as e:
+        logger.error(f"Ошибка при создании саммори транскрипции: {e}", exc_info=True)
+        # В случае ошибки возвращаем сообщение об ошибке
+        return f"Произошла ошибка при создании саммори: {str(e)}. Пожалуйста, попробуйте еще раз."
+
+async def generate_chunk_summary(client, chunk: str, is_detailed: bool = False, is_intermediate: bool = False, is_final: bool = False) -> str:
+    """Обрабатывает один фрагмент транскрипции для создания саммори."""
+    try:
+        summary_type = "подробное" if is_detailed else "краткое"
+        chunk_type = "промежуточное" if is_intermediate else "финальное" if is_final else "обычное"
+        logger.info(f"Начинаю создание {chunk_type} {summary_type} саммори для фрагмента длиной {len(chunk)} символов")
+        
+        if is_intermediate:
+            prompt = f"""Создай промежуточное {summary_type} саммори для следующей части транскрипции. Не делай финальных выводов, 
+            так как это только часть транскрипции. Сосредоточься на ключевых моментах:
+
+            {chunk}"""
+        elif is_final:
+            prompt = f"""Создай финальное {summary_type} саммори на основе этих промежуточных саммори. 
+            Объедини информацию и выдели:
+            1. Основные обсужденные темы
+            2. Ключевые выводы
+            3. Принятые решения
+            4. Запланированные действия
+
+            Промежуточные саммори:
+            {chunk}"""
+        else:
+            detail_instruction = """
+            Будь максимально подробным. Включи все значимые моменты обсуждения, детали принятых решений, 
+            подробный контекст обсужденных тем и детальное описание действий.
+            """ if is_detailed else """
+            Будь максимально лаконичным. Сосредоточься только на самых важных моментах,
+            ключевых решениях и главных выводах. Стремись к краткости и ясности.
+            """
+            
+            prompt = f"""Создай {summary_type} саммори для следующей транскрипции.
+            
+            {detail_instruction}
+            
+            Обязательно включи в структурированном виде:
+            1. Список обсужденных тем
+            2. Основные выводы
+            3. Принятые решения
+            4. Запланированные действия
+            
+            Сохрани полный смысл обсуждения в {summary_type} формате.
+            
+            Вот транскрипция:
+            
+            {chunk}"""
+
+        logger.info(f"Подготовлен промпт длиной {len(prompt)} символов")
+        
+        # Проверяем API ключ - он должен начинаться с "sk-or-"
+        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "" or not OPENROUTER_API_KEY.startswith("sk-or-"):
+            logger.error(f"API ключ OpenRouter отсутствует или имеет неверный формат: {OPENROUTER_API_KEY[:5]}...")
+            return "Произошла ошибка при создании саммори: отсутствует или неверный API ключ. Проверьте настройки бота."
+
+        # Вывод в лог информации о ключе (без показа полного значения) и его длине
+        logger.info(f"Используется API ключ: {OPENROUTER_API_KEY[:8]}...{OPENROUTER_API_KEY[-4:]} (длина: {len(OPENROUTER_API_KEY)})")
+        
+        # Обновляем API ключ в переменной окружения для текущего процесса
+        os.environ['OPENROUTER_API_KEY'] = OPENROUTER_API_KEY
+        logger.info(f"Переменная окружения OPENROUTER_API_KEY обновлена: {os.getenv('OPENROUTER_API_KEY')[:8]}...")
+
+        # Пробуем основную модель и резервные в случае ошибки
+        models_to_try = [OPENROUTER_MODEL] + [m for m in OPENROUTER_FALLBACK_MODELS if m != OPENROUTER_MODEL]
+        last_error = None
+        
+        for model_index, model in enumerate(models_to_try):
+            try:
+                logger.info(f"Попытка {model_index+1}: Отправляю запрос к OpenRouter API с моделью {model}")
+                
+                # Создаем запрос строго по документации OpenRouter
+                headers = {
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://github.com/videlboga/cyberkitty119",
+                    "X-Title": "Transkribator Bot"
+                }
+                
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": f"Ты эксперт по созданию {summary_type} саммори видео-транскрипций. Твоя задача - выделить ключевую информацию, сохраняя смысл."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 4096
+                }
+                
+                # Выводим детальную информацию о запросе для диагностики
+                logger.info(f"URL запроса: https://openrouter.ai/api/v1/chat/completions")
+                logger.info(f"Модель: {model}")
+                logger.info(f"Первые 10 символов заголовка Authorization: {headers['Authorization'][:15]}...")
+                
+                # Выполняем запрос через requests, точно по документации
+                import json
+                logger.info(f"Выполняю прямой запрос к OpenRouter API для модели {model}")
+                
+                # Вариант 1: используя json параметр (рекомендуется для requests)
+                response = await asyncio.to_thread(
+                    requests.post,
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload
+                )
+                
+                # Если первый вариант не сработал, пробуем второй вариант как в документации
+                if response.status_code == 401:
+                    logger.warning("Первый вариант запроса вернул 401, пробую альтернативный метод с data=json.dumps()")
+                    response = await asyncio.to_thread(
+                        requests.post,
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        headers=headers,
+                        data=json.dumps(payload)
+                    )
+                
+                # Проверяем ответ с подробным логированием
+                logger.info(f"Код ответа API: {response.status_code}")
+                logger.info(f"Заголовки ответа: {response.headers}")
+                logger.info(f"Текст ответа: {response.text[:200]}...")
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    summary_text = result['choices'][0]['message']['content']
+                    logger.info(f"Саммори успешно создано ({len(summary_text)} символов)")
+                    return summary_text
+                else:
+                    # Более детальная информация об ошибке
+                    error_details = f"Код: {response.status_code}, Ответ: {response.text}"
+                    logger.error(f"API вернуло ошибку: {error_details}")
+                    raise Exception(f"Error code: {response.status_code} - {response.text}")
+                
+            except Exception as api_error:
+                last_error = api_error
+                logger.error(f"Ошибка при использовании модели {model}: {api_error}")
+                
+                # Если это последняя модель в списке, генерируем ошибку
+                if model_index == len(models_to_try) - 1:
+                    logger.error("Исчерпаны все попытки с разными моделями", exc_info=True)
+                    return f"Произошла ошибка при обращении к API: {str(last_error)}. Все доступные модели проверены. Проверьте действительность API-ключа."
+                
+                # Иначе продолжаем с следующей моделью
+                logger.info(f"Попробую другую модель: {models_to_try[model_index+1]}")
+                continue
+        
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при обработке части для саммори: {e}", exc_info=True)
+        # В случае ошибки возвращаем исходный текст
+        if is_intermediate or is_final:
+            return f"Ошибка обработки части: {str(e)}"
+        else:
+            return f"Произошла ошибка при создании саммори: {str(e)}. Пожалуйста, попробуйте еще раз."
+
+async def handle_summary_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатие на кнопки запроса саммори."""
+    query = update.callback_query
+    await query.answer()  # Отвечаем на запрос, чтобы убрать "часики" на кнопке
+    
+    # Получаем тип саммори и ID пользователя из callback_data
+    callback_data = query.data
+    
+    try:
+        chat_id = query.message.chat_id  # Используем ID чата как запасной вариант
+        
+        if callback_data.startswith("brief_summary_"):
+            summary_type = "brief"
+            user_id_str = callback_data.replace("brief_summary_", "")
+            # Проверяем, что ID пользователя не None и корректный
+            if user_id_str and user_id_str.lower() != "none":
+                try:
+                    user_id = int(user_id_str)
+                except ValueError:
+                    # В случае ошибки используем ID чата
+                    user_id = chat_id
+                    logger.warning(f"Некорректный ID пользователя в callback_data, использую ID чата: {chat_id}")
+            else:
+                user_id = chat_id
+                logger.warning(f"ID пользователя отсутствует в callback_data, использую ID чата: {chat_id}")
+        elif callback_data.startswith("detailed_summary_"):
+            summary_type = "detailed"
+            user_id_str = callback_data.replace("detailed_summary_", "")
+            # Проверяем, что ID пользователя не None и корректный
+            if user_id_str and user_id_str.lower() != "none":
+                try:
+                    user_id = int(user_id_str)
+                except ValueError:
+                    # В случае ошибки используем ID чата
+                    user_id = chat_id
+                    logger.warning(f"Некорректный ID пользователя в callback_data, использую ID чата: {chat_id}")
+            else:
+                user_id = chat_id
+                logger.warning(f"ID пользователя отсутствует в callback_data, использую ID чата: {chat_id}")
+        else:
+            await query.edit_message_text(text="Неизвестный тип саммори.")
+            return
+        
+        # Проверяем, что у пользователя есть сохраненная транскрипция
+        if user_id not in user_transcriptions or 'formatted' not in user_transcriptions[user_id]:
+            # Если у пользователя нет транскрипции, пробуем искать по ID чата
+            if chat_id != user_id and chat_id in user_transcriptions and 'formatted' in user_transcriptions[chat_id]:
+                # Используем ID чата для поиска транскрипции
+                user_id = chat_id
+                logger.info(f"Транскрипция не найдена для ID {user_id}, использую ID чата: {chat_id}")
+            else:
+                await query.edit_message_text(
+                    text="Транскрипция не найдена. Пожалуйста, отправьте видео заново."
+                )
+                return
+        
+        # Проверяем, есть ли уже готовое саммори нужного типа
+        if summary_type == "brief" and 'brief_summary' in user_transcriptions[user_id]:
+            summary = user_transcriptions[user_id]['brief_summary']
+            await send_summary(query, summary, "Краткое саммори")
+            return
+        elif summary_type == "detailed" and 'detailed_summary' in user_transcriptions[user_id]:
+            summary = user_transcriptions[user_id]['detailed_summary']
+            await send_summary(query, summary, "Подробное саммори")
+            return
+        
+        # Если саммори нет, начинаем создание
+        await query.edit_message_text(
+            text=f"Создаю {'подробное' if summary_type == 'detailed' else 'краткое'} саммори. Это может занять некоторое время..."
+        )
+        
+        # Получаем транскрипцию
+        transcript = user_transcriptions[user_id]['formatted']
+        
+        # Создаем саммори
+        is_detailed = (summary_type == "detailed")
+        summary = await generate_summary(transcript, is_detailed)
+        
+        # Сохраняем саммори
+        if summary_type == "brief":
+            user_transcriptions[user_id]['brief_summary'] = summary
+        else:
+            user_transcriptions[user_id]['detailed_summary'] = summary
+        
+        # Отправляем саммори пользователю
+        await send_summary(query, summary, "Подробное саммори" if is_detailed else "Краткое саммори")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке кнопки саммори: {e}")
+        await query.edit_message_text(
+            text=f"Произошла ошибка при создании саммори: {str(e)}"
+        )
+
+async def send_summary(query, summary, title):
+    """Отправляет саммори пользователю."""
+    chat_id = query.message.chat_id
+    
+    # Если текст слишком длинный, отправляем файлом
+    if len(summary) > 4000:
+        # Создаем временный файл для отправки
+        with tempfile.NamedTemporaryFile(suffix='.txt', mode='w', encoding='utf-8', delete=False) as temp_file:
+            temp_file.write(summary)
+            temp_path = temp_file.name
+        
+        # Отправляем файл
+        await query.message.reply_document(
+            document=open(temp_path, "rb"),
+            filename=f"{title}.txt",
+            caption=f"{title} (как файл, т.к. текст слишком длинный)"
+        )
+        
+        # Удаляем временный файл после отправки
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+        
+        # Обновляем сообщение с кнопками
+        await query.edit_message_text(
+            text=f"{title} отправлено отдельным файлом."
+        )
+    else:
+        # Если текст небольшой, отправляем прямо в сообщении
+        await query.edit_message_text(
+            text=f"{title}:\n\n{summary}"
+        )
+
 # Изменяем функцию main, чтобы запустить мониторинг релейного канала
 async def main() -> None:
     """Запускает бота."""
@@ -950,6 +1383,9 @@ async def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("rawtranscript", raw_transcript_command))
+    
+    # Регистрируем обработчик кнопок для саммори
+    application.add_handler(CallbackQueryHandler(handle_summary_button, pattern=r'^(brief|detailed)_summary_'))
     
     # Регистрируем обработчик сообщений
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
