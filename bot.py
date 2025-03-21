@@ -32,6 +32,10 @@ TELEGRAM_API_ID = int(os.getenv('TELEGRAM_API_ID'))
 TELEGRAM_API_HASH = os.getenv('TELEGRAM_API_HASH')
 TELEGRAM_PHONE_NUMBER = os.getenv('TELEGRAM_PHONE_NUMBER')
 
+# Добавляем конфигурацию для OpenRouter API
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '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')
+OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'deepseek/deepseek-chat:free')
+
 # Создание директорий для хранения файлов
 VIDEOS_DIR = Path("videos")
 AUDIO_DIR = Path("audio")
@@ -53,6 +57,9 @@ RELAY_CHAT_ID = -1002616815315  # ID релейного чата (супергр
 # ключ - ID сообщения в RELAY_CHAT_ID, значение - (chat_id, message_id) исходного пользователя
 forwarded_videos = {}
 
+# Добавляем словарь для хранения последних транскрипций пользователей
+user_transcriptions = {}  # {user_id: {'raw': '...', 'formatted': '...', 'path': '...'}}
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет приветственное сообщение при команде /start."""
     await update.message.reply_text(
@@ -67,8 +74,44 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '1. Получать видео через загрузку файла в Telegram\n'
         '2. Получать видео через пересланное сообщение с видео\n'
         '3. Скачивать видео по ссылке (YouTube, Google Drive)\n\n'
-        'Просто отправь мне видео любым из этих способов, и я верну тебе текстовую транскрипцию!'
+        'Просто отправь мне видео любым из этих способов, и я верну тебе текстовую транскрипцию!\n\n'
+        'Дополнительные команды:\n'
+        '/rawtranscript - получить сырую (необработанную) версию последней транскрипции'
     )
+
+async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправляет пользователю сырую (необработанную) версию последней транскрипции."""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_transcriptions or 'raw' not in user_transcriptions[user_id]:
+        await update.message.reply_text(
+            'У меня нет сохраненных транскрипций для тебя. Отправь мне видео для обработки!'
+        )
+        return
+    
+    transcript_data = user_transcriptions[user_id]
+    raw_transcript = transcript_data['raw']
+    
+    # Если текст слишком длинный, отправляем файлом
+    if len(raw_transcript) > 4000:
+        # Получаем путь к файлу или создаем временный файл
+        if 'raw_path' in transcript_data and Path(transcript_data['raw_path']).exists():
+            file_path = transcript_data['raw_path']
+        else:
+            # Создаем временный файл
+            file_path = TRANSCRIPTIONS_DIR / f"raw_transcript_{user_id}.txt"
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(raw_transcript)
+            
+        await update.message.reply_document(
+            document=open(file_path, "rb"),
+            filename=f"Сырая_транскрипция.txt",
+            caption="Сырая (необработанная) версия транскрипции"
+        )
+    else:
+        await update.message.reply_text(
+            f"Сырая (необработанная) версия транскрипции:\n\n{raw_transcript}"
+        )
 
 def is_youtube_url(url: str) -> bool:
     """Проверяет, является ли ссылка YouTube ссылкой."""
@@ -262,6 +305,91 @@ def transcribe_audio_chunk(chunk_path: Path) -> str:
     except Exception as e:
         logger.error(f"Исключение при транскрибации: {e}")
         return ""
+
+async def format_transcript_with_llm(raw_transcript: str) -> str:
+    """
+    Форматирует сырую транскрипцию с помощью ЛЛМ через OpenRouter API.
+    
+    Преобразует сырой текст в более читаемый формат, добавляя пунктуацию и
+    разделяя на абзацы, сохраняя при этом исходное содержание.
+    
+    Args:
+        raw_transcript: Исходная сырая транскрипция от Whisper.
+        
+    Returns:
+        Отформатированная транскрипция.
+    """
+    try:
+        # Настраиваем клиент OpenAI для работы с OpenRouter
+        client = openai.OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY,
+            # Добавляем необходимые заголовки для OpenRouter
+            default_headers={
+                "HTTP-Referer": "https://github.com/videlboga/cyberkitty119",  # Ваш домен
+                "X-Title": "Transkribator Bot"  # Название вашего приложения
+            }
+        )
+        
+        # Если транскрипция слишком большая, разделим ее на части
+        max_chunk_size = 15000  # Максимальный размер части в символах
+        if len(raw_transcript) > max_chunk_size:
+            logger.info(f"Транскрипция слишком большая ({len(raw_transcript)} символов), разделяю на части")
+            chunks = [raw_transcript[i:i+max_chunk_size] for i in range(0, len(raw_transcript), max_chunk_size)]
+            formatted_chunks = []
+            
+            for i, chunk in enumerate(chunks):
+                logger.info(f"Обрабатываю часть {i+1} из {len(chunks)}")
+                formatted_chunk = await format_transcript_chunk(client, chunk)
+                formatted_chunks.append(formatted_chunk)
+                
+            return "\n\n".join(formatted_chunks)
+        else:
+            return await format_transcript_chunk(client, raw_transcript)
+            
+    except Exception as e:
+        logger.error(f"Ошибка при форматировании транскрипции: {e}")
+        # В случае ошибки возвращаем исходный текст
+        return raw_transcript
+
+async def format_transcript_chunk(client, chunk: str) -> str:
+    """Обрабатывает один фрагмент транскрипции через OpenRouter API."""
+    try:
+        # Создаем запрос к модели
+        prompt = f"""Твоя задача - отформатировать сырую транскрипцию видео, сделав её более читаемой. Требования:
+1. НЕ МЕНЯЙ содержание и смысл.
+2. Добавь правильную пунктуацию (точки, запятые, тире, знаки вопроса).
+3. Раздели текст на логические абзацы там, где это уместно.
+4. Исправь очевидные ошибки распознавания речи.
+5. Убери лишние повторения слов и слова-паразиты (если это не меняет смысл).
+6. Форматируй прямую речь с помощью кавычек или тире.
+
+Вот сырая транскрипция, которую нужно отформатировать:
+
+{chunk}"""
+
+        # Отправляем запрос
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
+            model=OPENROUTER_MODEL,
+            messages=[
+                {"role": "system", "content": "Ты эксперт по обработке и форматированию транскрипций видео. Твоя задача - сделать сырую транскрипцию более читаемой, сохраняя при этом исходное содержание."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,  # Низкая температура для более детерминированных результатов
+            max_tokens=4096
+        )
+        
+        # Извлекаем ответ
+        formatted_text = response.choices[0].message.content
+        
+        logger.info(f"Транскрипция успешно отформатирована (было {len(chunk)} символов, стало {len(formatted_text)} символов)")
+        return formatted_text
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке части транскрипции: {e}")
+        # В случае ошибки возвращаем исходный текст
+        return chunk
 
 async def process_video_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает сообщение с видео."""
@@ -525,16 +653,40 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
             transcript = await asyncio.to_thread(transcribe_audio_chunk, chunk_path)
             full_transcript += transcript + "\n\n"
         
+        # Форматируем транскрипцию с помощью ЛЛМ
+        await progress_message.edit_text("Улучшаю читаемость транскрипции с помощью ИИ...")
+        formatted_transcript = await format_transcript_with_llm(full_transcript)
+        
         # Сохраняем транскрипцию
         transcript_path = TRANSCRIPTIONS_DIR / f"{video_path.stem}.txt"
         with open(transcript_path, "w", encoding="utf-8") as f:
+            f.write(formatted_transcript)
+        
+        # Сохраняем исходную транскрипцию для сравнения
+        raw_transcript_path = TRANSCRIPTIONS_DIR / f"{video_path.stem}_raw.txt"
+        with open(raw_transcript_path, "w", encoding="utf-8") as f:
             f.write(full_transcript)
+        
+        # Сохраняем транскрипции для пользователя
+        user_id = None
+        if message := getattr(progress_message, 'message', None):
+            if message.chat:
+                user_id = chat_id
+        
+        if user_id:
+            user_transcriptions[user_id] = {
+                'raw': full_transcript,
+                'formatted': formatted_transcript,
+                'path': str(transcript_path),
+                'raw_path': str(raw_transcript_path),
+                'timestamp': asyncio.get_event_loop().time()
+            }
         
         # Отправляем транскрипцию пользователю
         await progress_message.edit_text("Транскрипция готова!")
         
         # Если текст слишком длинный, отправляем файлом
-        if len(full_transcript) > 4000:
+        if len(formatted_transcript) > 4000:
             await context.bot.send_document(
                 chat_id=chat_id,
                 document=open(transcript_path, "rb"),
@@ -542,7 +694,13 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
                 caption="Транскрипция видео (как файл, т.к. текст слишком длинный)"
             )
         else:
-            await context.bot.send_message(chat_id=chat_id, text=f"Транскрипция видео:\n\n{full_transcript}")
+            await context.bot.send_message(chat_id=chat_id, text=f"Транскрипция видео:\n\n{formatted_transcript}")
+        
+        # Добавляем подсказку о возможности получить сырую версию
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Используйте команду /rawtranscript, чтобы получить оригинальную (необработанную) версию транскрипции."
+        )
         
     except Exception as e:
         logger.error(f"Ошибка при обработке видео: {e}")
@@ -726,6 +884,7 @@ async def main() -> None:
     # Регистрируем обработчики команд
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("rawtranscript", raw_transcript_command))
     
     # Регистрируем обработчик сообщений
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
