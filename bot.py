@@ -74,9 +74,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         '1. Получать видео через загрузку файла в Telegram\n'
         '2. Получать видео через пересланное сообщение с видео\n'
         '3. Скачивать видео по ссылке (YouTube, Google Drive)\n\n'
-        'Просто отправь мне видео любым из этих способов, и я верну тебе текстовую транскрипцию!\n\n'
+        'Просто отправь мне видео любым из этих способов, и я верну тебе текстовую транскрипцию '
+        'с таймкодами в формате [ЧЧ:ММ:СС] в начале каждого абзаца!\n\n'
         'Дополнительные команды:\n'
-        '/rawtranscript - получить сырую (необработанную) версию последней транскрипции'
+        '/rawtranscript - получить необработанную версию последней транскрипции с таймкодами'
     )
 
 async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -253,8 +254,15 @@ def extract_audio_from_video(video_path: Path) -> Path:
         logger.error(f"Непредвиденная ошибка при извлечении аудио: {e}")
         return None
 
+def format_timestamp(seconds: float) -> str:
+    """Форматирует время в секундах в формат [ЧЧ:ММ:СС]."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    seconds = int(seconds % 60)
+    return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
+
 def split_audio_into_chunks(audio_path: Path, chunk_size_ms=600000) -> list:
-    """Разделяет аудио на части по 10 минут."""
+    """Разделяет аудио файл на части по 10 минут."""
     try:
         audio = AudioSegment.from_file(audio_path)
         
@@ -271,9 +279,9 @@ def split_audio_into_chunks(audio_path: Path, chunk_size_ms=600000) -> list:
         logger.error(f"Ошибка при разделении аудио на части: {e}")
         return []
 
-def transcribe_audio_chunk(chunk_path: Path) -> str:
-    """Отправляет аудио чанк в DeepInfra для транскрибации с помощью Whisper."""
-    url = "https://api.deepinfra.com/v1/inference/openai/whisper-large-v3"
+def transcribe_audio_chunk(chunk_path: Path) -> dict:
+    """Отправляет аудио чанк в DeepInfra для транскрибации с таймкодами."""
+    url = "https://api.deepinfra.com/v1/openai/audio/transcriptions"
     
     headers = {
         "Authorization": f"Bearer {DEEPINFRA_API_KEY}"
@@ -283,28 +291,36 @@ def transcribe_audio_chunk(chunk_path: Path) -> str:
         # Проверяем, что аудио файл существует и не пустой
         if not chunk_path.exists():
             logger.error(f"Аудио файл не существует: {chunk_path}")
-            return ""
+            return {"text": "", "segments": []}
             
         if chunk_path.stat().st_size == 0:
             logger.error(f"Аудио файл пустой: {chunk_path}")
-            return ""
+            return {"text": "", "segments": []}
             
         logger.info(f"Отправляю файл {chunk_path} размером {chunk_path.stat().st_size} байт на транскрибацию")
         
         with open(chunk_path, "rb") as audio_file:
-            files = {"audio": (chunk_path.name, audio_file, "audio/wav")}
-            response = requests.post(url, headers=headers, files=files)
+            files = {"file": (chunk_path.name, audio_file, "audio/wav")}
+            data = {
+                "model": "openai/whisper-large-v3-turbo",
+                "response_format": "verbose_json",
+                "timestamp_granularities[]": "segment"
+            }
+            logger.info(f"Отправляю запрос в DeepInfra API: {url} с данными {data}")
+            response = requests.post(url, headers=headers, files=files, data=data)
         
         if response.status_code == 200:
-            result = response.json().get("text", "")
-            logger.info(f"Получена транскрипция длиной {len(result)} символов")
-            return result
+            result = response.json()
+            text = result.get("text", "")
+            segments = result.get("segments", [])
+            logger.info(f"Получена транскрипция длиной {len(text)} символов с {len(segments)} сегментами")
+            return {"text": text, "segments": segments}
         else:
-            logger.error(f"Ошибка при транскрибации: {response.text}")
-            return ""
+            logger.error(f"Ошибка при транскрибации: {response.status_code}, {response.text}")
+            return {"text": "", "segments": []}
     except Exception as e:
         logger.error(f"Исключение при транскрибации: {e}")
-        return ""
+        return {"text": "", "segments": []}
 
 async def format_transcript_with_llm(raw_transcript: str) -> str:
     """
@@ -358,11 +374,13 @@ async def format_transcript_chunk(client, chunk: str) -> str:
         # Создаем запрос к модели
         prompt = f"""Твоя задача - отформатировать сырую транскрипцию видео, сделав её более читаемой. Требования:
 1. НЕ МЕНЯЙ содержание и смысл.
-2. Добавь правильную пунктуацию (точки, запятые, тире, знаки вопроса).
-3. Раздели текст на логические абзацы там, где это уместно.
-4. Исправь очевидные ошибки распознавания речи.
-5. Убери лишние повторения слов и слова-паразиты (если это не меняет смысл).
-6. Форматируй прямую речь с помощью кавычек или тире.
+2. ОБЯЗАТЕЛЬНО СОХРАНИ все таймкоды в формате [ЧЧ:ММ:СС] в начале абзацев.
+3. Добавь правильную пунктуацию (точки, запятые, тире, знаки вопроса).
+4. Раздели текст на логические абзацы там, где это уместно.
+5. Исправь очевидные ошибки распознавания речи.
+6. Убери лишние повторения слов и слова-паразиты (если это не меняет смысл).
+7. Форматируй прямую речь с помощью кавычек или тире.
+8. Каждый абзац должен начинаться с таймкода в формате [ЧЧ:ММ:СС].
 
 Вот сырая транскрипция, которую нужно отформатировать:
 
@@ -373,7 +391,7 @@ async def format_transcript_chunk(client, chunk: str) -> str:
             client.chat.completions.create,
             model=OPENROUTER_MODEL,
             messages=[
-                {"role": "system", "content": "Ты эксперт по обработке и форматированию транскрипций видео. Твоя задача - сделать сырую транскрипцию более читаемой, сохраняя при этом исходное содержание."},
+                {"role": "system", "content": "Ты эксперт по обработке и форматированию транскрипций видео. Твоя задача - сделать сырую транскрипцию более читаемой, сохраняя при этом исходное содержание и все таймкоды в формате [ЧЧ:ММ:СС]."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,  # Низкая температура для более детерминированных результатов
@@ -647,15 +665,62 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
         await progress_message.edit_text(f"Начинаю транскрибацию аудио ({len(audio_chunks)} частей)...")
         
         full_transcript = ""
+        full_transcript_with_timestamps = ""
+        all_segments = []
+        chunk_offset = 0  # смещение в секундах для каждого следующего чанка
+        current_timestamp = 0  # текущее время для фиксированных таймкодов
+        time_step = 30  # шаг таймкодов в секундах
+        
         for i, chunk_path in enumerate(audio_chunks):
             await progress_message.edit_text(f"Транскрибирую часть {i+1} из {len(audio_chunks)}...")
             # Выполняем эту тяжелую операцию в фоновом режиме через ThreadPoolExecutor
-            transcript = await asyncio.to_thread(transcribe_audio_chunk, chunk_path)
+            result = await asyncio.to_thread(transcribe_audio_chunk, chunk_path)
+            transcript = result["text"]
+            segments = result["segments"]
+            
+            # Добавляем текст к полной транскрипции без таймкодов
             full_transcript += transcript + "\n\n"
+            
+            # Получаем текст из сегментов, но с фиксированными таймкодами каждые 30 секунд
+            if segments:
+                # Соединяем все тексты сегментов
+                combined_text = ""
+                segment_texts = [s['text'] for s in segments]
+                
+                # Для каждого сегмента сохраняем информацию о начале и длительности
+                for segment in segments:
+                    segment["start"] += chunk_offset
+                    segment["end"] += chunk_offset
+                    all_segments.append(segment)
+                
+                # Создаем новый текст с фиксированными таймкодами
+                combined_text = ' '.join(segment_texts)
+                words = combined_text.split()
+                
+                # Разбиваем текст на части примерно по 30-40 слов
+                words_per_step = 35  # среднее количество слов за 30 секунд
+                word_chunks = [' '.join(words[i:i+words_per_step]) for i in range(0, len(words), words_per_step)]
+                
+                # Добавляем каждый чанк с соответствующим таймкодом
+                for word_chunk in word_chunks:
+                    if word_chunk.strip():  # Проверяем, что чанк не пустой
+                        timestamp = format_timestamp(current_timestamp)
+                        full_transcript_with_timestamps += f"{timestamp} {word_chunk.strip()}\n\n"
+                        current_timestamp += time_step
+            else:
+                # Если нет сегментов, просто добавляем текст с текущим таймкодом
+                if transcript.strip():
+                    timestamp = format_timestamp(current_timestamp)
+                    full_transcript_with_timestamps += f"{timestamp} {transcript.strip()}\n\n"
+                    current_timestamp += time_step
+            
+            # Обновляем смещение для следующего чанка (10 минут = 600 секунд)
+            chunk_offset += 600
         
         # Форматируем транскрипцию с помощью ЛЛМ
         await progress_message.edit_text("Улучшаю читаемость транскрипции с помощью ИИ...")
-        formatted_transcript = await format_transcript_with_llm(full_transcript)
+        # Передаем транскрипцию с таймкодами для форматирования
+        formatted_transcript = await format_transcript_with_llm(full_transcript_with_timestamps)
         
         # Сохраняем транскрипцию
         transcript_path = TRANSCRIPTIONS_DIR / f"{video_path.stem}.txt"
@@ -665,7 +730,7 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
         # Сохраняем исходную транскрипцию для сравнения
         raw_transcript_path = TRANSCRIPTIONS_DIR / f"{video_path.stem}_raw.txt"
         with open(raw_transcript_path, "w", encoding="utf-8") as f:
-            f.write(full_transcript)
+            f.write(full_transcript_with_timestamps)
         
         # Сохраняем транскрипции для пользователя
         user_id = None
@@ -675,7 +740,7 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
         
         if user_id:
             user_transcriptions[user_id] = {
-                'raw': full_transcript,
+                'raw': full_transcript_with_timestamps,
                 'formatted': formatted_transcript,
                 'path': str(transcript_path),
                 'raw_path': str(raw_transcript_path),
@@ -699,7 +764,7 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
         # Добавляем подсказку о возможности получить сырую версию
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Используйте команду /rawtranscript, чтобы получить оригинальную (необработанную) версию транскрипции."
+            text="Используйте команду /rawtranscript, чтобы получить оригинальную (необработанную) версию транскрипции с таймкодами."
         )
         
     except Exception as e:
