@@ -1,0 +1,36 @@
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables
+.env
+
+# Log files
+*.log
+
+# Temp files and media
+audio/
+videos/
+transcriptions/
+virtual_videos/
+*.mp4
+*.wav
+*.mp3
+
+# Telethon session files
+*.session
+*.session-journal
+
+# IDE files
+.idea/
+.vscode/
+
+# System files
+.DS_Store
+Thumbs.db 
