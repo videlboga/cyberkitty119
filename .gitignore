@@ -1,36 +1,65 @@
-# Virtual environment
-venv/
-env/
-ENV/
-
-# Python cache files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Environment variables
+# Environments
 .env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
 
-# Log files
-*.log
-
-# Temp files and media
-audio/
-videos/
-transcriptions/
-virtual_videos/
+# Media files
+*.mp3
 *.mp4
 *.wav
-*.mp3
+*.m4a
+*.ogg
+*.webm
+*.avi
+*.mkv
+*.mpg
+*.mpeg
+*.mov
+*.flv
+*.wmv
 
-# Telethon session files
+# Temp files
+tmp/
+temp/
+*.tmp
+
+# Telegram session files
 *.session
 *.session-journal
 
-# IDE files
+# Logs
+*.log
+logs/
+
+# IDE
 .idea/
 .vscode/
-
-# System files
-.DS_Store
-Thumbs.db 
+*.swp
+*.swo
+.DS_Store 
