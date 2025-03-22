@@ -65,7 +65,7 @@ TELEGRAM_PHONE_NUMBER=your_phone_number
 
 5. Запустите бота:
 ```bash
-python bot.py
+python cyberkitty119
 ```
 
 ## 🔑 Получение API ключей
