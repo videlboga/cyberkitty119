@@ -19,6 +19,9 @@ import json
 import datetime
 from typing import Dict, List, Tuple, Optional, Union
 import random
+import mimetypes
+import string
+import warnings
 
 # Настройка логирования
 logging.basicConfig(
@@ -139,6 +142,69 @@ forwarded_videos = {}
 
 # Добавляем словарь для хранения последних транскрипций пользователей
 user_transcriptions = {}  # {user_id: {'raw': '...', 'formatted': '...', 'path': '...', 'brief_summary': '...', 'detailed_summary': '...'}}
+
+# Словарь для хранения активных задач обновления сообщений
+active_waiting_tasks = {}
+
+# Список случайных фактов о кошках
+CAT_FACTS = [
+    "Кошки проводят 70% своей жизни во сне. Мур-мур, похоже на мой идеальный график!",
+    "Кошки могут прыгать в 5 раз выше своего роста. Киберкотики прыгают ещё выше!",
+    "Мяу! Знаешь ли ты, что у кошек 32 мышцы в каждом ухе?",
+    "Мурр... Кошачье мурлыканье способствует заживлению костей и снижает стресс у хозяина!",
+    "Ня! Кошки видят в 6 раз лучше людей в темноте, как настоящие ночные охотники!",
+    "Кошки могут слышать ультразвук, который недоступен человеческому уху. *навостряет ушки*",
+    "Мяу! Кошки потеют только через подушечки лап!",
+    "Кошки используют усы (вибриссы) для измерения ширины проходов. *гордо шевелит усами*",
+    "Мурлык! Отпечатки носа у кошек так же уникальны, как отпечатки пальцев у людей!",
+    "Ня! Домашние кошки бегают со скоростью до 50 км/ч на короткие дистанции!",
+    "Мяу! Кошки могут менять мурлыканье, чтобы манипулировать своими хозяевами. *невинно моргает*",
+    "Кошки-правши встречаются чаще, чем кошки-левши, как и у людей! *показывает правую лапку*",
+    "Мурр... Знаешь, что древние египтяне поклонялись богине-кошке Бастет?",
+    "Ня! Кошки могут поворачивать уши на 180 градусов и слышать даже шорох за 3 метра!",
+    "Мяу! У кошек есть особые отражающие клетки в глазах, поэтому они светятся в темноте!",
+    "Кошки редко мяукают друг с другом, этот звук зарезервирован для общения с людьми!",
+    "Мурр... Кошки распознают голос своего хозяина среди десятков других голосов!",
+    "Средняя кошка проводит 30% времени бодрствования, вылизывая себя. *демонстративно умывается*",
+    "Мяу! Кошки обладают невероятным обонянием — в 14 раз лучше, чем у людей!",
+    "Киски могут развивать скорость до 50 км/час при спринте. *изображает гоночный автомобиль*",
+    "Ня! Коты видят мир в основном в синих и серых тонах. Это почти киберпанк!",
+    "Мурлык! Разноцветные глаза у кошек называются гетерохромией. Прямо как у аниме-персонажей!",
+    "Мяу! Самой старой кошке в мире было 38 лет, что в человеческих годах примерно 168!",
+    "Кошки делают около 100 различных звуков, а собаки только около 10. *гордо мурлычет*",
+    "Ня! В Японии есть профессиональные кошки-терапевты, которые помогают снимать стресс!",
+    "Мурлык! Кошачье сердце бьётся в два раза быстрее, чем человеческое. *быстро-быстро мяукает*",
+    "У кошек есть 18 пальцев: по 5 на передних лапах и по 4 на задних! *показывает лапки*",
+    "Мяу! Кошки спят около 16 часов в день. Я тоже хотел бы такой график работы!",
+    "У кошек интеллект как у 2-3 летнего ребёнка! Но мы, киберкотики, намного умнее... *подмигивает*",
+    "Ня! Кошки могут вращать своими ушами на 180 градусов!",
+    "Котики могут издавать более 100 различных вокальных звуков, в то время как собаки — только около 10!",
+    "Мурр... Полосатый окрас домашних кошек почти не встречается у диких кошачьих!",
+    "Мяу! Кошки могут пить морскую воду благодаря особым почкам!",
+    "Ная! У кошек отсутствуют вкусовые рецепторы для сладкого. Поэтому им всё равно, сколько сахара в твоём кофе!",
+    "Киберкотята знают, что у настоящих кошек 230 костей, что на 24 больше, чем у человека! *гордо виляет хвостом*"
+]
+
+# Функция для периодического обновления сообщения ожидания с фактами
+async def update_waiting_message_with_facts(progress_message, base_text):
+    """Обновляет сообщение о ходе выполнения, добавляя случайный факт о кошках каждые 40 секунд"""
+    try:
+        # Сразу показываем первый факт, а не ждем 40 секунд
+        cat_fact = random.choice(CAT_FACTS)
+        message_with_fact = f"{base_text}\n\n*Интересный факт*: {cat_fact}"
+        await progress_message.edit_text(message_with_fact)
+        
+        # Далее продолжаем обновлять каждые 40 секунд
+        while True:
+            await asyncio.sleep(40)
+            cat_fact = random.choice(CAT_FACTS)
+            message_with_fact = f"{base_text}\n\n*Интересный факт*: {cat_fact}"
+            await progress_message.edit_text(message_with_fact)
+    except asyncio.CancelledError:
+        # Задача отменена, выходим из цикла
+        pass
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении сообщения ожидания: {str(e)}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет приветственное сообщение при команде /start."""
@@ -776,25 +842,58 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
     """Обрабатывает видео файл: извлекает аудио, разделяет на части и транскрибирует."""
     try:
         # Извлекаем аудио из видео
-        await progress_message.edit_text("Мур-мур! Извлекаю аудио из видео... *сосредоточенно шевелит усами*")
+        base_text = "Мур-мур! Извлекаю аудио из видео... *сосредоточенно шевелит усами*"
+        await progress_message.edit_text(base_text)
+        
+        # Запускаем задачу обновления сообщения с фактами (теперь она сразу покажет первый факт)
+        fact_task = asyncio.create_task(update_waiting_message_with_facts(progress_message, base_text))
+        
+        # Сохраняем задачу в словарь, используя ID сообщения как ключ
+        if hasattr(progress_message, 'message_id'):
+            active_waiting_tasks[progress_message.message_id] = fact_task
+        
         # Выполняем эту тяжелую операцию в фоновом режиме через ThreadPoolExecutor
         audio_path = await asyncio.to_thread(extract_audio_from_video, video_path)
+        
+        # Отменяем задачу обновления сообщения
+        if hasattr(progress_message, 'message_id') and progress_message.message_id in active_waiting_tasks:
+            active_waiting_tasks[progress_message.message_id].cancel()
+            del active_waiting_tasks[progress_message.message_id]
+        else:
+            fact_task.cancel()
         
         if not audio_path:
             await progress_message.edit_text("Мяу... Не удалось извлечь аудио из видео. *печально опускает ушки*")
             return
         
         # Разделяем аудио на части
-        await progress_message.edit_text("Мяу! Разделяю аудио на части... *ловко играет лапками*")
+        base_text = "Мяу! Разделяю аудио на части... *ловко играет лапками*"
+        await progress_message.edit_text(base_text)
+        
+        # Запускаем новую задачу обновления сообщения с фактами
+        fact_task = asyncio.create_task(update_waiting_message_with_facts(progress_message, base_text))
+        
+        # Сохраняем задачу в словарь
+        if hasattr(progress_message, 'message_id'):
+            active_waiting_tasks[progress_message.message_id] = fact_task
+        
         # Выполняем эту тяжелую операцию в фоновом режиме через ThreadPoolExecutor
         audio_chunks = await asyncio.to_thread(split_audio_into_chunks, audio_path)
+        
+        # Отменяем задачу обновления сообщения
+        if hasattr(progress_message, 'message_id') and progress_message.message_id in active_waiting_tasks:
+            active_waiting_tasks[progress_message.message_id].cancel()
+            del active_waiting_tasks[progress_message.message_id]
+        else:
+            fact_task.cancel()
         
         if not audio_chunks:
             await progress_message.edit_text("Мяу? Не удалось разделить аудио на части. *озадаченно моргает*")
             return
         
         # Транскрибируем каждую часть
-        await progress_message.edit_text(f"Мур-р! Начинаю транскрибацию аудио ({len(audio_chunks)} частей)... *возбужденно машет хвостом*")
+        base_text = f"Мур-р! Начинаю транскрибацию аудио ({len(audio_chunks)} частей)... *возбужденно машет хвостом*"
+        await progress_message.edit_text(base_text)
         
         full_transcript = ""
         full_transcript_with_timestamps = ""
@@ -804,9 +903,26 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
         time_step = 30  # шаг таймкодов в секундах
         
         for i, chunk_path in enumerate(audio_chunks):
-            await progress_message.edit_text(f"Мяу! Транскрибирую часть {i+1} из {len(audio_chunks)}... *старательно работает*")
+            base_text = f"Мяу! Транскрибирую часть {i+1} из {len(audio_chunks)}... *старательно работает*"
+            await progress_message.edit_text(base_text)
+            
+            # Запускаем новую задачу обновления сообщения с фактами
+            fact_task = asyncio.create_task(update_waiting_message_with_facts(progress_message, base_text))
+            
+            # Сохраняем задачу в словарь
+            if hasattr(progress_message, 'message_id'):
+                active_waiting_tasks[progress_message.message_id] = fact_task
+            
             # Выполняем эту тяжелую операцию в фоновом режиме через ThreadPoolExecutor
             result = await asyncio.to_thread(transcribe_audio_chunk, chunk_path)
+            
+            # Отменяем задачу обновления сообщения
+            if hasattr(progress_message, 'message_id') and progress_message.message_id in active_waiting_tasks:
+                active_waiting_tasks[progress_message.message_id].cancel()
+                del active_waiting_tasks[progress_message.message_id]
+            else:
+                fact_task.cancel()
+                
             transcript = result["text"]
             segments = result["segments"]
             
@@ -850,9 +966,25 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
             chunk_offset += 600
         
         # Форматируем транскрипцию с помощью ЛЛМ
-        await progress_message.edit_text("Мр-р-р! Улучшаю читаемость транскрипции с помощью ИИ... *сосредоточенно прищуривается*")
+        base_text = "Мр-р-р! Улучшаю читаемость транскрипции с помощью ИИ... *сосредоточенно прищуривается*"
+        await progress_message.edit_text(base_text)
+        
+        # Запускаем новую задачу обновления сообщения с фактами
+        fact_task = asyncio.create_task(update_waiting_message_with_facts(progress_message, base_text))
+        
+        # Сохраняем задачу в словарь
+        if hasattr(progress_message, 'message_id'):
+            active_waiting_tasks[progress_message.message_id] = fact_task
+        
         # Передаем транскрипцию с таймкодами для форматирования
         formatted_transcript = await format_transcript_with_llm(full_transcript_with_timestamps)
+        
+        # Отменяем задачу обновления сообщения
+        if hasattr(progress_message, 'message_id') and progress_message.message_id in active_waiting_tasks:
+            active_waiting_tasks[progress_message.message_id].cancel()
+            del active_waiting_tasks[progress_message.message_id]
+        else:
+            fact_task.cancel()
         
         # Сохраняем транскрипцию
         transcript_path = TRANSCRIPTIONS_DIR / f"{video_path.stem}.txt"
@@ -927,6 +1059,11 @@ async def process_video(video_path: Path, chat_id: int, progress_message, contex
         )
         
     except Exception as e:
+        # Отменяем все активные задачи обновления для этого сообщения
+        if hasattr(progress_message, 'message_id') and progress_message.message_id in active_waiting_tasks:
+            active_waiting_tasks[progress_message.message_id].cancel()
+            del active_waiting_tasks[progress_message.message_id]
+            
         logger.error(f"Мяу, произошла ошибка при обработке видео: {str(e)} *печально опускает ушки*")
         await progress_message.edit_text(f"Мяу-мяу... Произошла ошибка при обработке видео: {str(e)} *печально опускает ушки*")
 
