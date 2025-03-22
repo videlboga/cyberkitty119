@@ -77,7 +77,7 @@ python bot.py
 
 ## 🐾 Автор
 
-КиберКотёнок Transkribator
+Videlboga (и Cursor)
 
 ## 📜 Лицензия
 
