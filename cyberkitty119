@@ -1,1646 +1,705 @@
+#!/usr/bin/env python3
+
 import os
-import re
 import logging
-import tempfile
+import asyncio
 import subprocess
+import whisper
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-import requests
-import yt_dlp
-import gdown
-from pydub import AudioSegment
-from telethon.sync import TelegramClient
-import openai
-import asyncio
-import time
-import json
-import datetime
-from typing import Dict, List, Tuple, Optional, Union
-import random
-import mimetypes
-import string
-import warnings
-
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    filename='bot.log',
-    filemode='a'
+from telegram.ext import (
+    Application, ApplicationBuilder, CommandHandler, MessageHandler, 
+    CallbackQueryHandler, ContextTypes, filters
 )
-logger = logging.getLogger(__name__)
+import aiohttp
+import sys
 
 # Загрузка переменных окружения
 load_dotenv()
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-DEEPINFRA_API_KEY = os.getenv('DEEPINFRA_API_KEY')
-TELEGRAM_API_ID = int(os.getenv('TELEGRAM_API_ID'))
-TELEGRAM_API_HASH = os.getenv('TELEGRAM_API_HASH')
-TELEGRAM_PHONE_NUMBER = os.getenv('TELEGRAM_PHONE_NUMBER')
 
-# Добавляем конфигурацию для OpenRouter API
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
-# Если ключ не указан в .env, используем запасной вариант
-if not OPENROUTER_API_KEY:
-    logger.error("API ключ OpenRouter отсутствует! Пожалуйста, добавьте OPENROUTER_API_KEY в файл .env")
-    # Не задаем значение по умолчанию для безопасности
-    
-OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'deepseek/deepseek-chat:free')
-# Резервные модели, если основная недоступна
-OPENROUTER_FALLBACK_MODELS = [
-    'deepseek/deepseek-chat:free',
-    'anthropic/claude-3-haiku:free',
-    'anthropic/claude-instant-1.2',
-    'google/gemma-7b-it:free',
-    'mistralai/mistral-7b-instruct:free',
-    'meta-llama/llama-3-8b-instruct:free'
-]
+# Получаем настройки из .env файла
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELETHON_WORKER_CHAT_ID = int(os.getenv('TELETHON_WORKER_CHAT_ID', '0'))
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
+OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'anthropic/claude-3-opus:beta')
+DEEPINFRA_API_KEY = os.getenv('DEEPINFRA_API_KEY', '')
 
-# Создание директорий для хранения файлов
-VIDEOS_DIR = Path("videos")
-AUDIO_DIR = Path("audio")
-TRANSCRIPTIONS_DIR = Path("transcriptions")
+# Пути для файлов
+BASE_DIR = Path(__file__).resolve().parent
+VIDEOS_DIR = BASE_DIR / "videos"
+AUDIO_DIR = BASE_DIR / "audio"
+TRANSCRIPTIONS_DIR = BASE_DIR / "transcriptions"
 
+# Создаем директории, если они не существуют
 VIDEOS_DIR.mkdir(exist_ok=True)
 AUDIO_DIR.mkdir(exist_ok=True)
 TRANSCRIPTIONS_DIR.mkdir(exist_ok=True)
 
-# Функция для "кошачьего" стиля сообщений бота
-def cat_style(message: str) -> str:
-    """
-    Преобразует обычные сообщения в сообщения в стиле кибер-котика.
-    Добавляет кошачьи звуки и действия, чтобы сделать сообщения более игривыми.
-    """
-    # Базовые кошачьи звуки для добавления в начало сообщений
-    cat_sounds = ["Мяу! ", "Мур-мур! ", "Мяу-мяу! ", "Ня! ", "Мр-р-р! "]
-    
-    # Кошачьи действия для добавления в конец сообщений
-    cat_actions = [
-        " *виляет хвостиком*",
-        " *любопытно наклоняет голову*",
-        " *мурлычет*",
-        " *игриво покачивается*",
-        " *радостно машет хвостом*",
-        " *сосредоточенно шевелит усами*",
-        " *навостряет ушки*",
-        " *прыгает за мышкой*",
-        " *нетерпеливо постукивает лапкой*"
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("cyberkitty119.log")
     ]
-    
-    # Действия для негативных сообщений
-    negative_actions = [
-        " *грустно опускает ушки*",
-        " *печально смотрит*",
-        " *разочарованно опускает хвост*",
-        " *виновато прижимает ушки*",
-        " *нервно подергивает хвостиком*"
-    ]
-    
-    # Добавление кошачьего звука в начало (если его еще нет)
-    if not any(message.startswith(sound) for sound in cat_sounds):
-        # Выбираем негативный звук для сообщений об ошибках
-        if any(neg in message.lower() for neg in ["ошибка", "не удалось", "не найдено"]):
-            message = "Мяу... " + message
-        else:
-            # Для обычных сообщений выбираем случайный звук
-            message = random.choice(cat_sounds) + message
-    
-    # Добавление кошачьего действия в конец (если его еще нет)
-    if not any(action in message for action in cat_actions + negative_actions):
-        if any(neg in message.lower() for neg in ["ошибка", "не удалось", "не найдено"]):
-            message += random.choice(negative_actions)
-        else:
-            message += random.choice(cat_actions)
-    
-    # Замена нейтральных слов на более "кошачьи"
-    message = message.replace("пожалуйста", "пожалуйста, мой хороший")
-    message = message.replace("Пожалуйста", "Пожалуйста, мой хороший")
-    message = message.replace("Обработка", "Кото-обработка")
-    message = message.replace("обработка", "кото-обработка")
-    
-    # Добавление упоминаний котика
-    if "котик" not in message.lower() and "котёнок" not in message.lower():
-        if random.random() < 0.3:  # 30% шанс добавить упоминание котика
-            message = message.replace("Я ", "Я, кибер-котик, ")
-            message = message.replace("я ", "я, кибер-котик, ")
-    
-    return message
+)
+logger = logging.getLogger(__name__)
 
-# Инициализация клиента Telegram для загрузки больших файлов
-client = TelegramClient('transkribator_user', TELEGRAM_API_ID, TELEGRAM_API_HASH)
+# Константы
+MAX_MESSAGE_LENGTH = 4096  # Максимальная длина сообщения в Telegram
 
-# ID чата для пересылки видео для загрузки через Telethon
-# Создайте канал и добавьте туда бота и Telethon-аккаунт
-# Укажите ID этого канала здесь (начинается с -100...)
-RELAY_CHAT_ID = -1002616815315  # ID релейного чата (супергруппа)
+# Глобальный словарь для хранения транскрипций пользователей
+user_transcriptions = {}
 
-# Хранилище для отслеживания пересланных видео
-# ключ - ID сообщения в RELAY_CHAT_ID, значение - (chat_id, message_id) исходного пользователя
-forwarded_videos = {}
-
-# Добавляем словарь для хранения последних транскрипций пользователей
-user_transcriptions = {}  # {user_id: {'raw': '...', 'formatted': '...', 'path': '...', 'brief_summary': '...', 'detailed_summary': '...'}}
-
-# Словарь для хранения активных задач обновления сообщений
-active_waiting_tasks = {}
-
-# Список случайных фактов о кошках
-CAT_FACTS = [
-    "Кошки проводят 70% своей жизни во сне. Мур-мур, похоже на мой идеальный график!",
-    "Кошки могут прыгать в 5 раз выше своего роста. Киберкотики прыгают ещё выше!",
-    "Мяу! Знаешь ли ты, что у кошек 32 мышцы в каждом ухе?",
-    "Мурр... Кошачье мурлыканье способствует заживлению костей и снижает стресс у хозяина!",
-    "Ня! Кошки видят в 6 раз лучше людей в темноте, как настоящие ночные охотники!",
-    "Кошки могут слышать ультразвук, который недоступен человеческому уху. *навостряет ушки*",
-    "Мяу! Кошки потеют только через подушечки лап!",
-    "Кошки используют усы (вибриссы) для измерения ширины проходов. *гордо шевелит усами*",
-    "Мурлык! Отпечатки носа у кошек так же уникальны, как отпечатки пальцев у людей!",
-    "Ня! Домашние кошки бегают со скоростью до 50 км/ч на короткие дистанции!",
-    "Мяу! Кошки могут менять мурлыканье, чтобы манипулировать своими хозяевами. *невинно моргает*",
-    "Кошки-правши встречаются чаще, чем кошки-левши, как и у людей! *показывает правую лапку*",
-    "Мурр... Знаешь, что древние египтяне поклонялись богине-кошке Бастет?",
-    "Ня! Кошки могут поворачивать уши на 180 градусов и слышать даже шорох за 3 метра!",
-    "Мяу! У кошек есть особые отражающие клетки в глазах, поэтому они светятся в темноте!",
-    "Кошки редко мяукают друг с другом, этот звук зарезервирован для общения с людьми!",
-    "Мурр... Кошки распознают голос своего хозяина среди десятков других голосов!",
-    "Средняя кошка проводит 30% времени бодрствования, вылизывая себя. *демонстративно умывается*",
-    "Мяу! Кошки обладают невероятным обонянием — в 14 раз лучше, чем у людей!",
-    "Киски могут развивать скорость до 50 км/час при спринте. *изображает гоночный автомобиль*",
-    "Ня! Коты видят мир в основном в синих и серых тонах. Это почти киберпанк!",
-    "Мурлык! Разноцветные глаза у кошек называются гетерохромией. Прямо как у аниме-персонажей!",
-    "Мяу! Самой старой кошке в мире было 38 лет, что в человеческих годах примерно 168!",
-    "Кошки делают около 100 различных звуков, а собаки только около 10. *гордо мурлычет*",
-    "Ня! В Японии есть профессиональные кошки-терапевты, которые помогают снимать стресс!",
-    "Мурлык! Кошачье сердце бьётся в два раза быстрее, чем человеческое. *быстро-быстро мяукает*",
-    "У кошек есть 18 пальцев: по 5 на передних лапах и по 4 на задних! *показывает лапки*",
-    "Мяу! Кошки спят около 16 часов в день. Я тоже хотел бы такой график работы!",
-    "У кошек интеллект как у 2-3 летнего ребёнка! Но мы, киберкотики, намного умнее... *подмигивает*",
-    "Ня! Кошки могут вращать своими ушами на 180 градусов!",
-    "Котики могут издавать более 100 различных вокальных звуков, в то время как собаки — только около 10!",
-    "Мурр... Полосатый окрас домашних кошек почти не встречается у диких кошачьих!",
-    "Мяу! Кошки могут пить морскую воду благодаря особым почкам!",
-    "Ная! У кошек отсутствуют вкусовые рецепторы для сладкого. Поэтому им всё равно, сколько сахара в твоём кофе!",
-    "Киберкотята знают, что у настоящих кошек 230 костей, что на 24 больше, чем у человека! *гордо виляет хвостом*"
-]
-
-# Функция для периодического обновления сообщения ожидания с фактами
-async def update_waiting_message_with_facts(progress_message, base_text):
-    """Обновляет сообщение о ходе выполнения, добавляя случайный факт о кошках каждые 40 секунд"""
+# Функции для работы с видео и аудио
+async def extract_audio_from_video(video_path, audio_path):
+    """Извлекает аудио из видео с использованием ffmpeg в фоновом режиме."""
     try:
-        # Сразу показываем первый факт, а не ждем 40 секунд
-        cat_fact = random.choice(CAT_FACTS)
-        message_with_fact = f"{base_text}\n\n*Интересный факт*: {cat_fact}"
-        await progress_message.edit_text(message_with_fact)
+        # Создаем директорию для аудио, если она не существует
+        audio_path.parent.mkdir(exist_ok=True)
         
-        # Далее продолжаем обновлять каждые 40 секунд
-        while True:
-            await asyncio.sleep(40)
-            cat_fact = random.choice(CAT_FACTS)
-            message_with_fact = f"{base_text}\n\n*Интересный факт*: {cat_fact}"
-            await progress_message.edit_text(message_with_fact)
-    except asyncio.CancelledError:
-        # Задача отменена, выходим из цикла
-        pass
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении сообщения ожидания: {str(e)}")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отправляет приветственное сообщение при команде /start."""
-    await update.message.reply_text(
-        'Мяу! Привет! Я кибер-котёнок Транскрибаторчик! *мурчит* Отправь мне видео, перешли сообщение с видео или отправь ссылку на видео '
-        '(YouTube, Google Drive), и я создам для тебя текстовую транскрипцию. Буду рад помочь! *машет хвостиком*'
-    )
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отправляет справочное сообщение при команде /help."""
-    await update.message.reply_text(
-        'Мяу-мяу! Я могу транскрибировать видео в текст. Вот что я умею делать своими мягкими лапками:\n\n'
-        '1. Получать видео через загрузку файла в Telegram *мурлыкает*\n'
-        '2. Получать видео через пересланное сообщение с видео *игриво покачивается*\n'
-        '3. Скачивать видео по ссылке (YouTube, Google Drive) *прыгает за мышкой*\n\n'
-        'Просто отправь мне видео любым из этих способов, и я верну тебе текстовую транскрипцию '
-        'с таймкодами в формате [ЧЧ:ММ:СС] в начале каждого абзаца! Мяу!\n\n'
-        'Дополнительные команды:\n'
-        '/rawtranscript - получить необработанную версию последней транскрипции с таймкодами *любопытно наклоняет голову*'
-    )
-
-async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отправляет пользователю сырую (необработанную) версию последней транскрипции."""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_transcriptions or 'raw' not in user_transcriptions[user_id]:
-        await update.message.reply_text(
-            'Мяу? У меня нет сохраненных транскрипций для тебя. *грустно опускает ушки* Отправь мне видео для обработки, и я оживлюсь!'
-        )
-        return
-    
-    transcript_data = user_transcriptions[user_id]
-    raw_transcript = transcript_data['raw']
-    
-    # Если текст слишком длинный, отправляем файлом
-    if len(raw_transcript) > 4000:
-        # Получаем путь к файлу или создаем временный файл
-        if 'raw_path' in transcript_data and Path(transcript_data['raw_path']).exists():
-            file_path = transcript_data['raw_path']
-        else:
-            # Создаем временный файл
-            file_path = TRANSCRIPTIONS_DIR / f"raw_transcript_{user_id}.txt"
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(raw_transcript)
+        logger.info(f"Извлечение аудио из видео: {video_path} в {audio_path}")
+        
+        # Используем ffmpeg в фоновом режиме
+        logger.info("Запускаю ffmpeg в фоновом режиме")
+        
+        # Формируем команду для запуска в фоне
+        cmd = f'ffmpeg -i "{str(video_path)}" -vn -acodec pcm_s16le -ar 44100 -ac 2 -y "{str(audio_path)}" </dev/null >/dev/null 2>&1 &'
+        
+        # Запускаем ffmpeg в фоне
+        os.system(cmd)
+        
+        # Ждем некоторое время, чтобы процесс запустился
+        await asyncio.sleep(0.5)
+        
+        # Ждем некоторое разумное время для завершения процесса
+        max_wait_time = 60  # максимальное время ожидания в секундах
+        check_interval = 0.5  # интервал проверки в секундах
+        
+        elapsed_time = 0
+        while elapsed_time < max_wait_time:
+            if audio_path.exists() and audio_path.stat().st_size > 0:
+                # Файл создан и не пустой
+                logger.info(f"✅ Аудио успешно извлечено из видео, размер: {audio_path.stat().st_size} байт")
+                return True
             
-        await update.message.reply_document(
-            document=open(file_path, "rb"),
-            filename=f"Сырая_транскрипция.txt",
-            caption="Мур-мур! Вот необработанная версия транскрипции, прямо из моих кибер-лапок! *нервно виляет хвостом*"
-        )
-    else:
-        await update.message.reply_text(
-            f"Мяу! Вот сырая (необработанная) версия транскрипции, прямо с моей кошачьей кухни:\n\n{raw_transcript}"
-        )
-
-def is_youtube_url(url: str) -> bool:
-    """Проверяет, является ли ссылка YouTube ссылкой."""
-    youtube_regex = r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})'
-    return bool(re.match(youtube_regex, url))
-
-def is_gdrive_url(url: str) -> bool:
-    """Проверяет, является ли ссылка Google Drive ссылкой."""
-    gdrive_regex = r'https://drive\.google\.com/file/d/([^/]+)/view|https://drive\.google\.com/open\?id=([^/]+)'
-    return bool(re.match(gdrive_regex, url))
-
-def download_video_from_youtube(url: str, output_path: Path) -> Path:
-    """Скачивает видео с YouTube."""
-    ydl_opts = {
-        'format': 'best',
-        'outtmpl': str(output_path),
-        'quiet': True,
-    }
+            await asyncio.sleep(check_interval)
+            elapsed_time += check_interval
+            
+            if elapsed_time % 5 == 0:
+                logger.debug(f"Ожидание создания файла: {elapsed_time} секунд...")
+        
+        # Если мы здесь, значит время ожидания истекло
+        logger.error(f"❌ Время ожидания создания аудиофайла истекло ({max_wait_time} секунд)")
+        return False
     
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-    
-    return output_path
+    except Exception as e:
+        logger.error(f"❌ Ошибка при извлечении аудио из видео: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
-def extract_file_id_from_gdrive(url: str) -> str:
-    """Извлекает ID файла из ссылки Google Drive."""
-    match1 = re.search(r'https://drive\.google\.com/file/d/([^/]+)/view', url)
-    match2 = re.search(r'https://drive\.google\.com/open\?id=([^/]+)', url)
-    
-    if match1:
-        return match1.group(1)
-    elif match2:
-        return match2.group(1)
-    else:
-        return None
-
-def download_video_from_gdrive(url: str, output_path: Path) -> Path:
-    """Скачивает видео с Google Drive."""
-    file_id = extract_file_id_from_gdrive(url)
-    if file_id:
-        gdown.download(f"https://drive.google.com/uc?id={file_id}", str(output_path), quiet=False)
-        return output_path
-    return None
-
-async def download_telegram_video(message_id: int, chat_id: int, user_id: int) -> Path:
-    """Скачивает видео из Telegram с помощью telethon."""
+async def transcribe_audio(audio_path, model_name="base"):
+    """Транскрибирует аудио с помощью Whisper."""
     try:
-        if not client.is_connected():
-            await client.connect()
-            if not await client.is_user_authorized():
-                await client.send_code_request(TELEGRAM_PHONE_NUMBER)
-                logger.info("Пожалуйста, авторизуйтесь в телефоне с помощью кода подтверждения")
-                code = input('Введите код подтверждения: ')
-                await client.sign_in(TELEGRAM_PHONE_NUMBER, code)
+        logger.info(f"Загрузка модели Whisper '{model_name}'...")
+        model = whisper.load_model(model_name)
         
-        output_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
+        logger.info(f"Транскрибация аудиофайла: {audio_path}")
+        result = model.transcribe(str(audio_path))
         
-        # Пытаемся получить сообщение разными способами
-        message = None
+        logger.info(f"Транскрипция завершена, получено {len(result['text'])} символов")
+        return result["text"]
         
-        # Сначала пробуем прямой метод
-        try:
-            message = await client.get_messages(chat_id, ids=message_id)
-        except Exception as e:
-            logger.error(f"Ошибка при прямом получении сообщения: {e}")
-            
-        # Если не получилось, пробуем получить последние сообщения и найти нужное
-        if message is None or not hasattr(message, 'media') or message.media is None:
-            try:
-                messages = await client.get_messages(entity=chat_id, limit=20)  # Получаем последние 20 сообщений
-                
-                for msg in messages:
-                    if hasattr(msg, 'id') and msg.id == message_id and hasattr(msg, 'media') and msg.media is not None:
-                        message = msg
-                        break
-            except Exception as e:
-                logger.error(f"Ошибка при получении списка сообщений: {e}")
-        
-        # Проверяем, нашли ли мы сообщение с медиа
-        if message is None or not hasattr(message, 'media') or message.media is None:
-            logger.error(f"Не удалось найти сообщение с ID {message_id} в чате {chat_id} или в нем нет медиа")
-            return None
-        
-        # Скачиваем видео
-        await client.download_media(message.media, file=str(output_path))
-        
-        # Проверяем, что файл существует и не пустой
-        if output_path.exists() and output_path.stat().st_size > 0:
-            return output_path
-        else:
-            logger.error("Файл был скачан, но оказался пустым или не существует")
-            return None
-            
     except Exception as e:
-        logger.error(f"Ошибка при скачивании видео из Telegram: {e}")
+        logger.error(f"Ошибка при транскрибации аудио: {e}")
         return None
-
-def extract_audio_from_video(video_path: Path) -> Path:
-    """Извлекает аудио из видео файла, сжимает его и сохраняет в формате WAV."""
-    audio_path = AUDIO_DIR / f"{video_path.stem}.wav"
-    
-    # Проверяем, что видео файл существует
-    if not video_path.exists():
-        logger.error(f"Видео файл не существует: {video_path}")
-        return None
-        
-    # Проверяем, что видео файл не пустой
-    if video_path.stat().st_size == 0:
-        logger.error(f"Видео файл пустой: {video_path}")
-        return None
-    
-    logger.info(f"Извлекаю аудио из видео {video_path} (размер: {video_path.stat().st_size} байт)")
-    
-    # Используем subprocess для вызова ffmpeg
-    try:
-        result = subprocess.run([
-            'ffmpeg', '-i', str(video_path), 
-            '-vn', '-acodec', 'pcm_s16le', 
-            '-ar', '16000', '-ac', '1', 
-            str(audio_path)
-        ], check=True, capture_output=True)
-        
-        logger.info(f"FFmpeg успешно выполнен, код возврата: {result.returncode}")
-        
-        # Проверяем, что аудио файл создан и не пустой
-        if audio_path.exists() and audio_path.stat().st_size > 0:
-            logger.info(f"Аудио файл успешно создан: {audio_path} (размер: {audio_path.stat().st_size} байт)")
-            return audio_path
-        else:
-            logger.error(f"Аудио файл не создан или пустой: {audio_path}")
-            return None
-            
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Ошибка при извлечении аудио: {e}")
-        logger.error(f"STDOUT: {e.stdout.decode()}")
-        logger.error(f"STDERR: {e.stderr.decode()}")
-        return None
-    except Exception as e:
-        logger.error(f"Непредвиденная ошибка при извлечении аудио: {e}")
-        return None
-
-def format_timestamp(seconds: float) -> str:
-    """Форматирует время в секундах в формат [ЧЧ:ММ:СС]."""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    seconds = int(seconds % 60)
-    return f"[{hours:02d}:{minutes:02d}:{seconds:02d}]"
-
-def split_audio_into_chunks(audio_path: Path, chunk_size_ms=600000) -> list:
-    """Разделяет аудио файл на части по 10 минут."""
-    try:
-        audio = AudioSegment.from_file(audio_path)
-        
-        # Разделяем аудио на части по 10 минут
-        chunks = []
-        for i in range(0, len(audio), chunk_size_ms):
-            chunk = audio[i:i + chunk_size_ms]
-            chunk_path = AUDIO_DIR / f"{audio_path.stem}_chunk_{i//chunk_size_ms}.wav"
-            chunk.export(chunk_path, format="wav")
-            chunks.append(chunk_path)
-        
-        return chunks
-    except Exception as e:
-        logger.error(f"Ошибка при разделении аудио на части: {e}")
-        return []
-
-def transcribe_audio_chunk(chunk_path: Path) -> dict:
-    """Отправляет аудио чанк в DeepInfra для транскрибации с таймкодами."""
-    url = "https://api.deepinfra.com/v1/openai/audio/transcriptions"
-    
-    headers = {
-        "Authorization": f"Bearer {DEEPINFRA_API_KEY}"
-    }
-    
-    try:
-        # Проверяем, что аудио файл существует и не пустой
-        if not chunk_path.exists():
-            logger.error(f"Аудио файл не существует: {chunk_path}")
-            return {"text": "", "segments": []}
-            
-        if chunk_path.stat().st_size == 0:
-            logger.error(f"Аудио файл пустой: {chunk_path}")
-            return {"text": "", "segments": []}
-            
-        logger.info(f"Отправляю файл {chunk_path} размером {chunk_path.stat().st_size} байт на транскрибацию")
-        
-        with open(chunk_path, "rb") as audio_file:
-            files = {"file": (chunk_path.name, audio_file, "audio/wav")}
-            data = {
-                "model": "openai/whisper-large-v3-turbo",
-                "response_format": "verbose_json",
-                "timestamp_granularities[]": "segment"
-            }
-            logger.info(f"Отправляю запрос в DeepInfra API: {url} с данными {data}")
-            response = requests.post(url, headers=headers, files=files, data=data)
-        
-        if response.status_code == 200:
-            result = response.json()
-            text = result.get("text", "")
-            segments = result.get("segments", [])
-            logger.info(f"Получена транскрипция длиной {len(text)} символов с {len(segments)} сегментами")
-            return {"text": text, "segments": segments}
-        else:
-            logger.error(f"Ошибка при транскрибации: {response.status_code}, {response.text}")
-            return {"text": "", "segments": []}
-    except Exception as e:
-        logger.error(f"Исключение при транскрибации: {e}")
-        return {"text": "", "segments": []}
 
 async def format_transcript_with_llm(raw_transcript: str) -> str:
-    """
-    Форматирует сырую транскрипцию с помощью ЛЛМ через OpenRouter API.
-    
-    Преобразует сырой текст в более читаемый формат, добавляя пунктуацию и
-    разделяя на абзацы, сохраняя при этом исходное содержание.
-    
-    Args:
-        raw_transcript: Исходная сырая транскрипция от Whisper.
-        
-    Returns:
-        Отформатированная транскрипция.
-    """
+    """Форматирует транскрипцию с использованием языковой модели."""
     try:
-        # Создаем фиктивный клиент для совместимости с другими функциями
-        client = None
-        
-        # Если транскрипция слишком большая, разделим ее на части
-        max_chunk_size = 15000  # Максимальный размер части в символах
-        if len(raw_transcript) > max_chunk_size:
-            logger.info(f"Транскрипция слишком большая ({len(raw_transcript)} символов), разделяю на части")
-            chunks = [raw_transcript[i:i+max_chunk_size] for i in range(0, len(raw_transcript), max_chunk_size)]
-            formatted_chunks = []
+        # Проверяем, не пустая ли транскрипция
+        if not raw_transcript or len(raw_transcript.strip()) < 10:
+            logger.warning("Транскрипция слишком короткая для форматирования")
+            return raw_transcript
             
-            for i, chunk in enumerate(chunks):
-                logger.info(f"Обрабатываю часть {i+1} из {len(chunks)}")
-                formatted_chunk = await format_transcript_chunk(client, chunk)
-                formatted_chunks.append(formatted_chunk)
-                
-            return "\n\n".join(formatted_chunks)
-        else:
-            return await format_transcript_chunk(client, raw_transcript)
+        # Используем OpenRouter API для форматирования
+        if OPENROUTER_API_KEY:
+            formatted = await format_transcript_with_openrouter(raw_transcript)
+            if formatted:
+                return formatted
+        
+        # Формальное форматирование, если не удалось использовать LLM
+        return raw_transcript
             
     except Exception as e:
         logger.error(f"Ошибка при форматировании транскрипции: {e}")
-        # В случае ошибки возвращаем исходный текст
         return raw_transcript
 
-async def format_transcript_chunk(client, chunk: str) -> str:
-    """Обрабатывает один фрагмент транскрипции через OpenRouter API."""
-    try:
-        # Создаем запрос к модели
-        prompt = f"""Твоя задача - отформатировать сырую транскрипцию видео, сделав её более читаемой. Требования:
-1. НЕ МЕНЯЙ содержание и смысл.
-2. ОБЯЗАТЕЛЬНО СОХРАНИ все таймкоды в формате [ЧЧ:ММ:СС] в начале абзацев.
-3. Добавь правильную пунктуацию (точки, запятые, тире, знаки вопроса).
-4. Раздели текст на логические абзацы там, где это уместно.
-5. Исправь очевидные ошибки распознавания речи.
-6. Убери лишние повторения слов и слова-паразиты (если это не меняет смысл).
-7. Форматируй прямую речь с помощью кавычек или тире.
-8. Каждый абзац должен начинаться с таймкода в формате [ЧЧ:ММ:СС].
-
-Вот сырая транскрипция, которую нужно отформатировать:
-
-{chunk}"""
-
-        # Проверяем API ключ - он должен начинаться с "sk-or-"
-        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "" or not OPENROUTER_API_KEY.startswith("sk-or-"):
-            logger.error(f"API ключ OpenRouter отсутствует или имеет неверный формат: {OPENROUTER_API_KEY[:5]}...")
-            return "Произошла ошибка при форматировании транскрипции: отсутствует или неверный API ключ. Проверьте настройки бота."
-
-        # Вывод в лог информации о ключе (без показа полного значения) и его длине
-        logger.info(f"Используется API ключ: {OPENROUTER_API_KEY[:8]}...{OPENROUTER_API_KEY[-4:]} (длина: {len(OPENROUTER_API_KEY)})")
+async def format_transcript_with_openrouter(raw_transcript: str) -> str:
+    """Форматирует сырую транскрипцию с помощью OpenRouter API."""
+    if not OPENROUTER_API_KEY or not OPENROUTER_MODEL:
+        logger.warning("OpenRouter API ключ или модель не настроены")
+        return None
         
-        # Обновляем API ключ в переменной окружения для текущего процесса
-        os.environ['OPENROUTER_API_KEY'] = OPENROUTER_API_KEY
-        logger.info(f"Переменная окружения OPENROUTER_API_KEY обновлена: {os.getenv('OPENROUTER_API_KEY')[:8]}...")
+    try:
+        logger.info(f"Форматирование транскрипции с помощью OpenRouter API, модель: {OPENROUTER_MODEL}")
+        
+        # Создаем промпт для модели
+        system_prompt = """Ты помощник по форматированию сырых транскрипций. 
+        Твоя задача - превратить сырую необработанную транскрипцию аудио в читабельный текст. 
+        Исправь ошибки, добавь пунктуацию, разбей на предложения и абзацы, 
+        где это уместно. Не добавляй собственные мысли или содержание, 
+        которого нет в исходном тексте."""
+        
+        user_prompt = f"""Вот сырая транскрипция аудио. Пожалуйста, отформатируй ее в читабельный текст:
 
-        # Создаем запрос строго по документации OpenRouter
+{raw_transcript}
+
+Правила форматирования:
+1. Исправь ошибки распознавания, где они очевидны
+2. Добавь правильную пунктуацию
+3. Разбей текст на логические предложения и абзацы
+4. Удали повторы и заполнители речи (эээ, ммм, и т.д.)
+5. Возвращай только отформатированный текст без дополнительных комментариев"""
+        
+        # Формируем запрос к API
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/videlboga/cyberkitty119",
-            "X-Title": "Transkribator Bot"
+            "Content-Type": "application/json"
         }
         
         payload = {
             "model": OPENROUTER_MODEL,
             "messages": [
-                {"role": "system", "content": "Ты эксперт по обработке и форматированию транскрипций видео. Твоя задача - сделать сырую транскрипцию более читаемой, сохраняя при этом исходное содержание и все таймкоды в формате [ЧЧ:ММ:СС]."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ],
-            "temperature": 0.3,
+            "temperature": 0.1,  # Низкая температура для более детерминированных результатов
             "max_tokens": 4096
         }
         
-        # Выводим детальную информацию о запросе для диагностики
-        logger.info(f"URL запроса: https://openrouter.ai/api/v1/chat/completions")
-        logger.info(f"Модель: {OPENROUTER_MODEL}")
-        logger.info(f"Первые 10 символов заголовка Authorization: {headers['Authorization'][:15]}...")
-        
-        # Выполняем запрос через requests, точно по документации
-        import json
-        logger.info(f"Выполняю прямой запрос к OpenRouter API")
-        
-        # Вариант 1: используя json параметр (рекомендуется для requests)
-        response = await asyncio.to_thread(
-            requests.post,
+        # Отправляем запрос
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers=headers,
             json=payload
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    formatted_text = data["choices"][0]["message"]["content"]
+                    logger.info("Транскрипция успешно отформатирована с помощью OpenRouter API")
+                    return formatted_text
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Ошибка от OpenRouter API: {response.status}, {error_text}")
+                    return None
+        
+    except Exception as e:
+        logger.error(f"Ошибка при форматировании транскрипции через OpenRouter API: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
+async def process_video_file(video_path, chat_id, message_id, context, status_message=None):
+    """Обрабатывает видео из файла, извлекает аудио и выполняет транскрибацию.
+    Эта версия не требует объекта Update и может быть использована напрямую с файлами."""
+    
+    try:
+        # Пути к файлам
+        audio_path = AUDIO_DIR / f"telegram_video_{message_id}.wav"
+        
+        # Проверяем наличие видео
+        if not video_path.exists():
+            if status_message:
+                await status_message.edit_text(
+                    "Мяу! Видеофайл не найден. Возможно, возникла ошибка при скачивании. *грустно машет хвостом*"
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="Мяу! Видеофайл не найден. Возможно, возникла ошибка при скачивании. *грустно машет хвостом*"
+                )
+                return
+        
+        # Создаем статусное сообщение, если его еще нет
+        if not status_message:
+            status_message = await context.bot.send_message(
+                chat_id=chat_id,
+                text="Мур-мур! Начинаю обработку видео... *сосредоточенно смотрит на экран*"
+            )
+        
+        # Извлекаем аудио из видео
+        await status_message.edit_text(
+            "Извлечение аудио из видео... *нетерпеливо перебирает лапками*"
         )
         
-        # Если первый вариант не сработал, пробуем второй вариант как в документации
-        if response.status_code == 401:
-            logger.warning("Первый вариант запроса вернул 401, пробую альтернативный метод с data=json.dumps()")
-            response = await asyncio.to_thread(
-                requests.post,
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                data=json.dumps(payload)
+        audio_extracted = await extract_audio_from_video(video_path, audio_path)
+        if not audio_extracted:
+            await status_message.edit_text(
+                "Не удалось извлечь аудио из видео. *грустно вздыхает*"
             )
-        
-        # Проверяем ответ с подробным логированием
-        logger.info(f"Код ответа API: {response.status_code}")
-        logger.info(f"Заголовки ответа: {response.headers}")
-        logger.info(f"Текст ответа: {response.text[:200]}...")
-        
-        if response.status_code == 200:
-            result = response.json()
-            formatted_text = result['choices'][0]['message']['content']
-            logger.info(f"Транскрипция успешно отформатирована (было {len(chunk)} символов, стало {len(formatted_text)} символов)")
-            return formatted_text
-        else:
-            # Более детальная информация об ошибке
-            error_details = f"Код: {response.status_code}, Ответ: {response.text}"
-            logger.error(f"API вернуло ошибку: {error_details}")
-            # В случае ошибки возвращаем исходный текст
-            logger.info("Возвращаю исходный текст без форматирования")
-            return chunk
-        
-    except Exception as e:
-        logger.error(f"Ошибка при обработке части транскрипции: {e}", exc_info=True)
-        # В случае ошибки возвращаем исходный текст
-        return chunk
-
-async def process_video_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает сообщение с видео."""
-    chat_id = update.effective_chat.id
-    message = update.message
-    user_id = update.effective_user.id
-    message_id = update.message.message_id
-    
-    # Отправляем сообщение о начале обработки
-    progress_message = await message.reply_text("Мяу! Начинаю обработку видео. *навостряет ушки* Это может занять некоторое время, буду трудиться как настоящий кибер-котик!")
-    
-    try:
-        # Получаем информацию о видео
-        video_file = message.video or message.document
-        video_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
-        
-        # Проверяем размер файла
-        if video_file.file_size and video_file.file_size > 19 * 1024 * 1024:  # Если файл больше 19 МБ
-            await progress_message.edit_text("Файл больше 20 МБ, использую альтернативный метод скачивания...")
-            
-            # Пересылаем видео в промежуточный чат для скачивания через Telethon
-            await progress_message.edit_text("Мур-мур... Пересылаю видео для обработки... *сосредоточенно двигает хвостом*")
-            
-            # Добавляем метаданные для идентификации пользователя
-            caption = f"#user_{chat_id}_{message_id}"
-            
-            try:
-                # Пересылаем видео в специальный чат
-                forwarded_msg = await context.bot.copy_message(
-                    chat_id=RELAY_CHAT_ID,
-                    from_chat_id=chat_id,
-                    message_id=message_id,
-                    caption=caption
-                )
-                
-                # Запоминаем связь между пересланным сообщением и исходным запросом
-                forwarded_videos[forwarded_msg.message_id] = (chat_id, message_id, progress_message.message_id)
-                
-                await progress_message.edit_text("Видео отправлено на обработку. Мяу! Пожалуйста, подожди, пока я поработаю своими цифровыми лапками...")
-                
-                # Теперь скачиваем через Telethon из промежуточного чата
-                if not client.is_connected():
-                    await client.connect()
-                    if not await client.is_user_authorized():
-                        await client.send_code_request(TELEGRAM_PHONE_NUMBER)
-                        logger.info("Пожалуйста, авторизуйтесь в телефоне с помощью кода подтверждения")
-                        code = input('Введите код подтверждения: ')
-                        await client.sign_in(TELEGRAM_PHONE_NUMBER, code)
-                
-                # Получаем сообщение из релейного чата
-                logger.info(f"Пытаюсь получить сообщение {forwarded_msg.message_id} из чата {RELAY_CHAT_ID}")
-                await asyncio.sleep(2)  # Добавляем небольшую задержку, чтобы сообщение гарантированно успело дойти
-                
-                telethon_message = None
-                try:
-                    telethon_message = await client.get_messages(RELAY_CHAT_ID, ids=forwarded_msg.message_id)
-                    logger.info(f"Получено сообщение из релейного чата: {telethon_message}")
-                except Exception as e:
-                    logger.error(f"Ошибка при получении сообщения из релейного чата: {e}")
-                
-                # Если не смогли получить сообщение, попробуем найти его среди последних сообщений
-                if telethon_message is None or not hasattr(telethon_message, 'media') or telethon_message.media is None:
-                    logger.info("Пытаюсь найти сообщение среди последних сообщений в релейном чате")
-                    
-                    try:
-                        # Получаем последние сообщения и ищем нужное по ID
-                        messages = await client.get_messages(RELAY_CHAT_ID, limit=20)
-                        
-                        for msg in messages:
-                            logger.info(f"Проверяю сообщение ID {msg.id}")
-                            if msg.id == forwarded_msg.message_id:
-                                telethon_message = msg
-                                logger.info(f"Найдено сообщение: {telethon_message}")
-                                break
-                    except Exception as e:
-                        logger.error(f"Ошибка при поиске сообщения среди последних: {e}")
-                
-                if telethon_message and hasattr(telethon_message, 'media') and telethon_message.media:
-                    await progress_message.edit_text("Скачиваю видео через Telethon... *старательно перебирает лапками*")
-                    logger.info(f"Начинаю скачивание медиа из сообщения {telethon_message.id}")
-                    
-                    try:
-                        await client.download_media(telethon_message.media, file=str(video_path))
-                        logger.info(f"Медиа файл скачан в {video_path}")
-                    except Exception as download_error:
-                        logger.error(f"Ошибка при скачивании медиа: {download_error}")
-                        raise download_error
-                    
-                    if video_path.exists() and video_path.stat().st_size > 0:
-                        logger.info(f"Мур-р-р! Видео успешно загружено, начинаю обработку... *виляет хвостиком от радости*")
-                        await progress_message.edit_text("Видео успешно загружено, начинаю обработку...")
-                        await process_video(video_path, chat_id, progress_message, context)
-                        return
-                    else:
-                        logger.error(f"Мяу... *печально* Не удалось скачать видео. Файл пустой или отсутствует.")
-                        await progress_message.edit_text("Не удалось скачать видео. Файл пустой или отсутствует.")
-                else:
-                    logger.error(f"Мяу-мяу? Не удалось найти пересланное видео через Telethon. *озадаченно наклоняет голову* Попробуй отправить его напрямую или через ссылку.")
-                    await progress_message.edit_text("Не удалось найти пересланное видео через Telethon. Попробуйте отправить его напрямую или через ссылку.")
-            except Exception as relay_error:
-                logger.error(f"Ошибка при пересылке/загрузке видео: {relay_error}")
-                await progress_message.edit_text(f"Ой, царапка! Ошибка при пересылке/загрузке видео: {str(relay_error)}\n\n"
-                                               "Попробуй отправить ссылку на YouTube или Google Drive. *слегка нервно умывается*")
-                return
-        else:
-            # Для небольших файлов используем стандартный API
-            await progress_message.edit_text("Скачиваю видео через Telegram API... *целеустремленно смотрит на экран*")
-            try:
-                video_file_obj = await context.bot.get_file(video_file.file_id)
-                await video_file_obj.download_to_drive(str(video_path))
-                
-                if video_path.exists() and video_path.stat().st_size > 0:
-                    await process_video(video_path, chat_id, progress_message, context)
-                else:
-                    logger.error(f"Мяу... *грустно* Не удалось скачать видео. Файл пустой или отсутствует.")
-                    await progress_message.edit_text("Не удалось скачать видео. Файл пустой или отсутствует.")
-            except Exception as api_error:
-                logger.error(f"Ошибка при использовании Bot API: {api_error}")
-                await progress_message.edit_text(f"Не удалось загрузить видео: {str(api_error)} *смущенно моет лапку*")
-    except Exception as general_error:
-        logger.error(f"Мяу, произошла ошибка при обработке видео: {str(general_error)} *прижимает ушки*")
-        await progress_message.edit_text(f"Мяу, произошла ошибка при обработке видео: {str(general_error)} *прижимает ушки*")
-
-async def process_forwarded_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает пересланное сообщение с видео."""
-    chat_id = update.effective_chat.id
-    message = update.message
-    
-    # Проверяем, что это пересланное сообщение
-    forward_info = getattr(message, 'forward_origin', None) or getattr(message, 'forward_from_chat', None)
-    if not forward_info:
-        await message.reply_text("Мяу? Это не пересланное сообщение или в нем нет видео. *недоуменно моргает*")
         return
     
-    # Отправляем сообщение о начале обработки
-    progress_message = await message.reply_text("Мур-мур! Начинаю обработку пересланного видео. *радостно машет хвостом* Это может занять некоторое время...")
-    
-    try:
-        # Проверяем, есть ли в пересланном сообщении видео
-        has_video = False
+        # Транскрибируем аудио
+        await status_message.edit_text(
+            "Аудио извлечено! Теперь транскрибирую... *возбужденно виляет хвостом*"
+        )
         
-        # Проверяем явные признаки видео
-        if (hasattr(message, 'forward_from_message') and 
-            (hasattr(message.forward_from_message, 'video') and message.forward_from_message.video) or
-            (hasattr(message.forward_from_message, 'document') and message.forward_from_message.document and 
-             hasattr(message.forward_from_message.document, 'mime_type') and 
-             'video' in message.forward_from_message.document.mime_type)):
-            has_video = True
+        raw_transcript = await transcribe_audio(audio_path)
+        if not raw_transcript:
+            await status_message.edit_text(
+                "Не удалось выполнить транскрипцию аудио. *расстроенно мяукает*"
+            )
+            return
         
-        # Скачиваем видео через telethon
-        await progress_message.edit_text("Мяу! Скачиваю видео из пересланного сообщения... *усердно работает лапками*")
+        # Форматируем транскрипцию
+        await status_message.edit_text(
+            "Транскрипция получена! Привожу текст в читаемый вид... *деловито стучит по клавиатуре*"
+        )
         
-        # Получаем ID сообщения и чата из forward_origin или forward_from_chat
-        forwarded_message_id = getattr(message, 'forward_from_message_id', None)
-        if hasattr(message, 'forward_origin') and hasattr(message.forward_origin, 'message_id'):
-            forwarded_message_id = message.forward_origin.message_id
+        formatted_transcript = await format_transcript_with_llm(raw_transcript)
+        
+        # Создаем файлы с транскрипциями
+        transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}.txt"
+        raw_transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}_raw.txt"
+        
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            f.write(formatted_transcript)
             
-        forwarded_chat_id = None
-        if hasattr(message, 'forward_origin') and hasattr(message.forward_origin, 'chat'):
-            forwarded_chat_id = message.forward_origin.chat.id
-        elif hasattr(message, 'forward_from_chat'):
-            forwarded_chat_id = message.forward_from_chat.id
+        with open(raw_transcript_path, "w", encoding="utf-8") as f:
+            f.write(raw_transcript)
         
-        if not forwarded_message_id or not forwarded_chat_id:
-            await progress_message.edit_text("Мяу? Не удалось определить источник пересланного сообщения. *озадаченно наклоняет голову*")
-            return
+        # Сохраняем транскрипции для пользователя
+        user_transcriptions[chat_id] = {
+            'raw': raw_transcript,
+            'formatted': formatted_transcript,
+            'path': str(transcript_path),
+            'raw_path': str(raw_transcript_path),
+            'timestamp': asyncio.get_event_loop().time()
+        }
         
-        video_path = await download_telegram_video(forwarded_message_id, forwarded_chat_id, update.effective_user.id)
+        # Отправляем результаты пользователю
+        if len(formatted_transcript) > MAX_MESSAGE_LENGTH:\            # Если транскрипция слишком длинная, отправляем файлом\            await status_message.edit_text(\                "Готово! Транскрипция получилась длинной, отправляю файлом... *довольно мурлычет*"\            )\            \            # Отправляем файл с транскрипцией\            with open(transcript_path, "rb") as file:\                await context.bot.send_document(\                    chat_id=chat_id,\                    document=file,\                    filename=f"Транскрипция видео {message_id}.txt",\                    caption="Вот транскрипция вашего видео! *выгибает спину от гордости*"\                )\        else:\            # Если транскрипция не слишком длинная, отправляем текстом\            await status_message.edit_text(\                f"Готово! Вот транскрипция вашего видео:\n\n{formatted_transcript}\n\n*гордо машет хвостом*"\            )
+        # Отправляем файл с сырой транскрипцией (опционально)
+        with open(raw_transcript_path, "rb") as file:
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=file,
+                filename=f"Сырая транскрипция видео {message_id}.txt",
+                caption="А вот и необработанная версия транскрипции, если вам интересно *хитро подмигивает*"
+            )
         
-        if video_path and video_path.exists() and video_path.stat().st_size > 0:
-            # Обрабатываем видео
-            await process_video(video_path, chat_id, progress_message, context)
-        else:
-            # Если не удалось скачать, пробуем прямое скачивание через API, если в сообщении есть прикрепленное видео
-            if hasattr(message, 'video') and message.video:
-                await progress_message.edit_text(cat_style("Не удалось скачать через Telethon, пробую через API..."))
-                video_file = message.video
-                video_path = VIDEOS_DIR / f"telegram_video_{message.message_id}.mp4"
-                video_file_obj = await context.bot.get_file(video_file.file_id)
-                await video_file_obj.download_to_drive(str(video_path))
-                
-                if video_path.exists() and video_path.stat().st_size > 0:
-                    await process_video(video_path, chat_id, progress_message, context)
-                else:
-                    logger.error(f"Мяу... Не удалось скачать видео из пересланного сообщения. *грустно опускает ушки*")
-                    await progress_message.edit_text(cat_style("Не удалось скачать видео из пересланного сообщения. Убедитесь, что оно содержит видео и доступно для скачивания."))
-            else:
-                await progress_message.edit_text("Не удалось скачать видео из пересланного сообщения. Убедитесь, что оно содержит видео и доступно для скачивания.")
+        logger.info(f"Транскрипция видео успешно завершена, файлы: {transcript_path}, {raw_transcript_path}")
+        return transcript_path, raw_transcript_path
+        
     except Exception as e:
-        logger.error(f"Мяу, произошла ошибка при обработке пересланного видео: {str(e)} *виновато прижимает ушки*")
-        await progress_message.edit_text(f"Мяу, произошла ошибка при обработке пересланного видео: {str(e)} *виновато прижимает ушки*")
+        logger.error(f"Ошибка при обработке видео: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        if status_message:
+            await status_message.edit_text(
+                f"Произошла ошибка при обработке видео: {e}. *виновато опускает уши*"
+            )
+        return None, None
 
-async def process_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает URL с видео."""
-    chat_id = update.effective_chat.id
-    message = update.message
-    url = message.text
-    
-    # Отправляем сообщение о начале обработки
-    progress_message = await message.reply_text("Мяу! Начинаю обработку видео по ссылке. *азартно щелкает* Это может занять некоторое время...")
+async def process_video(chat_id, message_id, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает видео, извлекает аудио и выполняет транскрибацию."""
+    user_id = update.effective_user.id
     
     try:
-        video_path = None
+        # Пути к файлам
+        video_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
+        audio_path = AUDIO_DIR / f"telegram_video_{message_id}.wav"
         
-        # Скачиваем видео в зависимости от типа ссылки
-        if is_youtube_url(url):
-            await progress_message.edit_text("Скачиваю видео с YouTube... *нетерпеливо постукивает лапкой*")
-            # Выполняем эту тяжелую операцию в фоновом режиме через ThreadPoolExecutor
-            video_path = await asyncio.to_thread(
-                download_video_from_youtube, 
-                url, 
-                VIDEOS_DIR / f"youtube_{url.split('v=')[-1]}.mp4"
+        # Проверяем наличие видео
+        if not video_path.exists():
+            await update.message.reply_text(
+                "Мяу! Видеофайл не найден. Возможно, возникла ошибка при скачивании. *грустно машет хвостом*"
             )
-        elif is_gdrive_url(url):
-            await progress_message.edit_text("Скачиваю видео с Google Drive... *настороженно шевелит ушами*")
-            # Выполняем эту тяжелую операцию в фоновом режиме через ThreadPoolExecutor
-            video_path = await asyncio.to_thread(
-                download_video_from_gdrive, 
-                url, 
-                VIDEOS_DIR / f"gdrive_{extract_file_id_from_gdrive(url)}.mp4"
-            )
-        else:
-            await progress_message.edit_text("Мяу? Неподдерживаемый URL. *недоуменно наклоняет голову* Поддерживаются только YouTube и Google Drive.")
-            await progress_message.edit_text(cat_style("Мяу... Не удалось скачать видео по ссылке. *расстроенно опускает хвост*"))
             return
         
-        if video_path and video_path.exists():
-            # Обрабатываем видео
-            await process_video(video_path, chat_id, progress_message, context)
-        else:
-            await progress_message.edit_text(cat_style("Не удалось скачать видео по ссылке."))
-    except Exception as e:
-        logger.error(f"Мяу, произошла ошибка при обработке видео по ссылке: {str(e)} *нервно подергивает хвостиком*")
-        await progress_message.edit_text(f"Мяу, произошла ошибка при обработке видео по ссылке: {str(e)} *нервно подергивает хвостиком*")
-
-async def process_video(video_path: Path, chat_id: int, progress_message, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает видео файл: извлекает аудио, разделяет на части и транскрибирует."""
-    try:
+        # Отправляем сообщение о начале обработки
+        status_message = await update.message.reply_text(
+            "Мур-мур! Начинаю обработку видео... *сосредоточенно смотрит на экран*"
+        )
+        
         # Извлекаем аудио из видео
-        base_text = "Мур-мур! Извлекаю аудио из видео... *сосредоточенно шевелит усами*"
-        await progress_message.edit_text(base_text)
+        await status_message.edit_text(
+            "Извлечение аудио из видео... *нетерпеливо перебирает лапками*"
+        )
         
-        # Запускаем задачу обновления сообщения с фактами (теперь она сразу покажет первый факт)
-        fact_task = asyncio.create_task(update_waiting_message_with_facts(progress_message, base_text))
-        
-        # Сохраняем задачу в словарь, используя ID сообщения как ключ
-        if hasattr(progress_message, 'message_id'):
-            active_waiting_tasks[progress_message.message_id] = fact_task
-        
-        # Выполняем эту тяжелую операцию в фоновом режиме через ThreadPoolExecutor
-        audio_path = await asyncio.to_thread(extract_audio_from_video, video_path)
-        
-        # Отменяем задачу обновления сообщения
-        if hasattr(progress_message, 'message_id') and progress_message.message_id in active_waiting_tasks:
-            active_waiting_tasks[progress_message.message_id].cancel()
-            del active_waiting_tasks[progress_message.message_id]
-        else:
-            fact_task.cancel()
-        
-        if not audio_path:
-            await progress_message.edit_text("Мяу... Не удалось извлечь аудио из видео. *печально опускает ушки*")
+        audio_extracted = await extract_audio_from_video(video_path, audio_path)
+        if not audio_extracted:
+            await status_message.edit_text(
+                "Не удалось извлечь аудио из видео. *грустно вздыхает*"
+            )
             return
         
-        # Разделяем аудио на части
-        base_text = "Мяу! Разделяю аудио на части... *ловко играет лапками*"
-        await progress_message.edit_text(base_text)
+        # Транскрибируем аудио
+        await status_message.edit_text(
+            "Аудио извлечено! Теперь транскрибирую... *возбужденно виляет хвостом*"
+        )
         
-        # Запускаем новую задачу обновления сообщения с фактами
-        fact_task = asyncio.create_task(update_waiting_message_with_facts(progress_message, base_text))
-        
-        # Сохраняем задачу в словарь
-        if hasattr(progress_message, 'message_id'):
-            active_waiting_tasks[progress_message.message_id] = fact_task
-        
-        # Выполняем эту тяжелую операцию в фоновом режиме через ThreadPoolExecutor
-        audio_chunks = await asyncio.to_thread(split_audio_into_chunks, audio_path)
-        
-        # Отменяем задачу обновления сообщения
-        if hasattr(progress_message, 'message_id') and progress_message.message_id in active_waiting_tasks:
-            active_waiting_tasks[progress_message.message_id].cancel()
-            del active_waiting_tasks[progress_message.message_id]
-        else:
-            fact_task.cancel()
-        
-        if not audio_chunks:
-            await progress_message.edit_text("Мяу? Не удалось разделить аудио на части. *озадаченно моргает*")
+        raw_transcript = await transcribe_audio(audio_path)
+        if not raw_transcript:
+            await status_message.edit_text(
+                "Не удалось выполнить транскрипцию аудио. *расстроенно мяукает*"
+            )
             return
         
-        # Транскрибируем каждую часть
-        base_text = f"Мур-р! Начинаю транскрибацию аудио ({len(audio_chunks)} частей)... *возбужденно машет хвостом*"
-        await progress_message.edit_text(base_text)
+        # Форматируем транскрипцию
+        await status_message.edit_text(
+            "Транскрипция получена! Привожу текст в читаемый вид... *деловито стучит по клавиатуре*"
+        )
         
-        full_transcript = ""
-        full_transcript_with_timestamps = ""
-        all_segments = []
-        chunk_offset = 0  # смещение в секундах для каждого следующего чанка
-        current_timestamp = 0  # текущее время для фиксированных таймкодов
-        time_step = 30  # шаг таймкодов в секундах
+        formatted_transcript = await format_transcript_with_llm(raw_transcript)
         
-        for i, chunk_path in enumerate(audio_chunks):
-            base_text = f"Мяу! Транскрибирую часть {i+1} из {len(audio_chunks)}... *старательно работает*"
-            await progress_message.edit_text(base_text)
-            
-            # Запускаем новую задачу обновления сообщения с фактами
-            fact_task = asyncio.create_task(update_waiting_message_with_facts(progress_message, base_text))
-            
-            # Сохраняем задачу в словарь
-            if hasattr(progress_message, 'message_id'):
-                active_waiting_tasks[progress_message.message_id] = fact_task
-            
-            # Выполняем эту тяжелую операцию в фоновом режиме через ThreadPoolExecutor
-            result = await asyncio.to_thread(transcribe_audio_chunk, chunk_path)
-            
-            # Отменяем задачу обновления сообщения
-            if hasattr(progress_message, 'message_id') and progress_message.message_id in active_waiting_tasks:
-                active_waiting_tasks[progress_message.message_id].cancel()
-                del active_waiting_tasks[progress_message.message_id]
-            else:
-                fact_task.cancel()
-                
-            transcript = result["text"]
-            segments = result["segments"]
-            
-            # Добавляем текст к полной транскрипции без таймкодов
-            full_transcript += transcript + "\n\n"
-            
-            # Получаем текст из сегментов, но с фиксированными таймкодами каждые 30 секунд
-            if segments:
-                # Соединяем все тексты сегментов
-                combined_text = ""
-                segment_texts = [s['text'] for s in segments]
-                
-                # Для каждого сегмента сохраняем информацию о начале и длительности
-                for segment in segments:
-                    segment["start"] += chunk_offset
-                    segment["end"] += chunk_offset
-                    all_segments.append(segment)
-                
-                # Создаем новый текст с фиксированными таймкодами
-                combined_text = ' '.join(segment_texts)
-                words = combined_text.split()
-                
-                # Разбиваем текст на части примерно по 30-40 слов
-                words_per_step = 35  # среднее количество слов за 30 секунд
-                word_chunks = [' '.join(words[i:i+words_per_step]) for i in range(0, len(words), words_per_step)]
-                
-                # Добавляем каждый чанк с соответствующим таймкодом
-                for word_chunk in word_chunks:
-                    if word_chunk.strip():  # Проверяем, что чанк не пустой
-                        timestamp = format_timestamp(current_timestamp)
-                        full_transcript_with_timestamps += f"{timestamp} {word_chunk.strip()}\n\n"
-                        current_timestamp += time_step
-            else:
-                # Если нет сегментов, просто добавляем текст с текущим таймкодом
-                if transcript.strip():
-                    timestamp = format_timestamp(current_timestamp)
-                    full_transcript_with_timestamps += f"{timestamp} {transcript.strip()}\n\n"
-                    current_timestamp += time_step
-            
-            # Обновляем смещение для следующего чанка (10 минут = 600 секунд)
-            chunk_offset += 600
+        # Создаем файлы с транскрипциями
+        transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}.txt"
+        raw_transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}_raw.txt"
         
-        # Форматируем транскрипцию с помощью ЛЛМ
-        base_text = "Мр-р-р! Улучшаю читаемость транскрипции с помощью ИИ... *сосредоточенно прищуривается*"
-        await progress_message.edit_text(base_text)
-        
-        # Запускаем новую задачу обновления сообщения с фактами
-        fact_task = asyncio.create_task(update_waiting_message_with_facts(progress_message, base_text))
-        
-        # Сохраняем задачу в словарь
-        if hasattr(progress_message, 'message_id'):
-            active_waiting_tasks[progress_message.message_id] = fact_task
-        
-        # Передаем транскрипцию с таймкодами для форматирования
-        formatted_transcript = await format_transcript_with_llm(full_transcript_with_timestamps)
-        
-        # Отменяем задачу обновления сообщения
-        if hasattr(progress_message, 'message_id') and progress_message.message_id in active_waiting_tasks:
-            active_waiting_tasks[progress_message.message_id].cancel()
-            del active_waiting_tasks[progress_message.message_id]
-        else:
-            fact_task.cancel()
-        
-        # Сохраняем транскрипцию
-        transcript_path = TRANSCRIPTIONS_DIR / f"{video_path.stem}.txt"
         with open(transcript_path, "w", encoding="utf-8") as f:
             f.write(formatted_transcript)
         
-        # Сохраняем исходную транскрипцию для сравнения
-        raw_transcript_path = TRANSCRIPTIONS_DIR / f"{video_path.stem}_raw.txt"
         with open(raw_transcript_path, "w", encoding="utf-8") as f:
-            f.write(full_transcript_with_timestamps)
+            f.write(raw_transcript)
         
         # Сохраняем транскрипции для пользователя
-        user_id = None
-        if message := getattr(progress_message, 'message', None):
-            if message.chat:
-                user_id = chat_id
-        
-        if user_id:
             user_transcriptions[user_id] = {
-                'raw': full_transcript_with_timestamps,
-                'formatted': formatted_transcript,
-                'path': str(transcript_path),
-                'raw_path': str(raw_transcript_path),
-                'timestamp': asyncio.get_event_loop().time()
-            }
-        else:
-            # Если не удалось получить user_id, используем chat_id
-            user_id = chat_id
-            user_transcriptions[chat_id] = {
-                'raw': full_transcript_with_timestamps,
+            'raw': raw_transcript,
                 'formatted': formatted_transcript,
                 'path': str(transcript_path),
                 'raw_path': str(raw_transcript_path),
                 'timestamp': asyncio.get_event_loop().time()
             }
         
-        # Отправляем транскрипцию пользователю
-        await progress_message.edit_text("Мяу! Транскрипция готова! *гордо поднимает хвост*")
-        
-        # Если текст слишком длинный, отправляем файлом
-        if len(formatted_transcript) > 4000:
-            sent_message = await context.bot.send_document(
+        # Отправляем результаты пользователю
+        if len(formatted_transcript) > MAX_MESSAGE_LENGTH:
+            # Если транскрипция слишком длинная, отправляем файлом
+            await status_message.edit_text(
+                "Готово! Транскрипция получилась длинной, отправляю файлом... *довольно мурлычет*"
+            )
+            
+            with open(transcript_path, "rb") as f:
+                await context.bot.send_document(
                 chat_id=chat_id,
-                document=open(transcript_path, "rb"),
-                filename=f"Транскрипция_{video_path.stem}.txt",
-                caption="Мур-мур! Вот транскрипция видео! *довольно мурлычет* (отправляю как файл, т.к. текст слишком длинный)"
+                    document=f,
+                    filename=f"transcript_{message_id}.txt",
+                    caption="Вот ваша транскрипция! *гордо поднимает хвост*"
             )
         else:
-            sent_message = await context.bot.send_message(chat_id=chat_id, text=f"Мяу! Транскрипция видео:\n\n{formatted_transcript}")
-        
-        # Создаем кнопки для запроса саммори
-        # Используем str(user_id) для гарантии, что user_id не None
+            # Иначе отправляем текстом
+            await status_message.edit_text(
+                f"Готово! Вот транскрипция видео:\n\n{formatted_transcript}\n\n"
+                f"*довольно мурлычет*"
+            )
+            
+        # Добавляем кнопку для получения исходной транскрипции
         keyboard = [
-            [
-                InlineKeyboardButton("Краткое саммори", callback_data=f"brief_summary_{chat_id}"),
-                InlineKeyboardButton("Подробное саммори", callback_data=f"detailed_summary_{chat_id}")
-            ]
+            [InlineKeyboardButton("Показать сырую транскрипцию", callback_data=f"raw_{message_id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # Отправляем сообщение с кнопками для выбора типа саммори
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Мяу! Вы можете получить краткое или подробное саммори транскрипции: *игриво машет хвостом*",
+        await update.message.reply_text(
+            "Вы можете получить необработанную версию транскрипции, нажав на кнопку ниже:",
             reply_markup=reply_markup
         )
         
-        # Добавляем подсказку о возможности получить сырую версию
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Ня! Используй команду /rawtranscript, чтобы получить оригинальную (необработанную) версию транскрипции с таймкодами. *подмигивает*"
-        )
-        
     except Exception as e:
-        # Отменяем все активные задачи обновления для этого сообщения
-        if hasattr(progress_message, 'message_id') and progress_message.message_id in active_waiting_tasks:
-            active_waiting_tasks[progress_message.message_id].cancel()
-            del active_waiting_tasks[progress_message.message_id]
-            
-        logger.error(f"Мяу, произошла ошибка при обработке видео: {str(e)} *печально опускает ушки*")
-        await progress_message.edit_text(f"Мяу-мяу... Произошла ошибка при обработке видео: {str(e)} *печально опускает ушки*")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает все входящие сообщения."""
-    message = update.message
-    
-    # Проверяем, содержит ли сообщение видео или документ
-    if message.video or (message.document and message.document.mime_type and 'video' in message.document.mime_type):
-        await process_video_message(update, context)
-    # Проверяем, является ли сообщение пересланным
-    elif getattr(message, 'forward_origin', None) or getattr(message, 'forward_from_chat', None):
-        await process_forwarded_video(update, context)
-    # Проверяем, содержит ли сообщение URL
-    elif message.text and ('youtube.com' in message.text or 'youtu.be' in message.text or 'drive.google.com' in message.text):
-        await process_url(update, context)
-    else:
+        logger.error(f"Ошибка при обработке видео: {e}")
         await update.message.reply_text(
-            "Мяу? Я не понимаю, что делать с этим сообщением. *любопытно наклоняет голову* Пожалуйста, отправь мне видео файлом, перешли сообщение с видео или отправь ссылку на YouTube/Google Drive."
+            f"Произошла ошибка при обработке видео: {str(e)} *испуганно прячется*"
         )
 
-# Добавляем функцию для мониторинга релейного канала
-async def monitor_relay_chat(client, application):
-    """Мониторит релейный канал на наличие новых видео для обработки."""
-    logger.info(f"Запущен мониторинг релейного канала {RELAY_CHAT_ID}")
+# Команды бота
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает команду /start."""
+    await update.message.reply_text(
+        "Мур! Привет! Я КиберКотик - бот для транскрибации видео и аудио! *виляет хвостиком*\n\n"
+        "Отправь мне видео или аудио файл, и я создам текстовую расшифровку! "
+        "Также ты можешь отправить ссылку на YouTube или Google Drive."
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает команду /help."""
+    await update.message.reply_text(
+        "Мур-мур! Вот что я умею: *игриво машет лапкой*\n\n"
+        "1. Транскрибировать видео, которые ты отправишь мне напрямую\n"
+        "2. Транскрибировать видео из пересланных сообщений\n"
+        "3. Скачивать и транскрибировать видео по ссылкам с YouTube или Google Drive\n\n"
+        "Просто отправь мне видео или ссылку, и я займусь расшифровкой! *подмигивает*"
+    )
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает статус телетон-воркера и проверяет его работоспособность."""
+    session_file = Path("telethon_worker.session")
     
-    try:
-        # Получаем последнее обработанное сообщение (или 0, если не было)
-        last_processed_id = 0
+    if session_file.exists():
+        session_status = "✅ Файл сессии Telethon существует"
+    else:
+        session_status = "❌ Файл сессии Telethon отсутствует. Выполните авторизацию с помощью telethon_auth.py"
+    
+        await update.message.reply_text(
+        f"Статус системы:\n\n"
+        f"{session_status}\n"
+        f"🆔 ID телетон-воркера: {TELETHON_WORKER_CHAT_ID}\n\n"
+        f"Для работы с видео необходимо:\n"
+        f"1. Авторизовать Telethon клиент через telethon_auth.py\n"
+        f"2. Запустить телетон-воркер (telethon_worker.py)\n"
+        f"3. Убедиться, что BOT_ID в .env соответствует имени пользователя бота"
+    )
+
+async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает команду /rawtranscript для получения необработанной транскрипции."""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_transcriptions or 'raw' not in user_transcriptions[user_id]:
+        await update.message.reply_text(
+            "У вас пока нет сохраненных транскрипций. *растерянно оглядывается*"
+        )
+        return
         
-        # Проверяем, что аккаунт Telethon авторизован
-        if not client.is_connected():
-            await client.connect()
-            if not await client.is_user_authorized():
-                logger.warning("Пользователь Telethon не авторизован. Отправляю код.")
-                await client.send_code_request(TELEGRAM_PHONE_NUMBER)
-                logger.info("Пожалуйста, авторизуйтесь в телефоне с помощью кода подтверждения")
-                code = input('Введите код подтверждения: ')
-                await client.sign_in(TELEGRAM_PHONE_NUMBER, code)
-                logger.info("Telethon пользователь успешно авторизован")
+    transcript_data = user_transcriptions[user_id]
+    raw_transcript = transcript_data['raw']
+    
+    if len(raw_transcript) > MAX_MESSAGE_LENGTH:
+        # Если транскрипция слишком длинная, отправляем файлом
+        raw_file_path = transcript_data.get('raw_path')
         
-        # Проверяем доступ к релейному чату
+        if raw_file_path and Path(raw_file_path).exists():
+            with open(raw_file_path, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=f,
+                    filename=f"raw_transcript_{user_id}.txt",
+                    caption="Вот необработанная транскрипция вашего последнего видео! *деловито машет хвостом*"
+                )
+            else:
+            await update.message.reply_text(
+                "Не могу найти файл с сырой транскрипцией. *растерянно смотрит*"
+            )
+    else:
+        # Иначе отправляем текстом
+        await update.message.reply_text(
+            f"Вот необработанная транскрипция вашего последнего видео:\n\n{raw_transcript}\n\n"
+            f"*деловито кивает*"
+        )
+
+# Обработчики для интерактивных элементов
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатия на кнопки в сообщениях."""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("raw_"):
         try:
-            chat_entity = await client.get_entity(RELAY_CHAT_ID)
-            logger.info(f"Доступ к релейному чату подтвержден: {chat_entity.title if hasattr(chat_entity, 'title') else 'Чат'}")
+            message_id = query.data.split("_")[1]
+            raw_transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}_raw.txt"
+            
+            if not raw_transcript_path.exists():
+                await query.message.reply_text(
+                    "Не могу найти сырую транскрипцию для этого видео. *растерянно смотрит*"
+                )
+                        return
+                
+            with open(raw_transcript_path, "r", encoding="utf-8") as f:
+                raw_transcript = f.read()
+                
+            if len(raw_transcript) > MAX_MESSAGE_LENGTH:
+                # Если транскрипция слишком длинная, отправляем файлом
+                with open(raw_transcript_path, "rb") as f:
+                    await context.bot.send_document(
+                        chat_id=query.message.chat_id,
+                        document=f,
+                        filename=f"raw_transcript_{message_id}.txt",
+                        caption="Вот необработанная транскрипция этого видео! *деловито машет хвостом*"
+                    )
+                else:
+                # Иначе отправляем текстом
+                await query.message.reply_text(
+                    f"Вот необработанная транскрипция для этого видео:\n\n{raw_transcript}\n\n"
+                    f"*деловито кивает*"
+                )
+                
         except Exception as e:
-            logger.error(f"Ошибка при получении информации о релейном чате: {e}")
-            logger.warning("Возможно, пользователь Telethon не имеет доступа к релейному чату")
-        
-        while True:
-            try:
-                # Получаем новые сообщения
-                logger.debug(f"Проверяю новые сообщения в релейном чате (last_id = {last_processed_id})")
-                messages = await client.get_messages(RELAY_CHAT_ID, limit=10, min_id=last_processed_id)
+            logger.error(f"Ошибка при обработке кнопки raw transcript: {e}")
+            await query.message.reply_text(
+                "Произошла ошибка при получении сырой транскрипции. *смущенно прячет мордочку*"
+            )
+
+# Обработчик для сообщений
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик для всех типов сообщений."""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    message_id = update.message.message_id
+    
+    # Логируем сообщение
+    logger.info(f"Получено сообщение от пользователя {user_id}")
+    
+    # Проверяем сообщения от воркера (уведомления о скачивании)
+    if update.message.text and "#video_downloaded_" in update.message.text:
+        try:
+            # Извлекаем chat_id и message_id из сообщения
+            parts = update.message.text.split('_')
+            if len(parts) >= 4:
+                original_chat_id = int(parts[2])
+                original_message_id = int(parts[3])
                 
-                if messages:
-                    logger.info(f"Получено {len(messages)} новых сообщений в релейном чате")
+                logger.info(f"Получено уведомление о скачивании видео: chat_id={original_chat_id}, message_id={original_message_id}")
                 
-                for message in messages:
-                    if not message.id > last_processed_id:
-                        continue
-                        
-                    last_processed_id = max(last_processed_id, message.id)
-                    logger.info(f"Обрабатываю сообщение {message.id} из релейного чата")
-                    
-                    # Проверяем, что это сообщение с видео
-                    if hasattr(message, 'media') and message.media is not None:
-                        logger.info(f"Сообщение {message.id} содержит медиа")
-                        
-                        # Проверяем, что это наше сообщение для обработки
-                        caption = None
-                        if hasattr(message, 'caption') and message.caption is not None:
-                            caption = message.caption
-                            logger.info(f"Подпись сообщения: {caption}")
-                        
-                        if caption and caption.startswith('#user_'):
-                            logger.info(f"Найдено сообщение для обработки с тегом: {caption}")
-                            try:
-                                # Извлекаем метаданные
-                                parts = caption.split('_')
-                                if len(parts) >= 3:
-                                    user_chat_id = int(parts[1])
-                                    user_message_id = int(parts[2])
-                                    
-                                    logger.info(f"Метаданные: user_chat_id={user_chat_id}, user_message_id={user_message_id}")
-                                    
-                                    # Скачиваем видео
-                                    video_path = VIDEOS_DIR / f"relay_{message.id}.mp4"
-                                    logger.info(f"Начинаю скачивать видео из сообщения {message.id} в {video_path}")
-                                    
-                                    try:
-                                        await client.download_media(message.media, file=str(video_path))
-                                        logger.info(f"Видео успешно скачано: {video_path}")
-                                    except Exception as download_error:
-                                        logger.error(f"Ошибка при скачивании видео: {download_error}")
-                                        continue
+                # Создаем объект исходного сообщения для обработки
+                video_path = VIDEOS_DIR / f"telegram_video_{original_message_id}.mp4"
                                     
                                     if video_path.exists() and video_path.stat().st_size > 0:
-                                        logger.info(f"Видео существует и не пустое: {video_path.stat().st_size} байт")
-                                        
-                                        # Отправляем сообщение пользователю
-                                        try:
-                                            await application.bot.send_message(
-                                                chat_id=user_chat_id,
-                                                text=cat_style(f"Видео получено и скачано. Начинаю обработку...")
-                                            )
-                                            logger.info(f"Отправлено сообщение пользователю {user_chat_id} о начале обработки")
-                                        except Exception as msg_error:
-                                            logger.error(f"Ошибка при отправке сообщения пользователю: {msg_error}")
-                                        
-                                        # Создаем фиктивное сообщение для progress_message
-                                        class ProgressMessage:
-                                            def __init__(self, chat_id, message_id):
-                                                self.chat_id = chat_id
-                                                self.message_id = message_id
-                                                
-                                            async def edit_text(self, text):
-                                                try:
-                                                    # Преобразуем текст в кошачий стиль
-                                                    cat_text = cat_style(text)
-                                                    await application.bot.edit_message_text(
-                                                        chat_id=self.chat_id,
-                                                        message_id=self.message_id,
-                                                        text=cat_text
-                                                    )
-                                                except Exception as edit_error:
-                                                    logger.error(f"Ошибка при обновлении сообщения о прогрессе: {edit_error}")
-                                        
-                                        # Если в forwarded_videos есть информация о сообщениях
-                                        progress_message_id = None
-                                        if message.id in forwarded_videos:
-                                            _, _, progress_message_id = forwarded_videos[message.id]
-                                            logger.info(f"Найден ID сообщения о прогрессе: {progress_message_id}")
-                                        
-                                        progress_message = None
-                                        if progress_message_id:
-                                            progress_message = ProgressMessage(user_chat_id, progress_message_id)
-                                        else:
-                                            # Создаем новое сообщение о прогрессе
-                                            try:
-                                                sent_message = await application.bot.send_message(
-                                                    chat_id=user_chat_id,
-                                                    text="Начинаю обработку видео..."
-                                                )
-                                                progress_message = ProgressMessage(user_chat_id, sent_message.message_id)
-                                                logger.info(f"Создано новое сообщение о прогрессе: {sent_message.message_id}")
-                                            except Exception as send_error:
-                                                logger.error(f"Ошибка при создании сообщения о прогрессе: {send_error}")
-                                                # Используем заглушку для progress_message
-                                                class DummyProgressMessage:
-                                                    async def edit_text(self, text):
-                                                        logger.info(f"[DUMMY] Обновление прогресса: {text}")
-                                                progress_message = DummyProgressMessage()
-                                        
-                                        # Обрабатываем видео
-                                        logger.info(f"Начинаю обработку видео {video_path}")
-                                        await process_video(video_path, user_chat_id, progress_message, application)
-                                        logger.info(f"Обработка видео {video_path} завершена")
-                                    else:
-                                        logger.error(f"Видео не существует или пустое: {video_path}")
-                            except Exception as e:
-                                logger.error(f"Ошибка при обработке видео из релейного канала: {e}")
-            except Exception as loop_error:
-                logger.error(f"Ошибка в цикле мониторинга релейного канала: {loop_error}")
-            
-            # Пауза перед следующей проверкой
-            await asyncio.sleep(5)
-    except Exception as e:
-        logger.error(f"Критическая ошибка в мониторинге релейного канала: {e}")
-        # Перезапускаем мониторинг через 30 секунд
-        logger.info("Перезапуск мониторинга релейного канала через 30 секунд...")
-        await asyncio.sleep(30)
-        asyncio.create_task(monitor_relay_chat(client, application))
-
-async def generate_summary(transcript: str, is_detailed: bool = False) -> str:
-    """
-    Генерирует саммори транскрипции с использованием LLM через OpenRouter API.
-    
-    Args:
-        transcript: Текст транскрипции
-        is_detailed: True для подробного саммори, False для краткого
-        
-    Returns:
-        Текст саммори
-    """
-    try:
-        # Проверяем наличие транскрипции
-        if not transcript or len(transcript.strip()) < 50:
-            logger.error(f"Транскрипция слишком короткая или пустая: '{transcript[:100]}...'")
-            return "Не удалось создать саммори: транскрипция слишком короткая или пустая."
-            
-        logger.info(f"Начинаю создание {'подробного' if is_detailed else 'краткого'} саммори для текста длиной {len(transcript)} символов")
-        
-        # Проверяем валидность API-ключа
-        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "":
-            logger.error("API ключ OpenRouter отсутствует или неверный")
-            return "Не удалось создать саммори: отсутствует или неверный API ключ. Проверьте настройки бота."
-            
-        # Выводим замаскированную версию ключа для диагностики
-        logger.info(f"API ключ OpenRouter: {OPENROUTER_API_KEY[:8]}...{OPENROUTER_API_KEY[-4:]}")
-        
-        # Мы будем использовать только прямые запросы, поэтому клиент не нужен
-        # Создаем фиктивный клиент для совместимости с другими функциями
-        client = None
-            
-        # Если транскрипция слишком большая, разделим ее на части
-        max_chunk_size = 15000  # Максимальный размер части в символах
-        if len(transcript) > max_chunk_size:
-            logger.info(f"Транскрипция слишком большая ({len(transcript)} символов), разделяю на части для саммори")
-            chunks = [transcript[i:i+max_chunk_size] for i in range(0, len(transcript), max_chunk_size)]
-            
-            # Обрабатываем каждую часть и собираем промежуточные результаты
-            intermediate_summaries = []
-            for i, chunk in enumerate(chunks):
-                logger.info(f"Обрабатываю часть {i+1} из {len(chunks)} для саммори")
-                chunk_summary = await generate_chunk_summary(client, chunk, is_detailed, is_intermediate=True)
-                if chunk_summary.startswith("Произошла ошибка"):
-                    logger.error(f"Ошибка обработки части {i+1}")
-                    return chunk_summary
-                intermediate_summaries.append(chunk_summary)
-            
-            # Теперь делаем финальное саммори на основе промежуточных
-            combined_intermediate = "\n\n".join(intermediate_summaries)
-            logger.info(f"Создаю финальное саммори на основе {len(intermediate_summaries)} промежуточных результатов")
-            final_summary = await generate_chunk_summary(client, combined_intermediate, is_detailed, is_final=True)
-            return final_summary
-        else:
-            logger.info(f"Транскрипция имеет приемлемый размер ({len(transcript)} символов), создаю саммори напрямую")
-            return await generate_chunk_summary(client, transcript, is_detailed)
-            
-    except Exception as e:
-        logger.error(f"Ошибка при создании саммори транскрипции: {e}", exc_info=True)
-        # В случае ошибки возвращаем сообщение об ошибке
-        return f"Произошла ошибка при создании саммори: {str(e)}. Пожалуйста, попробуйте еще раз."
-
-async def generate_chunk_summary(client, chunk: str, is_detailed: bool = False, is_intermediate: bool = False, is_final: bool = False) -> str:
-    """Обрабатывает один фрагмент транскрипции для создания саммори."""
-    try:
-        summary_type = "подробное" if is_detailed else "краткое"
-        chunk_type = "промежуточное" if is_intermediate else "финальное" if is_final else "обычное"
-        logger.info(f"Начинаю создание {chunk_type} {summary_type} саммори для фрагмента длиной {len(chunk)} символов")
-        
-        if is_intermediate:
-            prompt = f"""Создай промежуточное {summary_type} саммори для следующей части транскрипции. Не делай финальных выводов, 
-            так как это только часть транскрипции. Сосредоточься на ключевых моментах:
-
-            {chunk}"""
-        elif is_final:
-            prompt = f"""Создай финальное {summary_type} саммори на основе этих промежуточных саммори. 
-            Объедини информацию и выдели:
-            1. Основные обсужденные темы
-            2. Ключевые выводы
-            3. Принятые решения
-            4. Запланированные действия
-
-            Промежуточные саммори:
-            {chunk}"""
-        else:
-            detail_instruction = """
-            Будь максимально подробным. Включи все значимые моменты обсуждения, детали принятых решений, 
-            подробный контекст обсужденных тем и детальное описание действий.
-            """ if is_detailed else """
-            Будь максимально лаконичным. Сосредоточься только на самых важных моментах,
-            ключевых решениях и главных выводах. Стремись к краткости и ясности.
-            """
-            
-            prompt = f"""Создай {summary_type} саммори для следующей транскрипции.
-            
-            {detail_instruction}
-            
-            Обязательно включи в структурированном виде:
-            1. Список обсужденных тем
-            2. Основные выводы
-            3. Принятые решения
-            4. Запланированные действия
-            
-            Сохрани полный смысл обсуждения в {summary_type} формате.
-            
-            Вот транскрипция:
-            
-            {chunk}"""
-
-        logger.info(f"Подготовлен промпт длиной {len(prompt)} символов")
-        
-        # Проверяем API ключ - он должен начинаться с "sk-or-"
-        if not OPENROUTER_API_KEY or OPENROUTER_API_KEY == "" or not OPENROUTER_API_KEY.startswith("sk-or-"):
-            logger.error(f"API ключ OpenRouter отсутствует или имеет неверный формат: {OPENROUTER_API_KEY[:5]}...")
-            return "Произошла ошибка при создании саммори: отсутствует или неверный API ключ. Проверьте настройки бота."
-
-        # Вывод в лог информации о ключе (без показа полного значения) и его длине
-        logger.info(f"Используется API ключ: {OPENROUTER_API_KEY[:8]}...{OPENROUTER_API_KEY[-4:]} (длина: {len(OPENROUTER_API_KEY)})")
-        
-        # Обновляем API ключ в переменной окружения для текущего процесса
-        os.environ['OPENROUTER_API_KEY'] = OPENROUTER_API_KEY
-        logger.info(f"Переменная окружения OPENROUTER_API_KEY обновлена: {os.getenv('OPENROUTER_API_KEY')[:8]}...")
-
-        # Пробуем основную модель и резервные в случае ошибки
-        models_to_try = [OPENROUTER_MODEL] + [m for m in OPENROUTER_FALLBACK_MODELS if m != OPENROUTER_MODEL]
-        last_error = None
-        
-        for model_index, model in enumerate(models_to_try):
-            try:
-                logger.info(f"Попытка {model_index+1}: Отправляю запрос к OpenRouter API с моделью {model}")
-                
-                # Создаем запрос строго по документации OpenRouter
-                headers = {
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/videlboga/cyberkitty119",
-                    "X-Title": "Transkribator Bot"
-                }
-                
-                payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": f"Ты эксперт по созданию {summary_type} саммори видео-транскрипций. Твоя задача - выделить ключевую информацию, сохраняя смысл."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 4096
-                }
-                
-                # Выводим детальную информацию о запросе для диагностики
-                logger.info(f"URL запроса: https://openrouter.ai/api/v1/chat/completions")
-                logger.info(f"Модель: {model}")
-                logger.info(f"Первые 10 символов заголовка Authorization: {headers['Authorization'][:15]}...")
-                
-                # Выполняем запрос через requests, точно по документации
-                import json
-                logger.info(f"Выполняю прямой запрос к OpenRouter API для модели {model}")
-                
-                # Вариант 1: используя json параметр (рекомендуется для requests)
-                response = await asyncio.to_thread(
-                    requests.post,
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers=headers,
-                    json=payload
-                )
-                
-                # Если первый вариант не сработал, пробуем второй вариант как в документации
-                if response.status_code == 401:
-                    logger.warning("Первый вариант запроса вернул 401, пробую альтернативный метод с data=json.dumps()")
-                    response = await asyncio.to_thread(
-                        requests.post,
-                        "https://openrouter.ai/api/v1/chat/completions",
-                        headers=headers,
-                        data=json.dumps(payload)
+                    logger.info(f"Видео найдено: {video_path}, начинаю обработку")
+                    
+                    # Отправляем пользователю уведомление о начале обработки
+                    status_message = await context.bot.send_message(
+                        chat_id=original_chat_id,
+                        text="Видео успешно скачано! Начинаю обработку... *радостно мурчит*"
                     )
-                
-                # Проверяем ответ с подробным логированием
-                logger.info(f"Код ответа API: {response.status_code}")
-                logger.info(f"Заголовки ответа: {response.headers}")
-                logger.info(f"Текст ответа: {response.text[:200]}...")
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    summary_text = result['choices'][0]['message']['content']
-                    logger.info(f"Саммори успешно создано ({len(summary_text)} символов)")
-                    return summary_text
-                else:
-                    # Более детальная информация об ошибке
-                    error_details = f"Код: {response.status_code}, Ответ: {response.text}"
-                    logger.error(f"API вернуло ошибку: {error_details}")
-                    raise Exception(f"Error code: {response.status_code} - {response.text}")
-                
-            except Exception as api_error:
-                last_error = api_error
-                logger.error(f"Ошибка при использовании модели {model}: {api_error}")
-                
-                # Если это последняя модель в списке, генерируем ошибку
-                if model_index == len(models_to_try) - 1:
-                    logger.error("Исчерпаны все попытки с разными моделями", exc_info=True)
-                    return f"Произошла ошибка при обращении к API: {str(last_error)}. Все доступные модели проверены. Проверьте действительность API-ключа."
-                
-                # Иначе продолжаем с следующей моделью
-                logger.info(f"Попробую другую модель: {models_to_try[model_index+1]}")
-                continue
-        
-    except Exception as e:
-        logger.error(f"Неожиданная ошибка при обработке части для саммори: {e}", exc_info=True)
-        # В случае ошибки возвращаем исходный текст
-        if is_intermediate or is_final:
-            return f"Ошибка обработки части: {str(e)}"
-        else:
-            return f"Произошла ошибка при создании саммори: {str(e)}. Пожалуйста, попробуйте еще раз."
-
-async def handle_summary_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает нажатие на кнопки запроса саммори."""
-    query = update.callback_query
-    await query.answer()  # Отвечаем на запрос, чтобы убрать "часики" на кнопке
+                    
+                    # Для сообщений от Pyrogram worker не создаем имитацию исходного сообщения,
+                    # а просто передаем необходимые параметры для обработки
+                    try:
+                        # Обрабатываем видео напрямую, без использования mock_update
+                        await process_video_file(video_path, original_chat_id, original_message_id, context, status_message=status_message)
+                    except Exception as process_error:
+                        logger.error(f"Ошибка при обработке видео: {process_error}")
+                        # Отправляем сообщение об ошибке
+                        await context.bot.send_message(
+                            chat_id=original_chat_id,
+                            text=f"Произошла ошибка при обработке видео: {process_error}. *виновато опускает уши*"
+                        )
+                                        else:
+                    logger.error(f"Видео не найдено или пустое: {video_path}")
+                    await context.bot.send_message(
+                        chat_id=original_chat_id,
+                        text="Не удалось найти скачанное видео. *растерянно оглядывается*"
+                    )
+                            except Exception as e:
+            logger.error(f"Ошибка при обработке уведомления от воркера: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
     
-    # Получаем тип саммори и ID пользователя из callback_data
-    callback_data = query.data
-    
-    try:
-        chat_id = query.message.chat_id  # Используем ID чата как запасной вариант
+    # Проверяем наличие видео в сообщении
+    elif update.message.video:
+        logger.info(f"Получено видео от пользователя {user_id}")
         
-        if callback_data.startswith("brief_summary_"):
-            summary_type = "brief"
-            user_id_str = callback_data.replace("brief_summary_", "")
-            # Проверяем, что ID пользователя не None и корректный
-            if user_id_str and user_id_str.lower() != "none":
-                try:
-                    user_id = int(user_id_str)
-                except ValueError:
-                    # В случае ошибки используем ID чата
-                    user_id = chat_id
-                    logger.warning(f"Некорректный ID пользователя в callback_data, использую ID чата: {chat_id}")
-            else:
-                user_id = chat_id
-                logger.warning(f"ID пользователя отсутствует в callback_data, использую ID чата: {chat_id}")
-        elif callback_data.startswith("detailed_summary_"):
-            summary_type = "detailed"
-            user_id_str = callback_data.replace("detailed_summary_", "")
-            # Проверяем, что ID пользователя не None и корректный
-            if user_id_str and user_id_str.lower() != "none":
-                try:
-                    user_id = int(user_id_str)
-                except ValueError:
-                    # В случае ошибки используем ID чата
-                    user_id = chat_id
-                    logger.warning(f"Некорректный ID пользователя в callback_data, использую ID чата: {chat_id}")
-            else:
-                user_id = chat_id
-                logger.warning(f"ID пользователя отсутствует в callback_data, использую ID чата: {chat_id}")
-        else:
-            await query.edit_message_text(text="Мяу? Неизвестный тип саммори. *озадаченно моргает*")
-            return
-        
-        # Проверяем, что у пользователя есть сохраненная транскрипция
-        if user_id not in user_transcriptions or 'formatted' not in user_transcriptions[user_id]:
-            # Если у пользователя нет транскрипции, пробуем искать по ID чата
-            if chat_id != user_id and chat_id in user_transcriptions and 'formatted' in user_transcriptions[chat_id]:
-                # Используем ID чата для поиска транскрипции
-                user_id = chat_id
-                logger.info(f"Транскрипция не найдена для ID {user_id}, использую ID чата: {chat_id}")
-            else:
-                await query.edit_message_text(
-                    text="Мяу! Транскрипция не найдена. *растерянно смотрит* Пожалуйста, отправь видео заново."
-                )
-                return
-        
-        # Проверяем, есть ли уже готовое саммори нужного типа
-        if summary_type == "brief" and 'brief_summary' in user_transcriptions[user_id]:
-            summary = user_transcriptions[user_id]['brief_summary']
-            await send_summary(query, summary, "Краткое саммори")
-            return
-        elif summary_type == "detailed" and 'detailed_summary' in user_transcriptions[user_id]:
-            summary = user_transcriptions[user_id]['detailed_summary']
-            await send_summary(query, summary, "Подробное саммори")
-            return
-        
-        # Если саммори нет, начинаем создание
-        await query.edit_message_text(
-            text=f"Мур-мур... Создаю {'подробное' if summary_type == 'detailed' else 'краткое'} саммори. *сосредоточенно работает* Это может занять некоторое время..."
+        # Отправляем сообщение о начале загрузки
+        status_message = await update.message.reply_text(
+            "Мяу! Вижу видео! Скачиваю его... *возбужденно виляет хвостом*"
         )
         
-        # Получаем транскрипцию
-        transcript = user_transcriptions[user_id]['formatted']
+        video = update.message.video
         
-        # Создаем саммори
-        is_detailed = (summary_type == "detailed")
-        summary = await generate_summary(transcript, is_detailed)
-        
-        # Сохраняем саммори
-        if summary_type == "brief":
-            user_transcriptions[user_id]['brief_summary'] = summary
-        else:
-            user_transcriptions[user_id]['detailed_summary'] = summary
-        
-        # Отправляем саммори пользователю
-        await send_summary(query, summary, "Подробное саммори" if is_detailed else "Краткое саммори")
-        
-    except Exception as e:
-        logger.error(f"Мяу-мяу... Произошла ошибка при создании саммори: {str(e)} *виновато опускает ушки*")
-        await query.edit_message_text(
-            text=f"Мяу-мяу... Произошла ошибка при создании саммори: {str(e)} *виновато опускает ушки*"
-        )
-
-async def send_summary(query, summary, title):
-    """Отправляет саммори пользователю."""
-    chat_id = query.message.chat_id
-    
-    # Если текст слишком длинный, отправляем файлом
-    if len(summary) > 4000:
-        # Создаем временный файл для отправки
-        with tempfile.NamedTemporaryFile(suffix='.txt', mode='w', encoding='utf-8', delete=False) as temp_file:
-            temp_file.write(summary)
-            temp_path = temp_file.name
-        
-        # Отправляем файл
-        await query.message.reply_document(
-            document=open(temp_path, "rb"),
-            filename=f"Мур-р-р! Вот {title}! *гордо выгибает спинку* (отправляю как файл, т.к. текст слишком длинный)",
-            caption=f"Мур-р-р! Вот {title}! *гордо выгибает спинку* (отправляю как файл, т.к. текст слишком длинный)"
-        )
-        
-        # Удаляем временный файл после отправки
         try:
-            os.unlink(temp_path)
-        except:
-            pass
-        
-        # Обновляем сообщение с кнопками
-        await query.edit_message_text(
-            text=f"Мяу! {title} отправлено отдельным файлом. *довольно мурлычет*"
-        )
+            # Пытаемся скачать видео напрямую
+            video_file = await context.bot.get_file(video.file_id)
+            
+            # Создаем директорию, если не существует
+            video_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
+            video_path.parent.mkdir(exist_ok=True)
+            
+            # Скачиваем видео
+            await video_file.download_to_drive(custom_path=video_path)
+            
+            # Проверяем, что файл существует и не пустой
+            if video_path.exists() and video_path.stat().st_size > 0:
+                logger.info(f"Видео успешно загружено: {video_path} (размер: {video_path.stat().st_size} байт)")
+                
+                # Обновляем статус
+                await status_message.edit_text(
+                    "Видео успешно загружено! Начинаю обработку... *радостно мурчит*"
+                )
+                
+                # Обрабатываем видео
+                await process_video(chat_id, message_id, update, context)
+        else:
+                logger.error(f"Ошибка при скачивании видео: файл не существует или пустой")
+                await status_message.edit_text(
+                    "Не удалось скачать видео. Пожалуйста, попробуйте снова. *печально опускает ушки*"
+                )
+            
+    except Exception as e:
+            logger.error(f"Ошибка при скачивании видео: {e}")
+            
+            # Проверяем, является ли ошибка "File is too big"
+            if "File is too big" in str(e) and TELETHON_WORKER_CHAT_ID != 0:
+                logger.info(f"Файл слишком большой для прямой загрузки, отправляю запрос телетон-воркеру")
+                
+                # Обновляем статус
+                await status_message.edit_text(
+                    "Видео слишком большое для прямой загрузки. Использую телетон-воркер... *сосредоточенно стучит по клавиатуре*"
+                )
+                
+                try:
+                    # Формируем команду
+                    command_text = f"#video_download_{chat_id}_{message_id}"
+                    logger.info(f"Отправляю команду в релейный чат: {command_text}, chat_id={TELETHON_WORKER_CHAT_ID}")
+                    
+                    # Отправляем видео с командой в релейный чат
+                    # Вместо двух отдельных сообщений (команды и пересылки) отправляем видео с текстом команды
+                    await context.bot.copy_message(
+                        chat_id=TELETHON_WORKER_CHAT_ID,
+                        from_chat_id=chat_id,
+                        message_id=message_id,
+                        caption=command_text  # Устанавливаем текст команды как подпись к видео
+                    )
+                    
+                    # Обновляем статус
+                    await status_message.edit_text(
+                        "Запрос на скачивание отправлен! Ожидаю ответа... *нетерпеливо постукивает лапкой*"
+                    )
+                    
+                except Exception as relay_error:
+                    logger.error(f"Ошибка при отправке запроса воркеру: {relay_error}")
+                    await status_message.edit_text(
+                        f"Произошла ошибка при обработке видео через релейный чат: {str(relay_error)} *смущенно прячет мордочку*"
+                    )
+        else:
+                await status_message.edit_text(
+                    f"Произошла ошибка при скачивании видео: {str(e)} *испуганно прячется*"
+                )
+    
+    # В минимальном режиме просто отвечаем текстом
     else:
-        # Если текст небольшой, отправляем прямо в сообщении
-        await query.edit_message_text(
-            text=f"Ня! {title}:\n\n{summary}"
+        await update.message.reply_text(
+            "Мяу! *игриво смотрит* Отправь мне видео, и я создам текстовую расшифровку! *виляет хвостиком*"
         )
 
-# Изменяем функцию main, чтобы запустить мониторинг релейного канала
-async def main() -> None:
-    """Запускает бота."""
-    # Создаем Application и передаем ему токен бота
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+def main() -> None:
+    """Главная функция для запуска бота."""
+    logger.info("Запуск бота...")
     
-    # Регистрируем обработчики команд
-    application.add_handler(CommandHandler("start", start))
+    # Инициализация бота
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Обработчики команд
+    application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("rawtranscript", raw_transcript_command))
     
-    # Регистрируем обработчик кнопок для саммори
-    application.add_handler(CallbackQueryHandler(handle_summary_button, pattern=r'^(brief|detailed)_summary_'))
-    
-    # Регистрируем обработчик сообщений
+    # Обработчик для всех типов сообщений
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
     
-    # Запускаем бота
-    logger.info("Мур-р! Запускаю бота... *потягивается и выпускает когти*")
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-    
-    logger.info("Мяу! Бот запущен и готов к работе! *гордо поднимает хвост*")
-    
-    # Запускаем мониторинг релейного канала
-    asyncio.create_task(monitor_relay_chat(client, application))
-    
-    # Используем asyncio.Event чтобы держать бота запущенным
-    stop_event = asyncio.Event()
-    
-    # Возвращаем объекты для дальнейшего использования и остановки
-    return application, stop_event
+    # Обработчик для кнопок
+    application.add_handler(CallbackQueryHandler(button_callback))
+
+    # Запуск бота
+    logger.info("Бот запущен и слушает сообщения...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == '__main__':
-    # Инициализируем клиент Telegram
-    try:
-        # Нам нужно асинхронно запустить telethon и основной telegram бот
-        async def init():
-            # Инициализация Telethon
-            await client.connect()
-            if not await client.is_user_authorized():
-                await client.send_code_request(TELEGRAM_PHONE_NUMBER)
-                logger.info("Пожалуйста, авторизуйтесь в телефоне с помощью кода подтверждения")
-                code = input('Введите код подтверждения: ')
-                await client.sign_in(TELEGRAM_PHONE_NUMBER, code)
-            
-            # Запуск основного бота
-            app, stop_event = await main()
-            
-            # Ждем сигнала остановки
-            try:
-                # Блокируем выполнение до отмены (Ctrl+C)
-                await stop_event.wait()
-            except (KeyboardInterrupt, SystemExit):
-                logger.info("Получен сигнал завершения, останавливаю бота... Мяу, ухожу спать!")
-            finally:
-                # Останавливаем бота при выходе
-                await app.updater.stop()
-                await app.stop()
-                await client.disconnect()
-                logger.info("Бот остановлен. Мяу, до новых встреч!")
-        
-        # Запускаем инициализацию и основной код бота
-        asyncio.run(init())
-    except Exception as e:
-        logger.error(f"Ошибка при инициализации: {e}") 
+    main()
+
+
