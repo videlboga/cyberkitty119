@@ -41,13 +41,89 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 # Иначе отправляем текстом
                 await query.message.reply_text(
                     f"Вот необработанная транскрипция для этого видео:\n\n{raw_transcript}\n\n"
-                    f"*деловито кивает*"
+                    f"@CyberKitty19_bot"
                 )
                 
         except Exception as e:
             logger.error(f"Ошибка при обработке кнопки raw transcript: {e}")
             await query.message.reply_text(
                 "Произошла ошибка при получении сырой транскрипции. *смущенно прячет мордочку*"
+            )
+    
+    elif query.data.startswith("detailed_summary_") or query.data.startswith("brief_summary_"):
+        try:
+            # Получаем id сообщения
+            message_id = query.data.split("_")[-1]
+            
+            # Определяем тип саммари
+            summary_type = "подробное" if query.data.startswith("detailed_") else "краткое"
+            
+            # Отправляем сообщение о начале генерации
+            status_message = await query.message.reply_text(
+                f"Генерирую {summary_type} саммари для этого видео... *сосредоточенно обдумывает содержание*"
+            )
+            
+            # Загружаем транскрипцию
+            transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}.txt"
+            
+            if not transcript_path.exists():
+                await status_message.edit_text(
+                    "Не могу найти транскрипцию для этого видео. *растерянно смотрит*"
+                )
+                return
+                
+            with open(transcript_path, "r", encoding="utf-8") as f:
+                transcript = f.read()
+            
+            # Импортируем функции генерации саммари
+            from transkribator_modules.transcribe.transcriber import generate_detailed_summary, generate_brief_summary
+            
+            # Генерируем саммари в зависимости от типа
+            if query.data.startswith("detailed_summary_"):
+                summary = await generate_detailed_summary(transcript)
+            else:
+                summary = await generate_brief_summary(transcript)
+                
+            if not summary:
+                await status_message.edit_text(
+                    f"Не удалось создать {summary_type} саммари. *виновато опускает уши*"
+                )
+                return
+            
+            # Сохраняем саммари в файл
+            summary_filename = f"telegram_video_{message_id}_{summary_type}_summary.txt"
+            summary_path = TRANSCRIPTIONS_DIR / summary_filename
+            
+            with open(summary_path, "w", encoding="utf-8") as f:
+                f.write(summary)
+            
+            # Отправляем результат
+            if len(summary) > MAX_MESSAGE_LENGTH:
+                # Если саммари слишком длинное, отправляем файлом
+                await status_message.edit_text(
+                    f"Готово! {summary_type.capitalize()} саммари получилось объемным, отправляю файлом... *довольно мурлычет*"
+                )
+                
+                with open(summary_path, "rb") as f:
+                    await context.bot.send_document(
+                        chat_id=query.message.chat_id,
+                        document=f,
+                        filename=f"{summary_type.capitalize()} саммари видео {message_id}.txt",
+                        caption=f"Вот {summary_type} саммари для вашего видео! *гордо выпрямляется*"
+                    )
+            else:
+                # Иначе отправляем текстом
+                await status_message.edit_text(
+                    f"Вот {summary_type} саммари для вашего видео:\n\n{summary}\n\n"
+                    f"@CyberKitty19_bot"
+                )
+            
+        except Exception as e:
+            logger.error(f"Ошибка при обработке кнопки {query.data}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            await query.message.reply_text(
+                f"Произошла ошибка при генерации {summary_type} саммари: {str(e)} *смущенно прячет мордочку*"
             )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

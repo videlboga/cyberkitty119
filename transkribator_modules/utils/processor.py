@@ -12,6 +12,8 @@ async def process_video_file(video_path, chat_id, message_id, context, status_me
     """Обрабатывает видео из файла, извлекает аудио и выполняет транскрибацию.
     Эта версия не требует объекта Update и может быть использована напрямую с файлами."""
     
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    
     try:
         # Пути к файлам
         audio_path = AUDIO_DIR / f"telegram_video_{message_id}.wav"
@@ -104,17 +106,24 @@ async def process_video_file(video_path, chat_id, message_id, context, status_me
         else:
             # Если транскрипция не слишком длинная, отправляем текстом
             await status_message.edit_text(
-                f"Готово! Вот транскрипция вашего видео:\n\n{formatted_transcript}\n\n*гордо машет хвостом*"
+                f"Готово! Вот транскрипция вашего видео:\n\n{formatted_transcript}\n\n@CyberKitty19_bot"
             )
-            
-        # Отправляем файл с сырой транскрипцией (опционально)
-        with open(raw_transcript_path, "rb") as file:
-            await context.bot.send_document(
-                chat_id=chat_id,
-                document=file,
-                filename=f"Сырая транскрипция видео {message_id}.txt",
-                caption="А вот и необработанная версия транскрипции, если вам интересно *хитро подмигивает*"
-            )
+        
+        # Добавляем кнопки для получения саммари и сырой транскрипции
+        keyboard = [
+            [
+                InlineKeyboardButton("📝 Подробное саммари", callback_data=f"detailed_summary_{message_id}"),
+                InlineKeyboardButton("📋 Краткое саммари", callback_data=f"brief_summary_{message_id}")
+            ],
+            [InlineKeyboardButton("🔍 Показать сырую транскрипцию", callback_data=f"raw_{message_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Вы можете получить саммари или необработанную версию транскрипции, нажав на кнопки ниже:",
+            reply_markup=reply_markup
+        )
         
         logger.info(f"Транскрипция видео успешно завершена, файлы: {transcript_path}, {raw_transcript_path}")
         return transcript_path, raw_transcript_path
@@ -221,18 +230,21 @@ async def process_video(chat_id, message_id, update, context):
         else:
             # Иначе отправляем текстом
             await status_message.edit_text(
-                f"Готово! Вот транскрипция видео:\n\n{formatted_transcript}\n\n"
-                f"*довольно мурлычет*"
+                f"Готово! Вот транскрипция видео:\n\n{formatted_transcript}\n\n@CyberKitty19_bot"
             )
-            
-        # Добавляем кнопку для получения исходной транскрипции
+        
+        # Добавляем кнопки для получения саммари и исходной транскрипции
         keyboard = [
-            [InlineKeyboardButton("Показать сырую транскрипцию", callback_data=f"raw_{message_id}")]
+            [
+                InlineKeyboardButton("📝 Подробное саммари", callback_data=f"detailed_summary_{message_id}"),
+                InlineKeyboardButton("📋 Краткое саммари", callback_data=f"brief_summary_{message_id}")
+            ],
+            [InlineKeyboardButton("🔍 Показать сырую транскрипцию", callback_data=f"raw_{message_id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "Вы можете получить необработанную версию транскрипции, нажав на кнопку ниже:",
+            "Вы можете получить саммари или необработанную версию транскрипции, нажав на кнопки ниже:",
             reply_markup=reply_markup
         )
         
