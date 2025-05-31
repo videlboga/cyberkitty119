@@ -62,4 +62,6 @@ logs/
 .vscode/
 *.swp
 *.swo
-.DS_Store 
+.DS_Store *.conf
+wg0.conf
+wireguard.conf
