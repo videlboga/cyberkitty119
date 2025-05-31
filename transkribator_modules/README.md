@@ -8,7 +8,7 @@
 ## Структура проекта
 
 ```
-transkribator_modules/
+cyberkitty19-transkribator_modules/
 ├── __init__.py                # Инициализация модуля
 ├── config.py                  # Конфигурация, переменные окружения, константы
 ├── main.py                    # Основная точка входа

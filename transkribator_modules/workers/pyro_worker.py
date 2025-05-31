@@ -101,9 +101,9 @@ async def handle_bot_messages(client, message):
                 
                 # Отправляем сообщение боту о результате
                 if success:
-                    await client.send_message(BOT_ID, f"#pyro_downloaded_{chat_id}_{message_id}")
+                    await client.send_message(PYROGRAM_WORKER_CHAT_ID, f"#pyro_downloaded_{chat_id}_{message_id}")
                 else:
-                    await client.send_message(BOT_ID, f"#pyro_download_failed_{chat_id}_{message_id}")
+                    await client.send_message(PYROGRAM_WORKER_CHAT_ID, f"#pyro_download_failed_{chat_id}_{message_id}")
             else:
                 logger.warning(f"⚠️ Команда на скачивание получена, но в сообщении нет видео")
         else:

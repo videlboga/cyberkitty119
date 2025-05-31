@@ -1,6 +1,6 @@
-# Инструкция по развертыванию Transkribator на сервере
+# Инструкция по развертыванию Cyberkitty19 Transkribator на сервере
 
-Это руководство описывает процесс развертывания бота Transkribator (КиберКотик 119) на сервере Linux.
+Это руководство описывает процесс развертывания бота Cyberkitty19 Transkribator (КиберКотик 119) на сервере Linux.
 
 ## Системные требования
 
@@ -15,8 +15,8 @@
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/your-username/transkribator.git
-   cd transkribator
+   git clone https://github.com/your-username/cyberkitty19-transkribator.git
+   cd cyberkitty19-transkribator
    ```
 
 2. Запустите скрипт установки:
@@ -38,8 +38,8 @@
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/your-username/transkribator.git
-   cd transkribator
+   git clone https://github.com/your-username/cyberkitty19-transkribator.git
+   cd cyberkitty19-transkribator
    ```
 
 2. Установите зависимости системы:
@@ -82,21 +82,21 @@
 
 1. Создайте файл сервиса:
    ```bash
-   sudo nano /etc/systemd/system/transkribator.service
+   sudo nano /etc/systemd/system/cyberkitty19-transkribator.service
    ```
 
 2. Добавьте следующее содержимое (замените пути на соответствующие вашей системе):
    ```
    [Unit]
-   Description=Transkribator Bot Service
+   Description=Cyberkitty19 Transkribator Bot Service
    After=network.target
 
    [Service]
    Type=forking
    User=YOUR_USERNAME
-   WorkingDirectory=/path/to/transkribator
-   ExecStart=/path/to/transkribator/cyberkitty_modular_start.sh
-   ExecStop=/path/to/transkribator/cyberkitty_modular_stop.sh
+   WorkingDirectory=/path/to/cyberkitty19-transkribator
+   ExecStart=/path/to/cyberkitty19-transkribator/cyberkitty_modular_start.sh
+   ExecStop=/path/to/cyberkitty19-transkribator/cyberkitty_modular_stop.sh
    Restart=on-failure
 
    [Install]
@@ -105,13 +105,13 @@
 
 3. Включите и запустите сервис:
    ```bash
-   sudo systemctl enable transkribator.service
-   sudo systemctl start transkribator.service
+   sudo systemctl enable cyberkitty19-transkribator.service
+   sudo systemctl start cyberkitty19-transkribator.service
    ```
 
 4. Для просмотра статуса:
    ```bash
-   sudo systemctl status transkribator.service
+   sudo systemctl status cyberkitty19-transkribator.service
    ```
 
 ## Настройка Pyrogram Worker для больших видео

@@ -135,6 +135,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Логируем сообщение
     logger.info(f"Получено сообщение от пользователя {user_id}")
     
+    # Обработка промокодов (если сообщение является текстом и выглядит как промокод)
+    if update.message.text and not update.message.video and not update.message.document:
+        text = update.message.text.strip().upper()
+        
+        # Проверяем, похоже ли это на промокод (определенные паттерны)
+        if (text.startswith(("KITTY", "LIGHTKITTY", "LIGHT", "VIP", "SPECIAL", "PROMO")) or 
+            (len(text) >= 5 and len(text) <= 20 and text.replace("-", "").replace("_", "").isalnum())):
+            from transkribator_modules.bot.commands import activate_promo_code
+            try:
+                await activate_promo_code(update, context, text)
+                return  # Прекращаем обработку как обычного сообщения
+            except Exception as e:
+                logger.error(f"Ошибка при обработке возможного промокода '{text}': {e}")
+                # Если промокод не найден, отвечаем мягко
+                await update.message.reply_text("🤔 Это похоже на промокод, но я его не нашёл. *задумчиво наклоняет голову*")
+                return
+    
     # Проверяем сообщения от воркера (уведомления о скачивании)
     if update.message.text and ("#video_downloaded_" in update.message.text or "#pyro_downloaded_" in update.message.text):
         try:

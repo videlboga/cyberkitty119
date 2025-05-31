@@ -1,3 +1,10 @@
+try:
+    import whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
+    whisper = None
+
 import aiohttp
 import json
 import os
@@ -13,13 +20,13 @@ async def compress_audio_for_api(audio_path):
         
         logger.info(f"Сжимаю аудиофайл: {audio_path} -> {compressed_path}")
         
-        # Команда для сжатия в MP3 с низким битрейтом
+        # Команда для сжатия в MP3 с очень низким битрейтом
         cmd = [
             'ffmpeg',
             '-i', str(audio_path),
             '-acodec', 'mp3',
-            '-b:a', '64k',  # Низкий битрейт для уменьшения размера
-            '-ar', '16000',  # Уменьшаем частоту дискретизации
+            '-b:a', '32k',  # Очень низкий битрейт для максимального сжатия
+            '-ar', '8000',  # Еще больше уменьшаем частоту дискретизации
             '-ac', '1',  # Моно канал
             '-y',
             str(compressed_path)
@@ -51,20 +58,87 @@ async def compress_audio_for_api(audio_path):
         logger.error(f"Ошибка при сжатии аудио: {e}")
         return str(audio_path)  # Возвращаем оригинальный файл при ошибке
 
+async def transcribe_audio_with_deepinfra(audio_path):
+    """Транскрибирует аудио с помощью DeepInfra Whisper API."""
+    if not DEEPINFRA_API_KEY:
+        logger.warning("DeepInfra API ключ не настроен")
+        return None
+        
+    try:
+        logger.info(f"Транскрибация аудиофайла через DeepInfra API: {audio_path}")
+        
+        # Сначала сжимаем аудио для уменьшения размера
+        compressed_audio_path = await compress_audio_for_api(audio_path)
+        
+        # DeepInfra API для Whisper
+        url = "https://api.deepinfra.com/v1/inference/openai/whisper-large-v3-turbo"
+        
+        headers = {
+            "Authorization": f"Bearer {DEEPINFRA_API_KEY}",
+        }
+        
+        # Читаем сжатый аудио файл
+        with open(compressed_audio_path, 'rb') as audio_file:
+            # Увеличиваем таймаут для больших файлов
+            timeout = aiohttp.ClientTimeout(total=600)  # 10 минут таймаут
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                # Формируем multipart/form-data запрос согласно документации DeepInfra
+                form_data = aiohttp.FormData()
+                file_name = Path(compressed_audio_path).name
+                form_data.add_field('audio', audio_file, filename=file_name)
+                
+                async with session.post(url, headers=headers, data=form_data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        transcript_text = result.get('text', '')
+                        logger.info(f"Транскрибация через DeepInfra завершена, получено {len(transcript_text)} символов")
+                        
+                        # Удаляем сжатый файл, если он отличается от оригинала
+                        if compressed_audio_path != audio_path:
+                            try:
+                                os.remove(compressed_audio_path)
+                                logger.info("Сжатый временный файл удален")
+                            except:
+                                pass
+                        
+                        return transcript_text
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Ошибка от DeepInfra API: {response.status}, {error_text}")
+                        return None
+        
+    except Exception as e:
+        logger.error(f"Ошибка при транскрибации аудио через DeepInfra API: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
 async def transcribe_audio(audio_path, model_name="base"):
-    """Транскрибирует аудио с помощью DeepInfra API через разбивку на сегменты."""
+    """Транскрибирует аудио с помощью DeepInfra API или локальным Whisper."""
     
-    # Используем DeepInfra API для транскрибации с разбивкой на сегменты
+    # Сначала пробуем DeepInfra API, если ключ доступен
     if DEEPINFRA_API_KEY:
-        logger.info("Использую DeepInfra API для транскрибации с разбивкой на сегменты...")
-        result = await split_and_transcribe_audio(audio_path)
+        logger.info("Использую DeepInfra API для транскрибации...")
+        result = await transcribe_audio_with_deepinfra(audio_path)
         if result:
             return result
         else:
-            logger.warning("DeepInfra API не сработал")
+            logger.warning("DeepInfra API не сработал, пробую локальный Whisper...")
+    
+    # Fallback на локальный Whisper, если он доступен
+    if WHISPER_AVAILABLE:
+        logger.info(f"Использую локальный Whisper модель: {model_name}")
+        try:
+            model = whisper.load_model(model_name)
+            result = model.transcribe(str(audio_path), language="ru")
+            transcript_text = result["text"]
+            logger.info(f"Локальная транскрибация завершена, получено {len(transcript_text)} символов")
+            return transcript_text
+        except Exception as e:
+            logger.error(f"Ошибка при локальной транскрибации: {e}")
             return None
     else:
-        logger.error("DeepInfra API ключ не настроен")
+        logger.error("Whisper не установлен и DeepInfra API недоступен. Транскрибация невозможна.")
         return None
 
 async def format_transcript_with_llm(raw_transcript: str) -> str:
