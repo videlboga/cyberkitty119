@@ -32,7 +32,7 @@ if not TELEGRAM_API_HASH:
 
 # Получаем ID бота из токена
 BOT_ID = BOT_TOKEN.split(':')[0] if BOT_TOKEN else ''
-SESSION_NAME = 'pyro_worker'
+SESSION_NAME = 'cyberkitty19_pyro_worker'
 
 # Регулярные выражения для распознавания команд
 PYRO_DOWNLOAD_PATTERN = re.compile(r'#pyro_download_(\d+)_(\d+)')
