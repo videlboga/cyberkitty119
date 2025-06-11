@@ -1,56 +1,66 @@
 import os
 import logging
 from pathlib import Path
-from dotenv import load_dotenv
 
-# Загрузка переменных окружения
-load_dotenv()
-
-# Получаем настройки из .env файла
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-TELETHON_WORKER_CHAT_ID = int(os.getenv('TELETHON_WORKER_CHAT_ID', '0'))
-
-# Настройки для Pyrogram воркера
-PYROGRAM_WORKER_ENABLED = os.getenv('PYROGRAM_WORKER_ENABLED', 'false').lower() == 'true'
-TELEGRAM_API_ID = os.getenv('TELEGRAM_API_ID', '')
-TELEGRAM_API_HASH = os.getenv('TELEGRAM_API_HASH', '')
-PYROGRAM_WORKER_CHAT_ID = int(os.getenv('PYROGRAM_WORKER_CHAT_ID', '0'))
-
-# Настройки для API
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
-OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'anthropic/claude-3-opus:beta')
-DEEPINFRA_API_KEY = os.getenv('DEEPINFRA_API_KEY', '')
-
-# Настройки для Replicate API
-REPLICATE_API_TOKEN = os.getenv('REPLICATE_API_TOKEN', '')
-REPLICATE_WHISPER_MODEL = os.getenv('REPLICATE_WHISPER_MODEL', 'carnifexer/whisperx')  # Бюджетная модель по умолчанию
-REPLICATE_WHISPER_DIARIZATION_MODEL = os.getenv('REPLICATE_WHISPER_DIARIZATION_MODEL', 'thomasmol/whisper-diarization')  # Модель с диаризацией
-
-# Пути для файлов
-BASE_DIR = Path(__file__).resolve().parent.parent
-VIDEOS_DIR = BASE_DIR / "videos"
-AUDIO_DIR = BASE_DIR / "audio"
-TRANSCRIPTIONS_DIR = BASE_DIR / "transcriptions"
-
-# Создаем директории, если они не существуют
-VIDEOS_DIR.mkdir(exist_ok=True)
-AUDIO_DIR.mkdir(exist_ok=True)
-TRANSCRIPTIONS_DIR.mkdir(exist_ok=True)
+# Создаем директории для хранения данных
+DATA_DIR = Path("/app/data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Настройка логирования
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL.upper()),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("cyberkitty119.log")
+        logging.FileHandler(DATA_DIR / 'bot.log'),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Константы
-MAX_MESSAGE_LENGTH = 4096  # Максимальная длина сообщения в Telegram
+# ===== ОСНОВНЫЕ НАСТРОЙКИ БОТА =====
+BOT_TOKEN = os.getenv('BOT_TOKEN', '')
+if not BOT_TOKEN:
+    logger.error("❌ BOT_TOKEN не установлен!")
+    raise ValueError("BOT_TOKEN обязателен")
 
-# Глобальный словарь для хранения транскрипций пользователей
-user_transcriptions = {} 
+# ===== TELEGRAM BOT API SERVER =====
+USE_LOCAL_BOT_API = os.getenv('USE_LOCAL_BOT_API', 'false').lower() == 'true'
+LOCAL_BOT_API_URL = os.getenv('LOCAL_BOT_API_URL', 'http://telegram-bot-api:8081')
+
+if USE_LOCAL_BOT_API:
+    logger.info(f"🚀 Используется локальный Telegram Bot API Server: {LOCAL_BOT_API_URL}")
+else:
+    logger.info("🌐 Используется стандартный Telegram Bot API")
+
+# ===== API КЛЮЧИ ДЛЯ AI СЕРВИСОВ =====
+DEEPINFRA_API_KEY = os.getenv('DEEPINFRA_API_KEY', '')
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
+OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'anthropic/claude-3.5-sonnet')
+
+# ===== НАСТРОЙКИ БАЗЫ ДАННЫХ =====
+DATABASE_URL = os.getenv('DATABASE_URL', f'sqlite:///{DATA_DIR}/cyberkitty19_transkribator.db')
+
+# ===== НАСТРОЙКИ ОБРАБОТКИ ФАЙЛОВ =====
+MAX_FILE_SIZE_MB = int(os.getenv('MAX_FILE_SIZE_MB', '2000'))
+MAX_AUDIO_DURATION_MINUTES = int(os.getenv('MAX_AUDIO_DURATION_MINUTES', '240'))
+ENABLE_LLM_FORMATTING = os.getenv('ENABLE_LLM_FORMATTING', 'true').lower() == 'true'
+ENABLE_SEGMENTATION = os.getenv('ENABLE_SEGMENTATION', 'true').lower() == 'true'
+SEGMENT_DURATION_SECONDS = int(os.getenv('SEGMENT_DURATION_SECONDS', '30'))
+
+# ===== ДИРЕКТОРИИ =====
+VIDEOS_DIR = Path("/app/videos")
+AUDIO_DIR = Path("/app/audio")
+TRANSCRIPTIONS_DIR = Path("/app/transcriptions")
+
+# Создаем необходимые директории
+for directory in [VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR]:
+    directory.mkdir(parents=True, exist_ok=True)
+
+logger.info("✅ Конфигурация загружена успешно")
+logger.info(f"📁 Директория данных: {DATA_DIR}")
+logger.info(f"📁 Директория видео: {VIDEOS_DIR}")
+logger.info(f"📁 Директория аудио: {AUDIO_DIR}")
+logger.info(f"📁 Директория транскрипций: {TRANSCRIPTIONS_DIR}")
+logger.info(f"🔧 Максимальный размер файла: {MAX_FILE_SIZE_MB} МБ")
+logger.info(f"⏱️ Максимальная длительность: {MAX_AUDIO_DURATION_MINUTES} минут") 

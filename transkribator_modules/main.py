@@ -1,66 +1,71 @@
 #!/usr/bin/env python3
+"""
+CyberKitty Transkribator - Telegram Bot API Server Version
+Telegram бот для транскрипции видео и аудио файлов с поддержкой больших файлов.
+"""
 
-from telegram import Update
-from telegram.ext import (
-    Application, ApplicationBuilder, CommandHandler, MessageHandler, 
-    CallbackQueryHandler, ContextTypes, filters, PreCheckoutQueryHandler
-)
-
-from transkribator_modules.config import logger, BOT_TOKEN
-from transkribator_modules.bot.commands import (
-    start_command, help_command, status_command, raw_transcript_command,
-    plans_command, stats_command, api_command, promo_codes_command
+import asyncio
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from transkribator_modules.config import (
+    BOT_TOKEN, USE_LOCAL_BOT_API, LOCAL_BOT_API_URL, logger
 )
 from transkribator_modules.bot.handlers import (
-    button_callback, handle_message
+    start_command, help_command, status_command,
+    handle_document, handle_audio, handle_video
 )
-from transkribator_modules.bot.callbacks import handle_callback_query
-from transkribator_modules.bot.payments import (
-    handle_pre_checkout_query, handle_successful_payment, show_payment_plans
-)
-from transkribator_modules.db.database import init_database
 
-def main() -> None:
-    """Главная функция для запуска бота."""
-    logger.info("Запуск бота...")
+def create_application() -> Application:
+    """Создает и настраивает Telegram Application."""
     
-    # Инициализируем базу данных
-    try:
-        init_database()
-        logger.info("База данных инициализирована")
-    except Exception as e:
-        logger.error(f"Ошибка при инициализации базы данных: {e}")
+    # Создаем Application Builder
+    builder = Application.builder().token(BOT_TOKEN)
     
-    # Инициализация бота
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Обработчики команд
+    # Если используется локальный Bot API Server
+    if USE_LOCAL_BOT_API:
+        logger.info(f"🚀 Настройка локального Bot API Server: {LOCAL_BOT_API_URL}")
+        builder = builder.base_url(f"{LOCAL_BOT_API_URL}/bot")
+        builder = builder.base_file_url(f"{LOCAL_BOT_API_URL}/file/bot")
+    
+    # Создаем приложение
+    application = builder.build()
+    
+    # Регистрируем обработчики команд
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("rawtranscript", raw_transcript_command))
     
-    # Новые команды для монетизации
-    application.add_handler(CommandHandler("plans", plans_command))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("api", api_command))
-    application.add_handler(CommandHandler("buy", show_payment_plans))  # Команда для покупки
-    application.add_handler(CommandHandler("promo", promo_codes_command))  # Команда для промокодов
+    # Регистрируем обработчики файлов
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    application.add_handler(MessageHandler(filters.AUDIO, handle_audio))
+    application.add_handler(MessageHandler(filters.VIDEO, handle_video))
     
-    # Обработчики платежей
-    application.add_handler(PreCheckoutQueryHandler(handle_pre_checkout_query))
-    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
-    
-    # Обработчик для всех типов сообщений
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
-    
-    # Обработчики для кнопок (новый обработчик имеет приоритет)
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
-    application.add_handler(CallbackQueryHandler(button_callback))
+    logger.info("✅ Все обработчики зарегистрированы")
+    return application
 
-    # Запуск бота
-    logger.info("Бот запущен и слушает сообщения...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+async def main():
+    """Главная функция для запуска бота."""
+    logger.info("🚀 Запуск CyberKitty Transkribator (Telegram Bot API Server)")
+    
+    try:
+        # Создаем приложение
+        application = create_application()
+        
+        # Запускаем бота
+        logger.info("🤖 Бот запускается...")
+        await application.run_polling(
+            drop_pending_updates=True,
+            allowed_updates=['message', 'callback_query']
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка при запуске бота: {e}")
+        raise
 
 if __name__ == '__main__':
-    main() 
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("👋 Бот остановлен пользователем")
+    except Exception as e:
+        logger.error(f"❌ Неожиданная ошибка: {e}")
+        exit(1) 

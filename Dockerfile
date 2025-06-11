@@ -1,27 +1,25 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # Установка системных зависимостей
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
     ffmpeg \
-    git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Создание рабочей директории
 WORKDIR /app
 
-# Копируем файлы с зависимостями
-COPY requirements/ ./requirements/
+# Создание необходимых директорий
+RUN mkdir -p /app/data /app/videos /app/audio /app/transcriptions
+
+# Копирование файлов требований
 COPY requirements.txt .
 
-# Устанавливаем зависимости
+# Установка Python зависимостей
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем файлы проекта
+# Копирование исходного кода
 COPY transkribator_modules/ ./transkribator_modules/
-COPY cyberkitty_modular.py .
-COPY .env .
 
-# Создаем необходимые директории
-RUN mkdir -p /app/videos /app/audio /app/transcriptions
-
-# Запускаем модульного бота
-ENTRYPOINT ["python", "cyberkitty_modular.py"] 
+# Указание команды по умолчанию
+CMD ["python", "-m", "transkribator_modules.main"] 

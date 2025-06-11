@@ -1,325 +1,346 @@
+"""
+Обработчики сообщений для CyberKitty Transkribator
+"""
+
 import asyncio
+import tempfile
 from pathlib import Path
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from transkribator_modules.config import (
-    logger, user_transcriptions, VIDEOS_DIR, TRANSCRIPTIONS_DIR, MAX_MESSAGE_LENGTH,
-    TELETHON_WORKER_CHAT_ID, PYROGRAM_WORKER_ENABLED, PYROGRAM_WORKER_CHAT_ID
+    logger, MAX_FILE_SIZE_MB, VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR
 )
-from transkribator_modules.utils.processor import process_video, process_video_file
+from transkribator_modules.audio.extractor import extract_audio_from_video, compress_audio_for_api
+from transkribator_modules.transcribe.transcriber import transcribe_audio
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает нажатия на кнопки в сообщениях."""
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data.startswith("raw_"):
-        try:
-            message_id = query.data.split("_")[1]
-            raw_transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}_raw.txt"
-            
-            if not raw_transcript_path.exists():
-                await query.message.reply_text(
-                    "Не могу найти сырую транскрипцию для этого видео. *растерянно смотрит*"
-                )
-                return
-                
-            with open(raw_transcript_path, "r", encoding="utf-8") as f:
-                raw_transcript = f.read()
-                
-            if len(raw_transcript) > MAX_MESSAGE_LENGTH:
-                # Если транскрипция слишком длинная, отправляем файлом
-                with open(raw_transcript_path, "rb") as f:
-                    await context.bot.send_document(
-                        chat_id=query.message.chat_id,
-                        document=f,
-                        filename=f"raw_transcript_{message_id}.txt",
-                        caption="Вот необработанная транскрипция этого видео! *деловито машет хвостом*"
-                    )
-            else:
-                # Иначе отправляем текстом
-                await query.message.reply_text(
-                    f"Вот необработанная транскрипция для этого видео:\n\n{raw_transcript}\n\n"
-                    f"@CyberKitty19_bot"
-                )
-                
-        except Exception as e:
-            logger.error(f"Ошибка при обработке кнопки raw transcript: {e}")
-            await query.message.reply_text(
-                "Произошла ошибка при получении сырой транскрипции. *смущенно прячет мордочку*"
-            )
-    
-    elif query.data.startswith("detailed_summary_") or query.data.startswith("brief_summary_"):
-        try:
-            # Получаем id сообщения
-            message_id = query.data.split("_")[-1]
-            
-            # Определяем тип саммари
-            summary_type = "подробное" if query.data.startswith("detailed_") else "краткое"
-            
-            # Отправляем сообщение о начале генерации
-            status_message = await query.message.reply_text(
-                f"Генерирую {summary_type} саммари для этого видео... *сосредоточенно обдумывает содержание*"
-            )
-            
-            # Загружаем транскрипцию
-            transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}.txt"
-            
-            if not transcript_path.exists():
-                await status_message.edit_text(
-                    "Не могу найти транскрипцию для этого видео. *растерянно смотрит*"
-                )
-                return
-                
-            with open(transcript_path, "r", encoding="utf-8") as f:
-                transcript = f.read()
-            
-            # Импортируем функции генерации саммари
-            from transkribator_modules.transcribe.transcriber import generate_detailed_summary, generate_brief_summary
-            
-            # Генерируем саммари в зависимости от типа
-            if query.data.startswith("detailed_summary_"):
-                summary = await generate_detailed_summary(transcript)
-            else:
-                summary = await generate_brief_summary(transcript)
-                
-            if not summary:
-                await status_message.edit_text(
-                    f"Не удалось создать {summary_type} саммари. *виновато опускает уши*"
-                )
-                return
-            
-            # Сохраняем саммари в файл
-            summary_filename = f"telegram_video_{message_id}_{summary_type}_summary.txt"
-            summary_path = TRANSCRIPTIONS_DIR / summary_filename
-            
-            with open(summary_path, "w", encoding="utf-8") as f:
-                f.write(summary)
-            
-            # Отправляем результат
-            if len(summary) > MAX_MESSAGE_LENGTH:
-                # Если саммари слишком длинное, отправляем файлом
-                await status_message.edit_text(
-                    f"Готово! {summary_type.capitalize()} саммари получилось объемным, отправляю файлом... *довольно мурлычет*"
-                )
-                
-                with open(summary_path, "rb") as f:
-                    await context.bot.send_document(
-                        chat_id=query.message.chat_id,
-                        document=f,
-                        filename=f"{summary_type.capitalize()} саммари видео {message_id}.txt",
-                        caption=f"Вот {summary_type} саммари для вашего видео! *гордо выпрямляется*"
-                    )
-            else:
-                # Иначе отправляем текстом
-                await status_message.edit_text(
-                    f"Вот {summary_type} саммари для вашего видео:\n\n{summary}\n\n"
-                    f"@CyberKitty19_bot"
-                )
-            
-        except Exception as e:
-            logger.error(f"Ошибка при обработке кнопки {query.data}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            await query.message.reply_text(
-                f"Произошла ошибка при генерации {summary_type} саммари: {str(e)} *смущенно прячет мордочку*"
-            )
+# Поддерживаемые форматы
+VIDEO_FORMATS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.3gp'}
+AUDIO_FORMATS = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus'}
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик для всех типов сообщений."""
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    message_id = update.message.message_id
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /start"""
+    welcome_text = """🎬 **CyberKitty Transkribator** 🐱
+
+Привет! Я умею транскрибировать видео и аудио файлы любого размера!
+
+**Что я умею:**
+🎥 Обрабатывать видео до 2 ГБ
+🎵 Работать с аудио файлами
+📝 Создавать качественные транскрипции
+🤖 Форматировать текст с помощью ИИ
+
+**Как пользоваться:**
+1. Отправьте мне видео или аудио файл
+2. Подождите, пока я обработаю файл
+3. Получите готовую транскрипцию!
+
+Поддерживаемые форматы:
+• Видео: MP4, AVI, MOV, MKV, WebM и другие
+• Аудио: MP3, WAV, FLAC, AAC, OGG и другие
+
+Отправьте /help для подробной помощи."""
+
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /help"""
+    help_text = """📖 **Справка по CyberKitty Transkribator**
+
+**Основные возможности:**
+• Транскрипция видео и аудио файлов
+• Поддержка файлов до 2 ГБ
+• Автоматическое извлечение аудио из видео
+• ИИ-форматирование текста
+
+**Команды:**
+/start - Начать работу
+/help - Показать эту справку
+/status - Проверить статус бота
+
+**Поддерживаемые форматы:**
+
+🎥 **Видео:** MP4, AVI, MOV, MKV, WebM, FLV, WMV, M4V, 3GP
+🎵 **Аудио:** MP3, WAV, FLAC, AAC, OGG, M4A, WMA, OPUS
+
+**Ограничения:**
+• Максимальный размер файла: 2 ГБ
+• Максимальная длительность: 4 часа
+
+**Как это работает:**
+1. Вы отправляете файл
+2. Если это видео - я извлекаю аудио
+3. Аудио отправляется в AI API для транскрипции
+4. Текст форматируется с помощью LLM
+5. Вы получаете готовую транскрипцию
+
+Просто отправьте файл и я начну обработку! 🚀"""
+
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /status"""
+    status_text = """✅ **Статус CyberKitty Transkribator**
+
+🤖 Бот: Активен
+🌐 Telegram Bot API Server: Активен
+🎵 Обработка аудио: Доступна
+🎥 Обработка видео: Доступна
+🧠 ИИ транскрипция: Подключена
+📝 ИИ форматирование: Активно
+
+**Настройки:**
+• Макс. размер файла: 2 ГБ
+• Макс. длительность: 4 часа
+• Форматы видео: 9 поддерживаемых
+• Форматы аудио: 8 поддерживаемых
+
+Готов к работе! 🚀"""
+
+    await update.message.reply_text(status_text, parse_mode='Markdown')
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик документов (файлов)"""
+    document = update.message.document
     
-    # Логируем сообщение
-    logger.info(f"Получено сообщение от пользователя {user_id}")
+    if not document:
+        await update.message.reply_text("❌ Не удалось получить информацию о файле.")
+        return
     
-    # Обработка промокодов (если сообщение является текстом и выглядит как промокод)
-    if update.message.text and not update.message.video and not update.message.document:
-        text = update.message.text.strip().upper()
-        
-        # Проверяем, похоже ли это на промокод (определенные паттерны)
-        if (text.startswith(("KITTY", "LIGHTKITTY", "LIGHT", "VIP", "SPECIAL", "PROMO")) or 
-            (len(text) >= 5 and len(text) <= 20 and text.replace("-", "").replace("_", "").isalnum())):
-            from transkribator_modules.bot.commands import activate_promo_code
-            try:
-                await activate_promo_code(update, context, text)
-                return  # Прекращаем обработку как обычного сообщения
-            except Exception as e:
-                logger.error(f"Ошибка при обработке возможного промокода '{text}': {e}")
-                # Если промокод не найден, отвечаем мягко
-                await update.message.reply_text("🤔 Это похоже на промокод, но я его не нашёл. *задумчиво наклоняет голову*")
-                return
+    # Проверяем размер файла
+    file_size_mb = document.file_size / (1024 * 1024) if document.file_size else 0
     
-    # Проверяем сообщения от воркера (уведомления о скачивании)
-    if update.message.text and ("#video_downloaded_" in update.message.text or "#pyro_downloaded_" in update.message.text):
-        try:
-            # Извлекаем chat_id и message_id из сообщения
-            parts = update.message.text.split('_')
-            if len(parts) >= 4:
-                original_chat_id = int(parts[2])
-                original_message_id = int(parts[3])
-                
-                logger.info(f"Получено уведомление о скачивании видео: chat_id={original_chat_id}, message_id={original_message_id}")
-                
-                # Проверяем наличие видео
-                video_path = VIDEOS_DIR / f"telegram_video_{original_message_id}.mp4"
-                
-                if video_path.exists() and video_path.stat().st_size > 0:
-                    logger.info(f"Видео найдено: {video_path}, начинаю обработку")
-                    
-                    # Отправляем пользователю уведомление о начале обработки
-                    status_message = await context.bot.send_message(
-                        chat_id=original_chat_id,
-                        text="Видео успешно скачано! Начинаю обработку... *радостно мурчит*"
-                    )
-                    
-                    # Обрабатываем видео
-                    try:
-                        await process_video_file(video_path, original_chat_id, original_message_id, context, status_message=status_message)
-                    except Exception as process_error:
-                        logger.error(f"Ошибка при обработке видео: {process_error}")
-                        # Отправляем сообщение об ошибке
-                        await context.bot.send_message(
-                            chat_id=original_chat_id,
-                            text=f"Произошла ошибка при обработке видео: {process_error}. *виновато опускает уши*"
-                        )
-                else:
-                    logger.error(f"Видео не найдено или пустое: {video_path}")
-                    await context.bot.send_message(
-                        chat_id=original_chat_id,
-                        text="Не удалось найти скачанное видео. *растерянно оглядывается*"
-                    )
-        except Exception as e:
-            logger.error(f"Ошибка при обработке уведомления от воркера: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-    
-    # Проверяем наличие видео в сообщении
-    elif update.message.video:
-        logger.info(f"Получено видео от пользователя {user_id}")
-        
-        # Отправляем сообщение о начале загрузки
-        status_message = await update.message.reply_text(
-            "Мяу! Вижу видео! Скачиваю его... *возбужденно виляет хвостом*"
+    if file_size_mb > MAX_FILE_SIZE_MB:
+        await update.message.reply_text(
+            f"❌ Файл слишком большой: {file_size_mb:.1f} МБ\n"
+            f"Максимальный размер: {MAX_FILE_SIZE_MB} МБ"
         )
-        
-        video = update.message.video
-        
-        try:
-            # Пытаемся скачать видео напрямую
-            video_file = await context.bot.get_file(video.file_id)
-            
-            # Создаем директорию, если не существует
-            video_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
-            video_path.parent.mkdir(exist_ok=True)
-            
-            # Скачиваем видео
-            await video_file.download_to_drive(custom_path=video_path)
-            
-            # Проверяем, что файл существует и не пустой
-            if video_path.exists() and video_path.stat().st_size > 0:
-                logger.info(f"Видео успешно загружено: {video_path} (размер: {video_path.stat().st_size} байт)")
-                
-                # Обновляем статус
-                await status_message.edit_text(
-                    "Видео успешно загружено! Начинаю обработку... *радостно мурчит*"
-                )
-                
-                # Обрабатываем видео
-                await process_video(chat_id, message_id, update, context)
-            else:
-                logger.error(f"Ошибка при скачивании видео: файл не существует или пустой")
-                await status_message.edit_text(
-                    "Не удалось скачать видео. Пожалуйста, попробуйте снова. *печально опускает ушки*"
-                )
-                
-        except Exception as e:
-            logger.error(f"Ошибка при скачивании видео: {e}")
-            
-            # Проверяем, является ли ошибка "File is too big"
-            if "File is too big" in str(e):
-                worker_available = False
-                
-                # Сначала проверяем доступность Pyro воркера
-                if PYROGRAM_WORKER_ENABLED and PYROGRAM_WORKER_CHAT_ID != 0:
-                    logger.info(f"Файл слишком большой для прямой загрузки, использую Pyrogram воркер")
-                    
-                    # Обновляем статус
-                    await status_message.edit_text(
-                        "Видео слишком большое для прямой загрузки. Использую Pyrogram воркер... *сосредоточенно стучит по клавиатуре*"
-                    )
-                    
-                    try:
-                        # Формируем команду
-                        command_text = f"#pyro_download_{chat_id}_{message_id}"
-                        logger.info(f"Отправляю команду в Pyro релейный чат: {command_text}, chat_id={PYROGRAM_WORKER_CHAT_ID}")
-                        
-                        # Отправляем видео с командой в релейный чат
-                        await context.bot.copy_message(
-                            chat_id=PYROGRAM_WORKER_CHAT_ID,
-                            from_chat_id=chat_id,
-                            message_id=message_id,
-                            caption=command_text  # Устанавливаем текст команды как подпись к видео
-                        )
-                        
-                        # Обновляем статус
-                        await status_message.edit_text(
-                            "Запрос на скачивание отправлен! Ожидаю ответа... *нетерпеливо постукивает лапкой*"
-                        )
-                        worker_available = True
-                        
-                    except Exception as pyro_error:
-                        logger.error(f"Ошибка при отправке запроса Pyro воркеру: {pyro_error}")
-                        # Не обновляем статус, так как может быть доступен Telethon воркер
-                
-                # Пробуем использовать Telethon воркер, если Pyro недоступен или произошла ошибка
-                if not worker_available and TELETHON_WORKER_CHAT_ID != 0:
-                    logger.info(f"Файл слишком большой для прямой загрузки, использую Telethon воркер")
-                    
-                    # Обновляем статус
-                    await status_message.edit_text(
-                        "Видео слишком большое для прямой загрузки. Использую Telethon воркер... *сосредоточенно стучит по клавиатуре*"
-                    )
-                    
-                    try:
-                        # Формируем команду
-                        command_text = f"#video_download_{chat_id}_{message_id}"
-                        logger.info(f"Отправляю команду в релейный чат: {command_text}, chat_id={TELETHON_WORKER_CHAT_ID}")
-                        
-                        # Отправляем видео с командой в релейный чат
-                        await context.bot.copy_message(
-                            chat_id=TELETHON_WORKER_CHAT_ID,
-                            from_chat_id=chat_id,
-                            message_id=message_id,
-                            caption=command_text  # Устанавливаем текст команды как подпись к видео
-                        )
-                        
-                        # Обновляем статус
-                        await status_message.edit_text(
-                            "Запрос на скачивание отправлен! Ожидаю ответа... *нетерпеливо постукивает лапкой*"
-                        )
-                        worker_available = True
-                        
-                    except Exception as telethon_error:
-                        logger.error(f"Ошибка при отправке запроса Telethon воркеру: {telethon_error}")
-                        await status_message.edit_text(
-                            f"Произошла ошибка при обработке видео через Telethon релейный чат: {str(telethon_error)} *смущенно прячет мордочку*"
-                        )
-                
-                # Если ни один воркер не доступен
-                if not worker_available:
-                    await status_message.edit_text(
-                        "К сожалению, видео слишком большое для прямой загрузки, а ни один воркер не настроен. *печально вздыхает*"
-                    )
-            else:
-                await status_message.edit_text(
-                    f"Произошла ошибка при скачивании видео: {str(e)} *испуганно прячется*"
-                )
+        return
     
-    # В минимальном режиме просто отвечаем текстом
+    # Определяем тип файла по расширению
+    file_extension = Path(document.file_name).suffix.lower() if document.file_name else ''
+    
+    if file_extension in VIDEO_FORMATS:
+        await process_video_file(update, context, document)
+    elif file_extension in AUDIO_FORMATS:
+        await process_audio_file(update, context, document)
     else:
         await update.message.reply_text(
-            "Мяу! *игриво смотрит* Отправь мне видео, и я создам текстовую расшифровку! *виляет хвостиком*"
-        ) 
+            f"❌ Неподдерживаемый формат файла: {file_extension}\n\n"
+            f"Поддерживаемые форматы:\n"
+            f"🎥 Видео: {', '.join(sorted(VIDEO_FORMATS))}\n"
+            f"🎵 Аудио: {', '.join(sorted(AUDIO_FORMATS))}"
+        )
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик видео файлов"""
+    video = update.message.video
+    
+    if not video:
+        await update.message.reply_text("❌ Не удалось получить информацию о видео.")
+        return
+    
+    # Проверяем размер файла
+    file_size_mb = video.file_size / (1024 * 1024) if video.file_size else 0
+    
+    if file_size_mb > MAX_FILE_SIZE_MB:
+        await update.message.reply_text(
+            f"❌ Видео слишком большое: {file_size_mb:.1f} МБ\n"
+            f"Максимальный размер: {MAX_FILE_SIZE_MB} МБ"
+        )
+        return
+    
+    await process_video_file(update, context, video)
+
+async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик аудио файлов"""
+    audio = update.message.audio or update.message.voice
+    
+    if not audio:
+        await update.message.reply_text("❌ Не удалось получить информацию об аудио.")
+        return
+    
+    # Проверяем размер файла
+    file_size_mb = audio.file_size / (1024 * 1024) if audio.file_size else 0
+    
+    if file_size_mb > MAX_FILE_SIZE_MB:
+        await update.message.reply_text(
+            f"❌ Аудио слишком большое: {file_size_mb:.1f} МБ\n"
+            f"Максимальный размер: {MAX_FILE_SIZE_MB} МБ"
+        )
+        return
+    
+    await process_audio_file(update, context, audio)
+
+async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE, video_file) -> None:
+    """Обрабатывает видео файл"""
+    try:
+        file_size_mb = video_file.file_size / (1024 * 1024) if video_file.file_size else 0
+        filename = getattr(video_file, 'file_name', f"video_{video_file.file_id}")
+        
+        # Отправляем уведомление о начале обработки
+        status_msg = await update.message.reply_text(
+            f"🎬 **Обрабатываю видео:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"⏳ Скачиваю файл...",
+            parse_mode='Markdown'
+        )
+        
+        # Скачиваем файл
+        file_obj = await context.bot.get_file(video_file.file_id)
+        
+        # Создаем временные пути
+        video_path = VIDEOS_DIR / f"telegram_video_{video_file.file_id}.mp4"
+        audio_path = AUDIO_DIR / f"telegram_audio_{video_file.file_id}.wav"
+        
+        # Скачиваем файл
+        await file_obj.download_to_drive(video_path)
+        
+        # Обновляем статус
+        await status_msg.edit_text(
+            f"🎬 **Обрабатываю видео:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"🎵 Извлекаю аудио...",
+            parse_mode='Markdown'
+        )
+        
+        # Извлекаем аудио
+        if not await extract_audio_from_video(video_path, audio_path):
+            await status_msg.edit_text("❌ Не удалось извлечь аудио из видео")
+            return
+        
+        # Сжимаем аудио
+        await status_msg.edit_text(
+            f"🎬 **Обрабатываю видео:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"🗜️ Сжимаю аудио...",
+            parse_mode='Markdown'
+        )
+        
+        compressed_audio = await compress_audio_for_api(audio_path)
+        
+        # Транскрибируем
+        await status_msg.edit_text(
+            f"🎬 **Обрабатываю видео:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"🤖 Создаю транскрипцию...",
+            parse_mode='Markdown'
+        )
+        
+        transcript = await transcribe_audio(compressed_audio)
+        
+        if transcript:
+            # Сохраняем транскрипцию
+            transcript_path = TRANSCRIPTIONS_DIR / f"telegram_transcript_{video_file.file_id}.txt"
+            transcript_path.write_text(transcript, encoding='utf-8')
+            
+            # Отправляем результат
+            await status_msg.edit_text("✅ Транскрипция готова!")
+            
+            # Если текст короткий, отправляем в сообщении
+            if len(transcript) <= 4000:
+                await update.message.reply_text(
+                    f"📝 **Транскрипция:**\n\n{transcript}",
+                    parse_mode='Markdown'
+                )
+            else:
+                # Если длинный, отправляем файлом
+                await update.message.reply_document(
+                    document=transcript_path,
+                    filename=f"transcript_{filename}.txt",
+                    caption="📝 Транскрипция готова!"
+                )
+        else:
+            await status_msg.edit_text("❌ Не удалось создать транскрипцию")
+        
+        # Очищаем временные файлы
+        try:
+            video_path.unlink(missing_ok=True)
+            audio_path.unlink(missing_ok=True)
+            if compressed_audio != audio_path:
+                compressed_audio.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"Не удалось удалить временные файлы: {e}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при обработке видео: {e}")
+        await update.message.reply_text(f"❌ Ошибка при обработке видео: {str(e)}")
+
+async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE, audio_file) -> None:
+    """Обрабатывает аудио файл"""
+    try:
+        file_size_mb = audio_file.file_size / (1024 * 1024) if audio_file.file_size else 0
+        filename = getattr(audio_file, 'file_name', f"audio_{audio_file.file_id}")
+        
+        # Отправляем уведомление о начале обработки
+        status_msg = await update.message.reply_text(
+            f"🎵 **Обрабатываю аудио:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"⏳ Скачиваю файл...",
+            parse_mode='Markdown'
+        )
+        
+        # Скачиваем файл
+        file_obj = await context.bot.get_file(audio_file.file_id)
+        
+        # Создаем временный путь
+        audio_path = AUDIO_DIR / f"telegram_audio_{audio_file.file_id}.mp3"
+        
+        # Скачиваем файл
+        await file_obj.download_to_drive(audio_path)
+        
+        # Сжимаем если нужно
+        await status_msg.edit_text(
+            f"🎵 **Обрабатываю аудио:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"🗜️ Подготавливаю аудио...",
+            parse_mode='Markdown'
+        )
+        
+        processed_audio = await compress_audio_for_api(audio_path)
+        
+        # Транскрибируем
+        await status_msg.edit_text(
+            f"🎵 **Обрабатываю аудио:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"🤖 Создаю транскрипцию...",
+            parse_mode='Markdown'
+        )
+        
+        transcript = await transcribe_audio(processed_audio)
+        
+        if transcript:
+            # Сохраняем транскрипцию
+            transcript_path = TRANSCRIPTIONS_DIR / f"telegram_transcript_{audio_file.file_id}.txt"
+            transcript_path.write_text(transcript, encoding='utf-8')
+            
+            # Отправляем результат
+            await status_msg.edit_text("✅ Транскрипция готова!")
+            
+            # Если текст короткий, отправляем в сообщении
+            if len(transcript) <= 4000:
+                await update.message.reply_text(
+                    f"📝 **Транскрипция:**\n\n{transcript}",
+                    parse_mode='Markdown'
+                )
+            else:
+                # Если длинный, отправляем файлом
+                await update.message.reply_document(
+                    document=transcript_path,
+                    filename=f"transcript_{filename}.txt",
+                    caption="📝 Транскрипция готова!"
+                )
+        else:
+            await status_msg.edit_text("❌ Не удалось создать транскрипцию")
+        
+        # Очищаем временные файлы
+        try:
+            audio_path.unlink(missing_ok=True)
+            if processed_audio != audio_path:
+                processed_audio.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"Не удалось удалить временные файлы: {e}")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при обработке аудио: {e}")
+        await update.message.reply_text(f"❌ Ошибка при обработке аудио: {str(e)}") 

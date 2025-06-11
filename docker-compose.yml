@@ -1,58 +1,54 @@
 version: '3.8'
 
 services:
-  # Telegram бот
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: cyberkitty19-telegram-bot-api
+    ports:
+      - "8081:8081"
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+    volumes:
+      - ./telegram-bot-api-data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+    networks:
+      - cyberkitty19-transkribator-network
+
   bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: cyberkitty19-transkribator-bot
-    env_file:
-      - .env
-    volumes:
-      - ./videos:/app/videos
-      - ./audio:/app/audio
-      - ./transcriptions:/app/transcriptions
-      - ./transkribator_modules/workers:/app/transkribator_modules/workers
-    restart: unless-stopped
     depends_on:
-      - pyro-worker
-    networks:
-      - cyberkitty19-transkribator-network
-
-  # Pyrogram воркер для больших файлов
-  pyro-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.pyro
-    container_name: cyberkitty19-transkribator-pyro-worker
-    env_file:
-      - .env
+      - telegram-bot-api
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      - USE_LOCAL_BOT_API=true
+      - LOCAL_BOT_API_URL=http://telegram-bot-api:8081
+      - DATABASE_URL=${DATABASE_URL}
     volumes:
       - ./videos:/app/videos
-      - ./audio:/app/audio
       - ./transcriptions:/app/transcriptions
-      - ./transkribator_modules/workers:/app/transkribator_modules/workers
-      - ./transkribator_modules/workers/pyro_worker.session:/app/transkribator_modules/workers/pyro_worker.session
+      - ./audio:/app/audio
     restart: unless-stopped
-    stdin_open: true
-    tty: true
     networks:
       - cyberkitty19-transkribator-network
 
-  # API сервер
   api:
     build:
       context: .
       dockerfile: Dockerfile.api
     container_name: cyberkitty19-transkribator-api
-    env_file:
-      - .env
     ports:
       - "8000:8000"
+    environment:
+      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      - DATABASE_URL=${DATABASE_URL}
     volumes:
-      - ./videos:/app/videos
-      - ./audio:/app/audio
       - ./transcriptions:/app/transcriptions
     restart: unless-stopped
     networks:
@@ -63,6 +59,7 @@ networks:
     driver: bridge
 
 volumes:
+  telegram-bot-api-data:
   videos:
   audio:
   transcriptions: 
