@@ -1,12 +1,38 @@
 version: '3.8'
 
 services:
+  # Telegram Bot API Server для разработки
+  telegram-bot-api-dev:
+    image: aiogram/telegram-bot-api:latest
+    container_name: transkribator-telegram-bot-api-dev
+    ports:
+      - "8081:8081"
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+    command: [
+      "telegram-bot-api",
+      "--dir=/var/lib/telegram-bot-api",
+      "--temp-dir=/tmp/telegram-bot-api",
+      "--username=telegram-bot-api",
+      "--groupname=telegram-bot-api",
+      "--http-port=8081",
+      "--max-file-size=2147483648"
+    ]
+    volumes:
+      - telegram-bot-api-data-dev:/var/lib/telegram-bot-api
+    restart: unless-stopped
+    networks:
+      - transkribator-dev-network
+
   # Telegram бот для разработки
   bot-dev:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: transkribator-bot-dev
+    depends_on:
+      - telegram-bot-api-dev
     volumes:
       - ./videos:/app/videos
       - ./audio:/app/audio
@@ -17,32 +43,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
-    working_dir: /app
-    stdin_open: true
-    tty: true
-    networks:
-      - transkribator-dev-network
-    # Не запускаем автоматически, только для интерактивной работы
-    command: /bin/bash
-
-  # Pyrogram воркер для разработки
-  pyro-dev:
-    build:
-      context: .
-      dockerfile: Dockerfile.pyro
-    container_name: transkribator-pyro-dev
-    volumes:
-      - ./videos:/app/videos
-      - ./audio:/app/audio
-      - ./transcriptions:/app/transcriptions
-      - ./.env:/app/.env
-      - ./transkribator_modules:/app/transkribator_modules
-      - .:/app  # Монтируем весь проект для разработки
-      - ./transkribator_modules/workers/pyro_worker.session:/app/transkribator_modules/workers/pyro_worker.session  # Монтируем сессию из правильного места
-    environment:
-      - PYTHONUNBUFFERED=1
-      - PYTHONPATH=/app
-      - PYROGRAM_WORKER_ENABLED=true
+      - USE_LOCAL_BOT_API=true
+      - LOCAL_BOT_API_URL=http://telegram-bot-api-dev:8081
     working_dir: /app
     stdin_open: true
     tty: true
@@ -69,6 +71,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
+      - REQUIRE_BOT_TOKEN=false
     working_dir: /app
     stdin_open: true
     tty: true
@@ -82,6 +85,7 @@ networks:
     driver: bridge
 
 volumes:
+  telegram-bot-api-data-dev:
   videos:
   audio:
   transcriptions: 

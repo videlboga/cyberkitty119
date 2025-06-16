@@ -10,108 +10,225 @@ from transkribator_modules.db.database import (
 from transkribator_modules.db.models import ApiKey, PlanType
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /start с новым котячим стартовым экраном"""
-    user = update.effective_user
+    """Обработчик команды /start"""
+    welcome_text = """🎬 **CyberKitty Transkribator** 🐱
+
+Привет! Я умею транскрибировать видео и аудио файлы любого размера!
+
+**Что я умею:**
+🎥 Обрабатывать видео до 2 ГБ
+🎵 Работать с аудио файлами
+📝 Создавать качественные транскрипции
+🤖 Форматировать текст с помощью ИИ
+💎 Система подписок и бонусов
+
+**Как пользоваться:**
+1. Отправьте мне видео или аудио файл
+2. Подождите, пока я обработаю файл
+3. Получите готовую транскрипцию!
+
+Поддерживаемые форматы:
+• Видео: MP4, AVI, MOV, MKV, WebM и другие
+• Аудио: MP3, WAV, FLAC, AAC, OGG и другие
+
+Отправьте /help для подробной помощи."""
+
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /help"""
+    help_text = """📖 **Справка по CyberKitty Transkribator**
+
+**Основные возможности:**
+• Транскрипция видео и аудио файлов
+• Поддержка файлов до 2 ГБ
+• Автоматическое извлечение аудио из видео
+• ИИ-форматирование текста
+• Система подписок и бонусов
+
+**Команды:**
+/start - Начать работу
+/help - Показать эту справку
+/status - Проверить статус бота
+/plans - Показать тарифные планы
+/stats - Статистика использования
+/api - API ключи
+/promo - Промокоды
+
+**Поддерживаемые форматы:**
+
+🎥 **Видео:** MP4, AVI, MOV, MKV, WebM, FLV, WMV, M4V, 3GP
+🎵 **Аудио:** MP3, WAV, FLAC, AAC, OGG, M4A, WMA, OPUS
+
+**Ограничения:**
+• Максимальный размер файла: 2 ГБ
+• Максимальная длительность: 4 часа
+
+**Как это работает:**
+1. Вы отправляете файл
+2. Если это видео - я извлекаю аудио
+3. Аудио отправляется в AI API для транскрипции
+4. Текст форматируется с помощью LLM
+5. Вы получаете готовую транскрипцию
+
+Просто отправьте файл и я начну обработку! 🚀"""
+
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /status"""
+    status_text = """✅ **Статус CyberKitty Transkribator**
+
+🤖 Бот: Активен
+🌐 Telegram Bot API Server: Активен
+🎵 Обработка аудио: Доступна
+🎥 Обработка видео: Доступна
+🧠 ИИ транскрипция: Подключена
+📝 ИИ форматирование: Активно
+💎 Система платежей: Активна
+
+**Настройки:**
+• Макс. размер файла: 2 ГБ
+• Макс. длительность: 4 часа
+• Форматы видео: 9 поддерживаемых
+• Форматы аудио: 8 поддерживаемых
+
+Готов к работе! 🚀"""
+
+    await update.message.reply_text(status_text, parse_mode='Markdown')
+
+async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /rawtranscript"""
+    help_text = """📝 **Получение сырой транскрипции**
+
+После обработки файла вы можете получить необработанную транскрипцию, 
+нажав кнопку "Сырая транскрипция" в сообщении с результатом.
+
+**Что это дает:**
+• Исходный текст без ИИ-обработки
+• Полная версия без сокращений
+• Возможность самостоятельной обработки
+
+**Как использовать:**
+1. Отправьте файл для транскрипции
+2. Получите обработанный результат
+3. Нажмите кнопку "Сырая транскрипция"
+4. Получите исходный текст
+
+Удобно для дальнейшей обработки! 🔧"""
     
-    welcome_text = f"""🐱 **Мяу! Добро пожаловать в Cyberkitty19 Transkribator!**
-
-Привет, {user.first_name or 'котик'}! Я умный котик-транскрибатор, который превращает твои видео в текст! 
-
-🎬 **Что я умею:**
-• Транскрибирую видео любого формата в текст
-• Форматирую текст с помощью ИИ 
-• Создаю краткие и подробные саммари
-• Работаю с большими файлами через API
-
-🚀 **Как это работает:**
-Просто отправь мне видео, и я создам красивую текстовую расшифровку! Можешь выбрать обычную транскрибацию или с ИИ-форматированием.
-
-💡 **Готов начать?**
-Нажми кнопку ниже, чтобы войти в личный кабинет, или просто отправь мне видео!
-
-*мурчит и виляет хвостиком* 🐾"""
-
-    keyboard = [
-        [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
-        [InlineKeyboardButton("💡 Помощь", callback_data="show_help")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /plans - показать тарифные планы"""
+    """Обработчик команды /plans"""
     from transkribator_modules.bot.payments import show_payment_plans
     await show_payment_plans(update, context)
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /stats - статистика пользователя"""
-    await personal_cabinet_command(update, context)
+    """Обработчик команды /stats"""
+    try:
+        from transkribator_modules.db.database import get_user_stats
+        user_id = update.effective_user.id
+        stats = get_user_stats(user_id)
+        
+        stats_text = f"""📊 **Ваша статистика**
+
+🎯 **Основные показатели:**
+• Обработано файлов: {stats.get('files_processed', 0)}
+• Минут транскрибировано: {stats.get('minutes_transcribed', 0)}
+• Последний раз: {stats.get('last_activity', 'Никогда')}
+
+💎 **Подписка:**
+• Статус: {stats.get('subscription_status', 'Базовый')}
+• Остаток файлов: {stats.get('files_remaining', 'Безлимит')}
+• Действует до: {stats.get('subscription_until', 'Не ограничено')}
+
+📈 **Достижения:**
+• Всего символов: {stats.get('total_characters', 0)}
+• Средняя длительность: {stats.get('avg_duration', 0)} мин
+
+Спасибо за использование CyberKitty Transkribator! 🐱"""
+
+        await update.message.reply_text(stats_text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики: {e}")
+        await update.message.reply_text(
+            "❌ Не удалось получить статистику. Попробуйте позже."
+        )
 
 async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /api - управление API ключами"""
-    user = update.effective_user
+    """Обработчик команды /api"""
+    api_text = """🔌 **API интеграция**
+
+**Скоро будет доступно:**
+• REST API для транскрипции
+• Webhook уведомления
+• Интеграция с внешними сервисами
+• Массовая обработка файлов
+
+**Планируемые возможности:**
+• Загрузка по URL
+• Пакетная обработка
+• Приоритетная очередь
+• Детальная аналитика
+
+Следите за обновлениями! 🚀
+
+*API будет доступен для пользователей с PRO подпиской*"""
+
+    await update.message.reply_text(api_text, parse_mode='Markdown')
+
+async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /promo"""
+    if not context.args:
+        promo_text = """🎁 **Промокоды**
+
+**Как использовать:**
+Отправьте `/promo [код]` для активации промокода
+
+**Примеры:**
+• `/promo WELCOME10` - скидка 10%
+• `/promo PREMIUM30` - 30 дней PRO бесплатно
+
+**Где найти промокоды:**
+• Наш Telegram канал
+• Рассылка новостей
+• Специальные акции
+
+Следите за обновлениями для получения новых промокодов! 🔥"""
+
+        await update.message.reply_text(promo_text, parse_mode='Markdown')
+        return
     
-    db = SessionLocal()
+    promo_code = context.args[0].upper()
+    
     try:
-        user_service = UserService(db)
-        db_user = user_service.get_or_create_user(telegram_id=user.id)
+        from transkribator_modules.db.database import activate_promo_code
+        user_id = update.effective_user.id
+        result = activate_promo_code(user_id, promo_code)
         
-        if db_user.current_plan not in ["pro", "unlimited"]:
+        if result['success']:
             await update.message.reply_text(
-                "🔐 API доступ доступен только для планов 💎 Профессиональный и 🚀 Безлимитный\n\n"
-                "😿 *грустно мяукает*"
+                f"🎉 **Промокод активирован!**\n\n"
+                f"**Бонус:** {result['bonus']}\n"
+                f"**Действует до:** {result['expires']}\n\n"
+                f"Спасибо за использование CyberKitty Transkribator! 🐱",
+                parse_mode='Markdown'
             )
-            return
+        else:
+            await update.message.reply_text(
+                f"❌ **Ошибка активации промокода**\n\n"
+                f"Причина: {result['error']}\n\n"
+                f"Проверьте правильность ввода кода.",
+                parse_mode='Markdown'
+            )
             
-        # Показываем API ключи через callback
-        from transkribator_modules.bot.callbacks import show_api_keys_callback
-        await show_api_keys_callback(None, user)
-        
-    finally:
-        db.close()
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /help с котячим описанием"""
-    help_text = """🔧 **Справка по командам**
-
-**Основные команды:**
-/start - Главный экран
-/help - Эта справка  
-/status - Проверить работу сервисов
-/buy - Купить тарифный план
-
-**Как пользоваться:**
-🎬 Отправь мне видео (до 50 МБ на бесплатном тарифе)
-🤖 Выбери тип обработки:
-   • Обычная транскрибация
-   • С ИИ-форматированием
-   • Краткое саммари
-   • Подробное саммари
-
-**Форматы видео:** MP4, AVI, MOV, MKV, WebM
-**Языки:** Русский, английский и другие
-
-**Тарифные планы:**
-🆓 Бесплатный - 30 мин/месяц
-⭐ Базовый - 3 часа/месяц  
-💎 Профессиональный - 10 часов/месяц + API
-🚀 Безлимитный - без ограничений + VIP
-
-Есть вопросы? Напиши @kiryanovpro 
-
-*мурчит и подмигивает* 😸"""
-
-    keyboard = [
-        [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
-        [InlineKeyboardButton("⭐ Купить план", callback_data="show_payment_plans")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    if update.callback_query:
-        await update.callback_query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(help_text, reply_markup=reply_markup, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Ошибка при активации промокода: {e}")
+        await update.message.reply_text(
+            "❌ Не удалось активировать промокод. Попробуйте позже."
+        )
 
 async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Личный кабинет пользователя"""
@@ -209,155 +326,3 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
             await update.message.reply_text(error_text)
     finally:
         db.close()
-
-async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Управление промокодами"""
-    user = update.effective_user
-    
-    # Если есть аргумент команды (промокод)
-    if context.args and len(context.args) > 0:
-        promo_code = context.args[0].upper()
-        await activate_promo_code(update, context, promo_code)
-        return
-    
-    db = SessionLocal()
-    try:
-        user_service = UserService(db)
-        promo_service = PromoCodeService(db)
-        
-        db_user = user_service.get_or_create_user(telegram_id=user.id)
-        active_promos = promo_service.get_user_active_promos(db_user)
-        
-        promo_text = f"""🎁 **Промокоды**
-
-Здесь ты можешь активировать промокоды и посмотреть уже активированные!
-
-💡 **Как использовать:**
-Введи промокод в поле ниже или используй команду:
-`/promo ТВОЙ_ПРОМОКОД`
-
-🎯 **Где взять промокоды?**
-• В социальных сетях разработчика
-• В специальных акциях и розыгрышах
-• За активность в сообществе
-
-😸 *Следи за новостями, чтобы не пропустить!*"""
-
-        if active_promos:
-            promo_text += f"\n\n🎉 **Твои активные промокоды:**"
-            for promo in active_promos:
-                expires_text = ""
-                if promo.expires_at:
-                    if promo.expires_at > datetime.utcnow():
-                        days_left = (promo.expires_at - datetime.utcnow()).days
-                        expires_text = f" (ещё {days_left} дн.)"
-                    else:
-                        expires_text = " (истек)"
-                else:
-                    expires_text = " (бессрочно 🎉)"
-                
-                promo_text += f"\n• {promo.promo_code.description}{expires_text}"
-        
-        promo_text += f"\n\n😸 *предвкушающе мурчит*"
-
-        keyboard = [
-            [InlineKeyboardButton("✏️ Ввести промокод", callback_data="enter_promo_code")],
-            [InlineKeyboardButton("🔙 Личный кабинет", callback_data="personal_cabinet")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        if update.callback_query:
-            await update.callback_query.edit_message_text(
-                promo_text, reply_markup=reply_markup, parse_mode='Markdown'
-            )
-        else:
-            await update.message.reply_text(
-                promo_text, reply_markup=reply_markup, parse_mode='Markdown'
-            )
-            
-    except Exception as e:
-        logger.error(f"Ошибка в промокодах: {e}")
-        error_text = "😿 Ошибка при загрузке промокодов. *расстроенно мяукает*"
-        
-        if update.callback_query:
-            await update.callback_query.edit_message_text(error_text)
-        else:
-            await update.message.reply_text(error_text)
-    finally:
-        db.close()
-
-async def activate_promo_code(update: Update, context: ContextTypes.DEFAULT_TYPE, promo_code: str) -> None:
-    """Активация промокода"""
-    user = update.effective_user
-    
-    db = SessionLocal()
-    try:
-        user_service = UserService(db)
-        promo_service = PromoCodeService(db)
-        
-        db_user = user_service.get_or_create_user(telegram_id=user.id)
-        
-        # Валидируем промокод
-        is_valid, message, promo = promo_service.validate_promo_code(promo_code, db_user)
-        
-        if not is_valid:
-            await update.message.reply_text(message)
-            return
-        
-        # Активируем промокод
-        activation = promo_service.activate_promo_code(promo, db_user)
-        
-        # Формируем сообщение об успехе
-        duration_text = ""
-        if promo.duration_days:
-            duration_text = f" на {promo.duration_days} дней"
-        else:
-            duration_text = " навсегда"
-        
-        success_text = f"""🎉 **Промокод активирован!**
-
-{promo.description}
-
-✨ **Твой новый план:** 🚀 Безлимитный{duration_text}
-
-🎁 **Что теперь доступно:**
-• Безлимитные минуты транскрибации
-• Файлы до 2 ГБ  
-• VIP поддержка
-• Все функции сервиса
-
-😻 *счастливо мурчит и делает кульбит*"""
-
-        keyboard = [
-            [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
-            [InlineKeyboardButton("🎬 Начать работу", callback_data="back_to_start")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
-        
-    except Exception as e:
-        logger.error(f"Ошибка при активации промокода: {e}")
-        await update.message.reply_text("😿 Ошибка при активации промокода. *грустно мяукает*")
-    finally:
-        db.close()
-
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда для проверки статуса сервисов"""
-    status_text = """🔧 **Статус сервисов Cyberkitty19 Transkribator**
-
-🤖 **Бот:** ✅ Работает
-🌐 **API сервер:** ✅ Активен
-🔧 **Pyrogram Worker:** ✅ Готов
-💾 **База данных:** ✅ Подключена
-
-😸 *все системы мурчат исправно*"""
-    
-    await update.message.reply_text(status_text, parse_mode='Markdown')
-
-async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда для получения сырой транскрибации"""
-    await update.message.reply_text(
-        "🎬 Отправь мне видео с этой командой, и я верну только сырую транскрибацию без форматирования!\n\n"
-        "😺 *готовится к быстрой работе*"
-    ) 

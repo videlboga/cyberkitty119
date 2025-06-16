@@ -5,7 +5,10 @@ Telegram бот для транскрипции видео и аудио фай�
 """
 
 import asyncio
+import signal
+import sys
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.request import HTTPXRequest
 from transkribator_modules.config import (
     BOT_TOKEN, USE_LOCAL_BOT_API, LOCAL_BOT_API_URL, logger
 )
@@ -17,8 +20,17 @@ from transkribator_modules.bot.handlers import (
 def create_application() -> Application:
     """Создает и настраивает Telegram Application."""
     
+    # Создаем HTTP request с увеличенными таймаутами для больших файлов
+    request = HTTPXRequest(
+        connection_pool_size=8,
+        read_timeout=1800,  # 30 минут для чтения
+        write_timeout=1800,  # 30 минут для записи
+        connect_timeout=60,  # 1 минута для подключения
+        pool_timeout=60      # 1 минута для получения соединения из пула
+    )
+    
     # Создаем Application Builder
-    builder = Application.builder().token(BOT_TOKEN)
+    builder = Application.builder().token(BOT_TOKEN).request(request)
     
     # Если используется локальный Bot API Server
     if USE_LOCAL_BOT_API:
@@ -43,29 +55,98 @@ def create_application() -> Application:
     return application
 
 async def main():
-    """Главная функция для запуска бота."""
+    """Главная асинхронная функция для запуска бота."""
     logger.info("🚀 Запуск CyberKitty Transkribator (Telegram Bot API Server)")
     
+    # Создаем приложение
+    application = create_application()
+    
+    # Настраиваем обработку сигналов для graceful shutdown
+    stop_signals = (signal.SIGTERM, signal.SIGINT)
+    for sig in stop_signals:
+        signal.signal(sig, lambda s, f: asyncio.create_task(shutdown(application)))
+    
     try:
-        # Создаем приложение
-        application = create_application()
+        # Инициализируем приложение
+        await application.initialize()
         
         # Запускаем бота
         logger.info("🤖 Бот запускается...")
-        await application.run_polling(
+        await application.start()
+        
+        # Начинаем polling
+        await application.updater.start_polling(
             drop_pending_updates=True,
             allowed_updates=['message', 'callback_query']
         )
         
+        logger.info("✅ Бот успешно запущен и работает")
+        
+        # Ждем завершения
+        while True:
+            await asyncio.sleep(1)
+            
     except Exception as e:
         logger.error(f"❌ Критическая ошибка при запуске бота: {e}")
         raise
+    finally:
+        await shutdown(application)
 
-if __name__ == '__main__':
+async def shutdown(application: Application):
+    """Корректное завершение работы бота."""
+    logger.info("🛑 Начинается завершение работы бота...")
+    
     try:
-        asyncio.run(main())
+        # Останавливаем updater
+        if application.updater and application.updater.running:
+            await application.updater.stop()
+            logger.info("✅ Updater остановлен")
+        
+        # Останавливаем приложение
+        if application.running:
+            await application.stop()
+            logger.info("✅ Приложение остановлено")
+        
+        # Завершаем приложение
+        await application.shutdown()
+        logger.info("✅ Ресурсы освобождены")
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при завершении работы: {e}")
+    
+    # Выходим из программы
+    logger.info("👋 Бот успешно завершил работу")
+    sys.exit(0)
+
+def run_bot():
+    """Запуск бота с правильным управлением event loop."""
+    try:
+        # Проверяем, есть ли уже запущенный event loop
+        try:
+            loop = asyncio.get_running_loop()
+            logger.warning("⚠️ Обнаружен запущенный event loop, создаем новый")
+            # Если есть запущенный loop, создаем новый в отдельном потоке
+            import threading
+            
+            def run_in_thread():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                new_loop.run_until_complete(main())
+                new_loop.close()
+            
+            thread = threading.Thread(target=run_in_thread)
+            thread.start()
+            thread.join()
+            
+        except RuntimeError:
+            # Нет запущенного loop, можем запускать обычным способом
+            asyncio.run(main())
+            
     except KeyboardInterrupt:
         logger.info("👋 Бот остановлен пользователем")
     except Exception as e:
         logger.error(f"❌ Неожиданная ошибка: {e}")
-        exit(1) 
+        sys.exit(1)
+
+if __name__ == '__main__':
+    run_bot() 

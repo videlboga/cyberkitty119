@@ -1,186 +1,49 @@
-# ⚡ Быстрое развертывание Cyberkitty19 Transkribator на сервере
+# 🚀 Быстрое развертывание на сервер got_is_tod
 
-## 🚀 Одной командой
+## Одной командой
 
 ```bash
-# Клонирование и развертывание
-git clone https://github.com/your-username/cyberkitty19-transkribator.git
-cd cyberkitty19-transkribator
-./deploy.sh production
+./deploy_to_server.sh
 ```
 
-## 📝 Что нужно подготовить заранее
+## Что потребуется
 
-### 1. Токен Telegram бота
-- Найдите @BotFather в Telegram
-- Создайте нового бота: `/newbot`
-- Сохраните токен
+1. **SSH доступ к серверу** `got_is_tod`
+2. **Токен бота**: `7907324843:AAEJMec9IeP89y0Taka4k7hbvpjd7F1Frl4`
+3. **API ключ DeepInfra**: `hmrZBz3GmZmfrHAADP8kBS6SAky0mcjW`
+4. **Номер телефона** для авторизации Bot API Server
 
-### 2. API ключи для транскрибации (минимум один)
-- **OpenAI**: https://platform.openai.com/api-keys
-- **OpenRouter**: https://openrouter.ai/keys (поддерживает Claude, Gemini)
+## Процесс (5-10 минут)
 
-### 3. Telegram API (для больших видео)
-- Перейдите на https://my.telegram.org/apps
-- Создайте приложение
-- Сохраните API_ID и API_HASH
+1. ✅ **Проверка подключения** к серверу
+2. 💾 **Резервная копия** старой версии
+3. 🛑 **Остановка** старых сервисов
+4. 📦 **Загрузка** новых файлов
+5. ⚙️ **Настройка** переменных окружения
+6. 🐳 **Сборка и запуск** Docker контейнеров
+7. 🔐 **Авторизация** Bot API Server
+8. ✅ **Проверка** работоспособности
 
-## 🔧 Настройка на сервере
-
-### Шаг 1: Подготовка сервера
-```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt upgrade -y
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-sudo usermod -aG docker $USER
-
-# Установка Docker Compose
-sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-sudo chmod +x /usr/local/bin/docker-compose
-
-# Перелогиньтесь или выполните:
-newgrp docker
-```
-
-### Шаг 2: Развертывание проекта
-```bash
-# Клонирование
-git clone https://github.com/your-username/cyberkitty19-transkribator.git
-cd cyberkitty19-transkribator
-
-# Настройка конфигурации
-cp env.sample .env
-nano .env  # Заполните ваши API ключи
-
-# Автоматическое развертывание
-./deploy.sh production
-```
-
-### Шаг 3: Настройка Pyrogram (для больших видео)
-```bash
-# Авторизация Pyrogram воркера
-docker-compose exec cyberkitty19-transkribator-pyro-worker python -m transkribator_modules.workers.pyro_auth
-
-# Следуйте инструкциям для ввода номера телефона и кода
-```
-
-## 📊 Управление сервисом
-
-После развертывания у вас будут доступны скрипты:
+## После развертывания
 
 ```bash
-./view-logs.sh   # Просмотр логов
-./restart.sh     # Перезапуск сервисов  
-./stop.sh        # Остановка сервисов
-./update.sh      # Обновление проекта
-```
+# Подключиться к серверу
+ssh root@got_is_tod
 
-## 🔍 Проверка работы
-
-### 1. Статус контейнеров
-```bash
+# Проверить статус
+cd /opt/cyberkitty-transkribator
 docker-compose ps
+
+# Посмотреть логи
+docker-compose logs -f bot
 ```
 
-### 2. Логи сервисов
-```bash
-docker-compose logs -f
-```
+## Тестирование
 
-### 3. Тест API
-```bash
-curl http://localhost:8000/health
-```
-
-### 4. Тест бота
-- Найдите вашего бота в Telegram
-- Отправьте `/start`
-- Попробуйте отправить видео
-
-## 🚨 Устранение проблем
-
-### Бот не отвечает
-```bash
-# Проверьте логи
-docker-compose logs cyberkitty19-transkribator-bot
-
-# Проверьте токен
-grep TELEGRAM_BOT_TOKEN .env
-```
-
-### API недоступен
-```bash
-# Проверьте статус API контейнера
-docker-compose ps cyberkitty19-transkribator-api
-
-# Проверьте логи API
-docker-compose logs cyberkitty19-transkribator-api
-```
-
-### Pyrogram не работает
-```bash
-# Повторная авторизация
-rm transkribator_modules/workers/pyro_worker.session*
-docker-compose exec cyberkitty19-transkribator-pyro-worker python -m transkribator_modules.workers.pyro_auth
-```
-
-## 🔄 Обновление
-
-```bash
-# Автоматическое обновление
-./update.sh
-
-# Или вручную
-docker-compose down
-git pull
-docker-compose build
-docker-compose up -d
-```
-
-## 🔐 Безопасность
-
-### Настройка файрвола
-```bash
-# UFW (Ubuntu)
-sudo ufw allow 22/tcp    # SSH
-sudo ufw allow 8000/tcp  # API (опционально)
-sudo ufw enable
-
-# Firewalld (CentOS)
-sudo firewall-cmd --permanent --add-port=22/tcp
-sudo firewall-cmd --permanent --add-port=8000/tcp
-sudo firewall-cmd --reload
-```
-
-### Создание отдельного пользователя
-```bash
-sudo useradd -m -s /bin/bash cyberkitty
-sudo usermod -aG docker cyberkitty
-sudo chown -R cyberkitty:cyberkitty /path/to/cyberkitty19-transkribator
-```
-
-## 📈 Мониторинг
-
-### Использование ресурсов
-```bash
-docker stats --no-stream
-```
-
-### Размер логов
-```bash
-du -sh logs/
-```
-
-### Автоматическая очистка
-```bash
-# Добавьте в crontab
-0 2 * * * docker system prune -f
-0 3 * * * find /path/to/cyberkitty19-transkribator/videos -mtime +7 -delete
-```
+1. Отправить `/start` боту
+2. Отправить небольшой аудио файл
+3. Отправить большой файл (>50 МБ)
 
 ---
 
-**🎉 Ваш Cyberkitty19 Transkribator готов к работе на продакшн сервере!**
-
-**Время развертывания: ~5-10 минут** ⏱️ 
+**Готово! 🎉 CyberKitty Transkribator с поддержкой файлов до 2 ГБ!** 

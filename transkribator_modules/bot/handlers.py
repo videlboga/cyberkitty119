@@ -9,10 +9,11 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from transkribator_modules.config import (
-    logger, MAX_FILE_SIZE_MB, VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR
+    logger, MAX_FILE_SIZE_MB, VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR, BOT_TOKEN
 )
 from transkribator_modules.audio.extractor import extract_audio_from_video, compress_audio_for_api
 from transkribator_modules.transcribe.transcriber import transcribe_audio
+from transkribator_modules.utils.large_file_downloader import download_large_file, get_file_info
 
 # Поддерживаемые форматы
 VIDEO_FORMATS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.3gp'}
@@ -186,15 +187,32 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             parse_mode='Markdown'
         )
         
-        # Скачиваем файл
-        file_obj = await context.bot.get_file(video_file.file_id)
-        
         # Создаем временные пути
         video_path = VIDEOS_DIR / f"telegram_video_{video_file.file_id}.mp4"
         audio_path = AUDIO_DIR / f"telegram_audio_{video_file.file_id}.wav"
         
-        # Скачиваем файл
-        await file_obj.download_to_drive(video_path)
+        # Обновляем статус с информацией о скачивании
+        await status_msg.edit_text(
+            f"🎬 **Обрабатываю видео:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"⬇️ Скачиваю файл... (это может занять несколько минут)",
+            parse_mode='Markdown'
+        )
+        
+        # Скачиваем файл через нашу утилиту для больших файлов
+        logger.info(f"📥 Начинаю скачивание файла {filename} размером {file_size_mb:.1f} МБ")
+        
+        success = await download_large_file(
+            bot_token=BOT_TOKEN,
+            file_id=video_file.file_id,
+            destination=video_path
+        )
+        
+        if not success:
+            await status_msg.edit_text("❌ Не удалось скачать файл")
+            return
+            
+        logger.info(f"✅ Файл {filename} успешно скачан")
         
         # Обновляем статус
         await status_msg.edit_text(
@@ -263,8 +281,23 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             logger.warning(f"Не удалось удалить временные файлы: {e}")
             
     except Exception as e:
+        error_msg = str(e)
         logger.error(f"Ошибка при обработке видео: {e}")
-        await update.message.reply_text(f"❌ Ошибка при обработке видео: {str(e)}")
+        
+        # Более информативные сообщения об ошибках
+        if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
+            await update.message.reply_text(
+                f"⏰ **Таймаут при скачивании файла**\n\n"
+                f"Файл размером {file_size_mb:.1f} МБ слишком долго скачивается.\n"
+                f"Это может происходить из-за медленного интернета или больших размеров файла.\n\n"
+                f"💡 **Рекомендации:**\n"
+                f"• Попробуйте файл поменьше (до 100 МБ)\n"
+                f"• Проверьте скорость интернета\n"
+                f"• Повторите попытку через несколько минут",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(f"❌ Ошибка при обработке видео: {error_msg}")
 
 async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE, audio_file) -> None:
     """Обрабатывает аудио файл"""
@@ -280,14 +313,31 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             parse_mode='Markdown'
         )
         
-        # Скачиваем файл
-        file_obj = await context.bot.get_file(audio_file.file_id)
-        
         # Создаем временный путь
         audio_path = AUDIO_DIR / f"telegram_audio_{audio_file.file_id}.mp3"
         
-        # Скачиваем файл
-        await file_obj.download_to_drive(audio_path)
+        # Обновляем статус с информацией о скачивании
+        await status_msg.edit_text(
+            f"🎵 **Обрабатываю аудио:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"⬇️ Скачиваю файл... (это может занять несколько минут)",
+            parse_mode='Markdown'
+        )
+        
+        # Скачиваем файл через нашу утилиту для больших файлов
+        logger.info(f"📥 Начинаю скачивание файла {filename} размером {file_size_mb:.1f} МБ")
+        
+        success = await download_large_file(
+            bot_token=BOT_TOKEN,
+            file_id=audio_file.file_id,
+            destination=audio_path
+        )
+        
+        if not success:
+            await status_msg.edit_text("❌ Не удалось скачать файл")
+            return
+            
+        logger.info(f"✅ Файл {filename} успешно скачан")
         
         # Сжимаем если нужно
         await status_msg.edit_text(
@@ -342,5 +392,81 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             logger.warning(f"Не удалось удалить временные файлы: {e}")
             
     except Exception as e:
+        error_msg = str(e)
         logger.error(f"Ошибка при обработке аудио: {e}")
-        await update.message.reply_text(f"❌ Ошибка при обработке аудио: {str(e)}") 
+        
+        # Более информативные сообщения об ошибках
+        if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
+            await update.message.reply_text(
+                f"⏰ **Таймаут при скачивании файла**\n\n"
+                f"Файл размером {file_size_mb:.1f} МБ слишком долго скачивается.\n"
+                f"Это может происходить из-за медленного интернета или больших размеров файла.\n\n"
+                f"💡 **Рекомендации:**\n"
+                f"• Попробуйте файл поменьше (до 100 МБ)\n"
+                f"• Проверьте скорость интернета\n"
+                f"• Повторите попытку через несколько минут",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(f"❌ Ошибка при обработке аудио: {error_msg}")
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатия на кнопки в сообщениях."""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("raw_"):
+        try:
+            message_id = query.data.split("_")[1]
+            raw_transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}_raw.txt"
+            
+            if not raw_transcript_path.exists():
+                await query.message.reply_text(
+                    "Не могу найти сырую транскрипцию для этого видео. *растерянно смотрит*"
+                )
+                return
+                
+            with open(raw_transcript_path, "r", encoding="utf-8") as f:
+                raw_transcript = f.read()
+                
+            if len(raw_transcript) > 4000:
+                # Если транскрипция слишком длинная, отправляем файлом
+                with open(raw_transcript_path, "rb") as f:
+                    await context.bot.send_document(
+                        chat_id=query.message.chat_id,
+                        document=f,
+                        filename=f"raw_transcript_{message_id}.txt",
+                        caption="Вот необработанная транскрипция этого видео! *деловито машет хвостом*"
+                    )
+            else:
+                # Иначе отправляем текстом
+                await query.message.reply_text(
+                    f"Вот необработанная транскрипция для этого видео:\n\n{raw_transcript}\n\n"
+                    f"@CyberKitty19_bot"
+                )
+                
+        except Exception as e:
+            logger.error(f"Ошибка при обработке кнопки raw transcript: {e}")
+            await query.message.reply_text(
+                "Произошла ошибка при получении сырой транскрипции. *смущенно прячет мордочку*"
+            )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Интегрированный обработчик для всех типов сообщений с поддержкой Bot API Server."""
+    user_id = update.effective_user.id
+    
+    # Логируем сообщение
+    logger.info(f"Получено сообщение от пользователя {user_id}")
+    
+    # Если это обычное текстовое сообщение, отвечаем дружелюбно
+    if update.message.text:
+        await update.message.reply_text(
+            "Привет! 🐱 Отправь мне видео или аудио файл, и я создам для тебя транскрипцию!\n\n"
+            "Поддерживаемые форматы:\n"
+            "📹 Видео: MP4, AVI, MOV, MKV и другие\n"
+            "🎵 Аудио: MP3, WAV, M4A, OGG и другие\n"
+            "🎤 Голосовые сообщения\n\n"
+            "Максимальный размер файла: 2 ГБ\n"
+            "Максимальная длительность: 4 часа\n\n"
+            "Используй /help для получения дополнительной информации!"
+        )

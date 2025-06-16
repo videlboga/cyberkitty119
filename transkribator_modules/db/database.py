@@ -1,3 +1,7 @@
+"""
+Модуль для работы с базой данных CyberKitty Transkribator
+"""
+
 import os
 import hashlib
 import secrets
@@ -6,6 +10,9 @@ from typing import Optional, List
 from sqlalchemy import create_engine, desc
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError
+import sqlite3
+from pathlib import Path
+from transkribator_modules.config import logger
 
 from .models import Base, User, Plan, Transaction, Transcription, ApiKey, PromoCode, PromoActivation, DEFAULT_PLANS, PlanType
 
@@ -14,27 +21,85 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./transkribator.db")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Путь к файлу базы данных
+DB_PATH = Path("data/transkribator.db")
+
 def init_database():
-    """Инициализация базы данных и создание таблиц"""
-    Base.metadata.create_all(bind=engine)
-    
-    # Добавляем стандартные планы, если их нет
-    db = SessionLocal()
+    """Инициализирует базу данных и создает необходимые таблицы."""
     try:
-        for plan_data in DEFAULT_PLANS:
-            existing_plan = db.query(Plan).filter(Plan.name == plan_data["name"]).first()
-            if not existing_plan:
-                plan = Plan(**plan_data)
-                db.add(plan)
-        db.commit()
-    except Exception as e:
-        print(f"Ошибка при инициализации планов: {e}")
-        db.rollback()
-    finally:
-        db.close()
+        # Создаем директорию для данных если не существует
+        DB_PATH.parent.mkdir(exist_ok=True)
+        
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
     
-    # Инициализируем промокоды
-    init_promo_codes()
+            # Таблица пользователей
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER UNIQUE NOT NULL,
+                    username TEXT,
+                    first_name TEXT,
+                    subscription_type TEXT DEFAULT 'basic',
+                    subscription_until DATETIME,
+                    files_processed INTEGER DEFAULT 0,
+                    minutes_transcribed INTEGER DEFAULT 0,
+                    total_characters INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_activity DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Таблица транскрипций
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS transcriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    file_name TEXT,
+                    file_size INTEGER,
+                    duration INTEGER,
+                    transcript TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            """)
+            
+            # Таблица промокодов
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS promo_codes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT UNIQUE NOT NULL,
+                    description TEXT,
+                    bonus_type TEXT,
+                    bonus_value TEXT,
+                    max_uses INTEGER DEFAULT 1,
+                    current_uses INTEGER DEFAULT 0,
+                    expires_at DATETIME,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Таблица использованных промокодов
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS used_promos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    promo_code_id INTEGER,
+                    used_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id),
+                    FOREIGN KEY (promo_code_id) REFERENCES promo_codes (id)
+                )
+            """)
+            
+            conn.commit()
+            logger.info("База данных инициализирована успешно")
+            
+        # Инициализируем промокоды
+        seed_promo_codes()
+            
+    except Exception as e:
+        logger.error(f"Ошибка при инициализации базы данных: {e}")
+        raise
 
 def get_db():
     """Получение сессии базы данных"""
@@ -443,3 +508,228 @@ def init_promo_codes():
         print(f"Ошибка при создании промокодов: {e}")
     finally:
         db.close() 
+
+def get_or_create_user(telegram_id: int, username: str = None, first_name: str = None) -> dict:
+    """Получает существующего пользователя или создает нового."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # Пытаемся найти пользователя
+            cursor.execute(
+                "SELECT * FROM users WHERE telegram_id = ?", 
+                (telegram_id,)
+            )
+            user = cursor.fetchone()
+            
+            if user:
+                # Обновляем последнюю активность
+                cursor.execute(
+                    "UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE telegram_id = ?",
+                    (telegram_id,)
+                )
+                conn.commit()
+                
+                columns = ['id', 'telegram_id', 'username', 'first_name', 'subscription_type', 
+                          'subscription_until', 'files_processed', 'minutes_transcribed', 
+                          'total_characters', 'created_at', 'last_activity']
+                return dict(zip(columns, user))
+            else:
+                # Создаем нового пользователя
+                cursor.execute("""
+                    INSERT INTO users (telegram_id, username, first_name)
+                    VALUES (?, ?, ?)
+                """, (telegram_id, username, first_name))
+                
+                user_id = cursor.lastrowid
+                conn.commit()
+                
+                return {
+                    'id': user_id,
+                    'telegram_id': telegram_id,
+                    'username': username,
+                    'first_name': first_name,
+                    'subscription_type': 'basic',
+                    'subscription_until': None,
+                    'files_processed': 0,
+                    'minutes_transcribed': 0,
+                    'total_characters': 0,
+                    'created_at': datetime.now(),
+                    'last_activity': datetime.now()
+                }
+                
+    except Exception as e:
+        logger.error(f"Ошибка при работе с пользователем {telegram_id}: {e}")
+        return None
+
+def get_user_stats(telegram_id: int) -> dict:
+    """Получает статистику пользователя."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT subscription_type, subscription_until, files_processed, 
+                       minutes_transcribed, total_characters, last_activity
+                FROM users WHERE telegram_id = ?
+            """, (telegram_id,))
+            
+            result = cursor.fetchone()
+            
+            if result:
+                subscription_type, subscription_until, files_processed, minutes_transcribed, total_characters, last_activity = result
+                
+                return {
+                    'subscription_status': subscription_type.capitalize() if subscription_type else 'Базовый',
+                    'subscription_until': subscription_until or 'Не ограничено',
+                    'files_processed': files_processed or 0,
+                    'minutes_transcribed': minutes_transcribed or 0,
+                    'total_characters': total_characters or 0,
+                    'last_activity': last_activity or 'Никогда',
+                    'files_remaining': 'Безлимит' if subscription_type != 'basic' else '30 минут',
+                    'avg_duration': (minutes_transcribed // files_processed) if files_processed > 0 else 0
+                }
+            else:
+                return {
+                    'subscription_status': 'Базовый',
+                    'subscription_until': 'Не ограничено',
+                    'files_processed': 0,
+                    'minutes_transcribed': 0,
+                    'total_characters': 0,
+                    'last_activity': 'Никогда',
+                    'files_remaining': '30 минут',
+                    'avg_duration': 0
+                }
+                
+    except Exception as e:
+        logger.error(f"Ошибка при получении статистики для {telegram_id}: {e}")
+        return {}
+
+def activate_promo_code(telegram_id: int, promo_code: str) -> dict:
+    """Активирует промокод для пользователя."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # Проверяем существование промокода
+            cursor.execute("""
+                SELECT id, description, bonus_type, bonus_value, max_uses, current_uses, expires_at
+                FROM promo_codes WHERE code = ?
+            """, (promo_code,))
+            
+            promo = cursor.fetchone()
+            
+            if not promo:
+                return {'success': False, 'error': 'Промокод не найден'}
+            
+            promo_id, description, bonus_type, bonus_value, max_uses, current_uses, expires_at = promo
+            
+            # Проверяем, не истек ли промокод
+            if expires_at and datetime.fromisoformat(expires_at) < datetime.now():
+                return {'success': False, 'error': 'Промокод истек'}
+            
+            # Проверяем лимит использований
+            if current_uses >= max_uses:
+                return {'success': False, 'error': 'Промокод исчерпан'}
+            
+            # Проверяем, не использовал ли пользователь этот промокод
+            cursor.execute("""
+                SELECT id FROM used_promos 
+                WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?) 
+                AND promo_code_id = ?
+            """, (telegram_id, promo_id))
+            
+            if cursor.fetchone():
+                return {'success': False, 'error': 'Промокод уже использован'}
+            
+            # Получаем пользователя
+            user = get_or_create_user(telegram_id)
+            if not user:
+                return {'success': False, 'error': 'Ошибка пользователя'}
+            
+            # Применяем бонус (пока только заглушка)
+            if bonus_type == 'subscription':
+                # Здесь можно добавить логику обновления подписки
+                pass
+            
+            # Записываем использование промокода
+            cursor.execute("""
+                INSERT INTO used_promos (user_id, promo_code_id)
+                VALUES (?, ?)
+            """, (user['id'], promo_id))
+            
+            # Увеличиваем счетчик использований
+            cursor.execute("""
+                UPDATE promo_codes SET current_uses = current_uses + 1
+                WHERE id = ?
+            """, (promo_id,))
+            
+            conn.commit()
+            
+            return {
+                'success': True,
+                'bonus': description or bonus_value,
+                'expires': expires_at or 'Не ограничено'
+            }
+            
+    except Exception as e:
+        logger.error(f"Ошибка при активации промокода {promo_code} для {telegram_id}: {e}")
+        return {'success': False, 'error': 'Внутренняя ошибка'}
+
+def update_user_transcription_stats(telegram_id: int, file_name: str, file_size: int, 
+                                  duration: int, transcript: str):
+    """Обновляет статистику пользователя после транскрипции."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # Получаем пользователя
+            user = get_or_create_user(telegram_id)
+            if not user:
+                return
+            
+            # Добавляем запись о транскрипции
+            cursor.execute("""
+                INSERT INTO transcriptions (user_id, file_name, file_size, duration, transcript)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user['id'], file_name, file_size, duration, transcript))
+            
+            # Обновляем статистику пользователя
+            cursor.execute("""
+                UPDATE users SET 
+                    files_processed = files_processed + 1,
+                    minutes_transcribed = minutes_transcribed + ?,
+                    total_characters = total_characters + ?,
+                    last_activity = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (duration // 60, len(transcript), user['id']))
+            
+            conn.commit()
+            
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении статистики для {telegram_id}: {e}")
+
+# Добавляем базовые промокоды при инициализации
+def seed_promo_codes():
+    """Добавляет базовые промокоды в базу данных."""
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            promo_codes = [
+                ('WELCOME10', 'Скидка 10% на первую подписку', 'discount', '10%', 100, None),
+                ('PREMIUM30', '30 дней PRO подписки бесплатно', 'subscription', '30 дней PRO', 50, None),
+                ('CYBERKITTY', 'Специальный бонус от CyberKitty', 'bonus', 'Дополнительные функции', 25, None)
+            ]
+            
+            for code, description, bonus_type, bonus_value, max_uses, expires_at in promo_codes:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO promo_codes 
+                    (code, description, bonus_type, bonus_value, max_uses, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (code, description, bonus_type, bonus_value, max_uses, expires_at))
+            
+            conn.commit()
+            
+    except Exception as e:
+        logger.error(f"Ошибка при создании промокодов: {e}") 

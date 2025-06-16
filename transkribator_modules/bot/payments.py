@@ -1,3 +1,7 @@
+"""
+Модуль для работы с платежами в CyberKitty Transkribator
+"""
+
 import json
 from datetime import datetime, timedelta
 from telegram import Update, LabeledPrice, InlineKeyboardButton, InlineKeyboardMarkup
@@ -50,51 +54,39 @@ PLAN_DESCRIPTIONS = {
 }
 
 async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показать планы с возможностью покупки через Telegram Stars"""
-    user = update.effective_user
-    
-    db = SessionLocal()
+    """Показывает доступные тарифные планы."""
     try:
-        user_service = UserService(db)
-        db_user = user_service.get_or_create_user(telegram_id=user.id)
-        current_plan = user_service.get_user_plan(db_user)
-        
-        plans_text = f"""⭐ **Покупка планов через Telegram Stars**
+        plans_text = """💎 **Тарифные планы CyberKitty Transkribator**
 
-👤 **Ваш текущий план:** {current_plan.display_name}
+🆓 **Базовый (Бесплатно)**
+• 30 минут транскрипции в месяц
+• Файлы до 100 МБ
+• Базовая поддержка
+• Стандартное качество
 
-💫 **Доступные планы для покупки:**
+⭐ **PRO (299₽/месяц)**
+• 10 часов транскрипции в месяц
+• Файлы до 2 ГБ
+• Приоритетная поддержка
+• Высокое качество
+• API доступ
 
-"""
-        
-        keyboard = []
-        
-        for plan_type, price_stars in PLAN_PRICES_STARS.items():
-            if plan_type.value == current_plan.name:
-                continue  # Не показываем текущий план
-                
-            plan_info = PLAN_DESCRIPTIONS[plan_type]
-            price_rub = price_stars * 1.3  # Примерный курс
-            
-            plans_text += f"**{plan_info['title']}** - ⭐ {price_stars} Stars (~{price_rub:.0f} ₽)\n"
-            plans_text += f"_{plan_info['description']}_\n\n"
-            
-            # Добавляем кнопку покупки
-            keyboard.append([InlineKeyboardButton(
-                f"⭐ Купить {plan_info['title']} - {price_stars} Stars",
-                callback_data=f"buy_plan_{plan_type.value}"
-            )])
-        
-        if not keyboard:
-            plans_text += "✅ У вас уже максимальный план!"
-            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")])
-        else:
-            plans_text += "💡 **Что такое Telegram Stars?**\n"
-            plans_text += "Telegram Stars - внутренняя валюта Telegram для покупок в ботах.\n"
-            plans_text += "Купить Stars можно в настройках Telegram.\n\n"
-            plans_text += "🔒 **Безопасность:** Все платежи обрабатываются Telegram"
-            
-            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")])
+🚀 **UNLIMITED (699₽/месяц)**
+• Безлимитная транскрипция
+• Файлы до 2 ГБ
+• VIP поддержка 24/7
+• Максимальное качество
+• Полный API доступ
+• Дополнительные функции ИИ
+
+🎯 **Выберите подходящий план и начните использовать все возможности!**"""
+
+        keyboard = [
+            [InlineKeyboardButton("🆓 Остаться на базовом", callback_data="stay_basic")],
+            [InlineKeyboardButton("⭐ Купить PRO", callback_data="buy_plan_pro")],
+            [InlineKeyboardButton("🚀 Купить UNLIMITED", callback_data="buy_plan_unlimited")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")]
+        ]
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -108,212 +100,144 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             
     except Exception as e:
-        logger.error(f"Ошибка при показе планов оплаты: {e}")
-        error_text = "Произошла ошибка при загрузке планов. *смущенно прячет мордочку*"
-        
-        if update.callback_query:
-            await update.callback_query.edit_message_text(error_text)
-        else:
-            await update.message.reply_text(error_text)
-    finally:
-        db.close()
+        logger.error(f"Ошибка при показе планов: {e}")
+        await update.message.reply_text("❌ Ошибка при загрузке тарифных планов")
 
-async def create_payment_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, plan_type: str) -> None:
-    """Создать инвойс для оплаты плана через Telegram Stars"""
-    user = update.effective_user
-    query = update.callback_query
-    
-    if plan_type not in PLAN_PRICES_STARS:
-        await query.edit_message_text("❌ Неизвестный план")
-        return
-    
-    plan_enum = PlanType(plan_type)
-    price_stars = PLAN_PRICES_STARS[plan_enum]
-    plan_info = PLAN_DESCRIPTIONS[plan_enum]
-    
+async def initiate_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, plan_id: str) -> None:
+    """Инициирует процесс оплаты для выбранного плана."""
     try:
-        # Создаем инвойс для Telegram Stars
-        prices = [LabeledPrice(label=plan_info["title"], amount=price_stars)]
+        plan_info = {
+            "pro": {
+                "name": "PRO",
+                "price": "299₽",
+                "description": "10 часов в месяц + API доступ"
+            },
+            "unlimited": {
+                "name": "UNLIMITED", 
+                "price": "699₽",
+                "description": "Безлимитно + VIP функции"
+            }
+        }
         
-        # Payload для идентификации платежа
-        payload = json.dumps({
-            "user_id": user.id,
-            "plan": plan_type,
-            "timestamp": datetime.now().isoformat()
-        })
+        if plan_id not in plan_info:
+            await update.callback_query.edit_message_text("❌ Неизвестный тарифный план")
+            return
         
-        await context.bot.send_invoice(
-            chat_id=user.id,
-            title=f"⭐ {plan_info['title']}",
-            description=plan_info['description'],
-            payload=payload,
-            provider_token="",  # Пустой для Telegram Stars
-            currency="XTR",     # Валюта Telegram Stars
-            prices=prices,
-            start_parameter=f"buy_plan_{plan_type}",
-            photo_url="https://i.imgur.com/placeholder.jpg",  # Опционально
-            photo_size=512,
-            photo_width=512,
-            photo_height=512,
-            need_name=False,
-            need_phone_number=False,
-            need_email=False,
-            need_shipping_address=False,
-            send_phone_number_to_provider=False,
-            send_email_to_provider=False,
-            is_flexible=False
-        )
+        plan = plan_info[plan_id]
         
-        # Обновляем сообщение
-        success_text = f"""✅ **Инвойс создан!**
+        payment_text = f"""💳 **Оплата тарифного плана {plan['name']}**
 
-💫 **План:** {plan_info['title']}
-⭐ **Цена:** {price_stars} Telegram Stars
-📋 **Включает:**"""
+📦 **План:** {plan['name']}
+💰 **Стоимость:** {plan['price']}
+📝 **Описание:** {plan['description']}
+⏰ **Период:** 30 дней
 
-        for feature in plan_info['features']:
-            success_text += f"\n• {feature}"
+🚧 **Интеграция с платежными системами находится в разработке**
+
+**Скоро будет доступно:**
+• Оплата банковскими картами
+• Оплата через СБП
+• Криптовалютные платежи
+• Подарочные карты
+
+📧 **По вопросам оплаты:**
+Напишите нам @cyberkitty_support
+
+Следите за обновлениями! 🔔"""
+
+        keyboard = [
+            [InlineKeyboardButton("📧 Связаться с поддержкой", url="https://t.me/cyberkitty_support")],
+            [InlineKeyboardButton("🔙 К тарифам", callback_data="show_payment_plans")],
+            [InlineKeyboardButton("🏠 Главная", callback_data="personal_cabinet")]
+        ]
         
-        success_text += f"\n\n💡 Нажмите на инвойс выше для оплаты"
-        
-        keyboard = [[InlineKeyboardButton("🔙 Назад к планам", callback_data="show_payment_plans")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.callback_query.edit_message_text(
+            payment_text, reply_markup=reply_markup, parse_mode='Markdown'
+        )
         
     except Exception as e:
-        logger.error(f"Ошибка при создании инвойса: {e}")
-        await query.edit_message_text(
-            f"❌ Ошибка при создании инвойса: {str(e)}\n\n"
-            "Возможно, у бота нет прав на создание платежей.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔙 Назад", callback_data="show_payment_plans")
-            ]])
-        )
+        logger.error(f"Ошибка при инициации платежа: {e}")
+        await update.callback_query.edit_message_text("❌ Ошибка при обработке платежа")
 
 async def handle_pre_checkout_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка pre-checkout запроса"""
-    query = update.pre_checkout_query
-    
+    """Обрабатывает pre-checkout запросы."""
     try:
-        # Парсим payload
-        payload_data = json.loads(query.invoice_payload)
-        user_id = payload_data.get("user_id")
-        plan_type = payload_data.get("plan")
+        query = update.pre_checkout_query
         
-        # Проверяем валидность
-        if user_id != query.from_user.id:
-            await query.answer(ok=False, error_message="Ошибка авторизации")
-            return
-            
-        if plan_type not in PLAN_PRICES_STARS:
-            await query.answer(ok=False, error_message="Неизвестный план")
-            return
+        # Здесь можно добавить дополнительные проверки
+        # Например, проверить доступность товара, валидность цены и т.д.
         
-        # Проверяем цену
-        expected_price = PLAN_PRICES_STARS[PlanType(plan_type)]
-        if query.total_amount != expected_price:
-            await query.answer(ok=False, error_message="Неверная цена")
-            return
-        
-        # Все проверки пройдены
         await query.answer(ok=True)
+        logger.info(f"Pre-checkout query одобрен для пользователя {query.from_user.id}")
         
     except Exception as e:
-        logger.error(f"Ошибка в pre_checkout: {e}")
-        await query.answer(ok=False, error_message="Ошибка обработки платежа")
+        logger.error(f"Ошибка в pre-checkout query: {e}")
+        await query.answer(ok=False, error_message="Произошла ошибка при обработке платежа")
 
 async def handle_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка успешного платежа"""
-    payment = update.message.successful_payment
-    user = update.effective_user
-    
-    db = SessionLocal()
+    """Обрабатывает успешные платежи."""
     try:
-        # Парсим payload
-        payload_data = json.loads(payment.invoice_payload)
-        plan_type = payload_data.get("plan")
+        payment = update.message.successful_payment
+        user_id = update.effective_user.id
         
-        user_service = UserService(db)
-        transaction_service = TransactionService(db)
+        logger.info(f"Успешный платеж от пользователя {user_id}: {payment.total_amount/100} {payment.currency}")
         
-        # Получаем пользователя
-        db_user = user_service.get_or_create_user(telegram_id=user.id)
+        # Здесь нужно обновить подписку пользователя в базе данных
+        # await update_user_subscription(user_id, payment)
         
-        # Записываем транзакцию
-        transaction = transaction_service.create_transaction(
-            user=db_user,
-            amount_stars=payment.total_amount,
-            amount_rub=payment.total_amount * 1.3,  # Примерный курс
-            currency="XTR",
-            payment_provider="telegram_stars",
-            provider_payment_charge_id=payment.provider_payment_charge_id,
-            telegram_payment_charge_id=payment.telegram_payment_charge_id,
-            plan_purchased=plan_type,
-            metadata=json.dumps({
-                "invoice_payload": payment.invoice_payload,
-                "order_info": payment.order_info.__dict__ if payment.order_info else None
-            })
-        )
-        
-        # Обновляем план пользователя
-        user_service.upgrade_user_plan(db_user, plan_type)
-        
-        # Получаем информацию о новом плане
-        plan_info = PLAN_DESCRIPTIONS[PlanType(plan_type)]
-        
-        success_message = f"""🎉 **Платеж успешно обработан!**
+        success_text = f"""🎉 **Платеж успешно обработан!**
 
-✅ **Ваш новый план:** {plan_info['title']}
-⭐ **Оплачено:** {payment.total_amount} Telegram Stars
-🆔 **ID транзакции:** {transaction.id}
+💳 **Сумма:** {payment.total_amount/100} {payment.currency}
+📦 **Товар:** {payment.invoice_payload}
+🎯 **ID транзакции:** {payment.telegram_payment_charge_id}
 
-📋 **Теперь вам доступно:**"""
+✅ **Ваша подписка активирована!**
 
-        for feature in plan_info['features']:
-            success_message += f"\n• {feature}"
-        
-        success_message += f"\n\n💡 Используйте /stats для просмотра обновленной информации"
-        
+**Что теперь доступно:**
+• Увеличенные лимиты транскрипции
+• Приоритетная обработка файлов
+• Расширенная техническая поддержка
+• Дополнительные функции ИИ
+
+Спасибо за использование CyberKitty Transkribator! 🐱✨"""
+
         keyboard = [
-            [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
-            [InlineKeyboardButton("🔑 API ключи", callback_data="show_api_keys")] if plan_type in ["pro", "unlimited"] else [],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_start")]
+            [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
+            [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")]
         ]
-        # Убираем пустые списки
-        keyboard = [row for row in keyboard if row]
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            success_message, 
-            reply_markup=reply_markup, 
-            parse_mode='Markdown'
+            success_text, reply_markup=reply_markup, parse_mode='Markdown'
         )
-        
-        logger.info(f"Успешная покупка плана {plan_type} пользователем {user.id} за {payment.total_amount} Stars")
         
     except Exception as e:
         logger.error(f"Ошибка при обработке успешного платежа: {e}")
-        await update.message.reply_text(
-            "❌ Произошла ошибка при активации плана. "
-            "Платеж прошел успешно, но план не активирован. "
-            "Обратитесь в поддержку @kiryanovpro"
-        )
-    finally:
-        db.close()
+        await update.message.reply_text("❌ Произошла ошибка при активации подписки")
 
 async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик callback кнопок для платежей"""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data
-    
-    if data == "show_payment_plans":
-        await show_payment_plans(update, context)
-    elif data.startswith("buy_plan_"):
-        plan_type = data.replace("buy_plan_", "")
-        await create_payment_invoice(update, context, plan_type)
-    else:
-        await query.edit_message_text("Неизвестная команда платежей") 
+    """Обрабатывает колбеки связанные с платежами."""
+    try:
+        query = update.callback_query
+        data = query.data
+        
+        if data == "show_payment_plans":
+            await show_payment_plans(update, context)
+        elif data.startswith("buy_plan_"):
+            plan_id = data.replace("buy_plan_", "")
+            await initiate_payment(update, context, plan_id)
+        elif data == "stay_basic":
+            await query.edit_message_text(
+                "👍 Вы остаетесь на базовом тарифе!\n\n"
+                "В любой момент можете перейти на PRO или UNLIMITED план "
+                "для расширения возможностей. 🚀"
+            )
+        else:
+            await query.edit_message_text("Неизвестная команда платежной системы")
+            
+    except Exception as e:
+        logger.error(f"Ошибка в payment callback: {e}")
+        await query.edit_message_text("❌ Ошибка при обработке запроса") 

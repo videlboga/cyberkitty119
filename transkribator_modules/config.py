@@ -2,8 +2,22 @@ import os
 import logging
 from pathlib import Path
 
+# Загружаем переменные окружения из .env файла
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # dotenv не установлен, продолжаем без него
+    pass
+
+# Определяем, запущены ли мы в контейнере
+IN_CONTAINER = os.path.exists('/app') and os.access('/app', os.W_OK)
+
 # Создаем директории для хранения данных
-DATA_DIR = Path("/app/data")
+if IN_CONTAINER:
+    DATA_DIR = Path("/app/data")
+else:
+    DATA_DIR = Path("./data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Настройка логирования
@@ -19,17 +33,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== ОСНОВНЫЕ НАСТРОЙКИ БОТА =====
-BOT_TOKEN = os.getenv('BOT_TOKEN', '')
-if not BOT_TOKEN:
+BOT_TOKEN = os.getenv('BOT_TOKEN', '7907324843:AAEJMec9IeP89y0Taka4k7hbvpjd7F1Frl4')
+
+# Проверяем BOT_TOKEN только для модулей бота (не для API сервера)
+REQUIRE_BOT_TOKEN = os.getenv('REQUIRE_BOT_TOKEN', 'true').lower() == 'true'
+if REQUIRE_BOT_TOKEN and not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не установлен!")
     raise ValueError("BOT_TOKEN обязателен")
 
 # ===== TELEGRAM BOT API SERVER =====
-USE_LOCAL_BOT_API = os.getenv('USE_LOCAL_BOT_API', 'false').lower() == 'true'
-LOCAL_BOT_API_URL = os.getenv('LOCAL_BOT_API_URL', 'http://telegram-bot-api:8081')
+USE_LOCAL_BOT_API = os.getenv('USE_LOCAL_BOT_API', 'true').lower() == 'true'
+LOCAL_BOT_API_URL = os.getenv('LOCAL_BOT_API_URL', 'http://localhost:8083')
+
+# API_ID и API_HASH нужны только для Bot API Server (в docker-compose.yml)
+TELEGRAM_API_ID = int(os.getenv('TELEGRAM_API_ID', '0'))
+TELEGRAM_API_HASH = os.getenv('TELEGRAM_API_HASH', '')
 
 if USE_LOCAL_BOT_API:
     logger.info(f"🚀 Используется локальный Telegram Bot API Server: {LOCAL_BOT_API_URL}")
+    if TELEGRAM_API_ID == 0:
+        logger.warning("⚠️ TELEGRAM_API_ID не задан! Нужен для Bot API Server")
+    if not TELEGRAM_API_HASH:
+        logger.warning("⚠️ TELEGRAM_API_HASH не задан! Нужен для Bot API Server")
 else:
     logger.info("🌐 Используется стандартный Telegram Bot API")
 
@@ -39,7 +64,10 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
 OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'anthropic/claude-3.5-sonnet')
 
 # ===== НАСТРОЙКИ БАЗЫ ДАННЫХ =====
-DATABASE_URL = os.getenv('DATABASE_URL', f'sqlite:///{DATA_DIR}/cyberkitty19_transkribator.db')
+if IN_CONTAINER:
+    DATABASE_URL = os.getenv('DATABASE_URL', f'sqlite:///{DATA_DIR}/cyberkitty19_transkribator.db')
+else:
+    DATABASE_URL = os.getenv('DATABASE_URL', f'sqlite:///{DATA_DIR.absolute()}/cyberkitty19_transkribator.db')
 
 # ===== НАСТРОЙКИ ОБРАБОТКИ ФАЙЛОВ =====
 MAX_FILE_SIZE_MB = int(os.getenv('MAX_FILE_SIZE_MB', '2000'))
@@ -49,15 +77,21 @@ ENABLE_SEGMENTATION = os.getenv('ENABLE_SEGMENTATION', 'true').lower() == 'true'
 SEGMENT_DURATION_SECONDS = int(os.getenv('SEGMENT_DURATION_SECONDS', '30'))
 
 # ===== ДИРЕКТОРИИ =====
-VIDEOS_DIR = Path("/app/videos")
-AUDIO_DIR = Path("/app/audio")
-TRANSCRIPTIONS_DIR = Path("/app/transcriptions")
+if IN_CONTAINER:
+    VIDEOS_DIR = Path("/app/videos")
+    AUDIO_DIR = Path("/app/audio")
+    TRANSCRIPTIONS_DIR = Path("/app/transcriptions")
+else:
+    VIDEOS_DIR = Path("./videos")
+    AUDIO_DIR = Path("./audio")
+    TRANSCRIPTIONS_DIR = Path("./transcriptions")
 
 # Создаем необходимые директории
 for directory in [VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
 logger.info("✅ Конфигурация загружена успешно")
+logger.info(f"🏠 Режим: {'контейнер' if IN_CONTAINER else 'локальный'}")
 logger.info(f"📁 Директория данных: {DATA_DIR}")
 logger.info(f"📁 Директория видео: {VIDEOS_DIR}")
 logger.info(f"📁 Директория аудио: {AUDIO_DIR}")

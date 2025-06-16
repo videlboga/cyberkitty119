@@ -1,7 +1,4 @@
-# Основные зависимости проекта (для полной установки)
--r requirements/bot.txt
-
-# Дополнительные зависимости для разработки
+# CyberKitty Transkribator - Telegram Bot API Server Version
 python-telegram-bot[all]==21.9
 aiohttp==3.9.5
 aiofiles==24.1.0

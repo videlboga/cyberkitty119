@@ -1,3 +1,7 @@
+"""
+Обработчики колбеков для CyberKitty Transkribator
+"""
+
 import json
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -6,79 +10,113 @@ from telegram.ext import ContextTypes
 from transkribator_modules.config import logger
 from transkribator_modules.db.database import SessionLocal, UserService, ApiKeyService, PromoCodeService
 from transkribator_modules.db.models import ApiKey, PlanType
-from transkribator_modules.bot.payments import handle_payment_callback
+from transkribator_modules.bot.payments import handle_payment_callback, show_payment_plans, initiate_payment
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик callback кнопок"""
+    """Обрабатывает колбек запросы от кнопок."""
     query = update.callback_query
     await query.answer()
     
-    user = update.effective_user
     data = query.data
+    logger.info(f"Получен колбек: {data}")
     
-    try:
-        # Обработка платежных callback'ов
-        if data in ["show_payment_plans"] or data.startswith("buy_plan_"):
-            await handle_payment_callback(update, context)
-            return
-        
-        # Основные разделы
-        if data == "personal_cabinet":
-            from transkribator_modules.bot.commands import personal_cabinet_command
-            await personal_cabinet_command(update, context)
+    # Обработка различных типов колбеков
+    if data == "show_payment_plans":
+        await show_payment_plans(update, context)
+    
+    elif data == "personal_cabinet":
+        await show_personal_cabinet(update, context)
+    
         elif data == "show_help":
             from transkribator_modules.bot.commands import help_command
             await help_command(update, context)
+    
+    elif data.startswith("buy_plan_"):
+        plan_id = data.replace("buy_plan_", "")
+        await initiate_payment(update, context, plan_id)
+    
+    elif data == "show_stats":
+        from transkribator_modules.bot.commands import stats_command
+        await stats_command(update, context)
+    
+    elif data == "show_api_keys":
+        await show_api_keys(update, context)
+    
+    elif data == "enter_promo_code":
+        await enter_promo_code(update, context)
+    
         elif data == "show_promo_codes":
             from transkribator_modules.bot.commands import promo_codes_command
             await promo_codes_command(update, context)
-        elif data == "enter_promo_code":
-            await enter_promo_code_callback(query, user)
+    
         elif data == "show_plans":
-            await show_plans_callback(query, user)
+        await show_plans_callback(query, update.effective_user)
+    
         elif data == "show_stats":
-            await show_stats_callback(query, user)
+        await show_stats_callback(query, update.effective_user)
+    
         elif data == "show_api_keys":
-            await show_api_keys_callback(query, user)
+        await show_api_keys_callback(query, update.effective_user)
+    
         elif data == "create_api_key":
-            await create_api_key_callback(query, user)
+        await create_api_key_callback(query, update.effective_user)
+    
         elif data == "list_api_keys":
-            await list_api_keys_callback(query, user)
+        await list_api_keys_callback(query, update.effective_user)
+    
         elif data.startswith("delete_api_key_"):
             key_id = int(data.split("_")[-1])
-            await delete_api_key_callback(query, user, key_id)
+        await delete_api_key_callback(query, update.effective_user, key_id)
+    
         elif data == "back_to_start":
-            await back_to_start_callback(query, user)
+        await back_to_start_callback(query, update.effective_user)
+    
+    else:
+        await query.edit_message_text("Неизвестная команда")
+
+async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает личный кабинет пользователя."""
+    try:
+        user_id = update.effective_user.id
+        
+        # Заглушка для личного кабинета
+        cabinet_text = f"""🏠 **Личный кабинет**
+
+👤 **Пользователь:** {update.effective_user.first_name}
+📊 **Статус:** Базовый
+💎 **Подписка:** Активна
+📈 **Файлов обработано:** 0
+⏰ **Последняя активность:** Сегодня
+
+**Доступные функции:**
+• Транскрипция видео и аудио
+• Обработка файлов до 2 ГБ
+• Техническая поддержка
+
+Для расширения возможностей рассмотрите PRO подписку! 🚀"""
+
+        keyboard = [
+            [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
+            [InlineKeyboardButton("💎 Тарифы", callback_data="show_payment_plans")],
+            [InlineKeyboardButton("🔑 API", callback_data="show_api_keys")],
+            [InlineKeyboardButton("🎁 Промокоды", callback_data="enter_promo_code")],
+            [InlineKeyboardButton("❓ Помощь", callback_data="show_help")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                cabinet_text, reply_markup=reply_markup, parse_mode='Markdown'
+            )
         else:
-            await query.edit_message_text("🙈 Неизвестная команда. *растерянно моргает*")
+            await update.message.reply_text(
+                cabinet_text, reply_markup=reply_markup, parse_mode='Markdown'
+            )
             
     except Exception as e:
-        logger.error(f"Ошибка в callback handler: {e}")
-        await query.edit_message_text(
-            "😿 Произошла ошибка при обработке запроса. *смущенно прячет мордочку*"
-        )
-
-async def enter_promo_code_callback(query, user):
-    """Запрос на ввод промокода"""
-    promo_text = """🎁 **Ввод промокода**
-
-Отправь мне промокод одним сообщением!
-
-Например: `КОТИК2024`
-
-🔍 **Где найти промокоды?**
-• В социальных сетях @kiryanovpro
-• В специальных акциях
-• За активность в сообществе
-
-😸 *ожидает с нетерпением*"""
-
-    keyboard = [
-        [InlineKeyboardButton("🔙 Назад к промокодам", callback_data="show_promo_codes")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(promo_text, reply_markup=reply_markup, parse_mode='Markdown')
+        logger.error(f"Ошибка в личном кабинете: {e}")
+        await update.message.reply_text("❌ Ошибка при загрузке личного кабинета")
 
 async def show_plans_callback(query, user):
     """Показать тарифные планы"""
@@ -427,3 +465,74 @@ async def back_to_start_callback(query, user):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown') 
+
+async def show_api_keys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает API ключи пользователя."""
+    try:
+        api_text = """🔑 **API ключи**
+
+🚧 **API находится в разработке**
+
+**Планируемые возможности:**
+• REST API для транскрипции
+• Webhook уведомления
+• Интеграция с внешними сервисами
+• Пакетная обработка файлов
+
+**Требования:**
+• PRO подписка или выше
+• Подтвержденный аккаунт
+• Согласие с условиями использования
+
+Следите за обновлениями! 🚀"""
+
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Личный кабинет", callback_data="personal_cabinet")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(
+            api_text, reply_markup=reply_markup, parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при показе API ключей: {e}")
+        await update.callback_query.edit_message_text("❌ Ошибка при загрузке API ключей")
+
+async def enter_promo_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Предлагает ввести промокод."""
+    try:
+        promo_text = """🎁 **Ввод промокода**
+
+Отправьте промокод в следующем сообщении или используйте команду:
+`/promo [ваш_промокод]`
+
+**Примеры:**
+• `/promo WELCOME10`
+• `/promo PREMIUM30`
+
+**Где найти промокоды:**
+• Официальный канал разработчика
+• Социальные сети
+• Специальные акции
+
+Ждем ваш промокод! 🔥"""
+
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Личный кабинет", callback_data="personal_cabinet")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.callback_query.edit_message_text(
+            promo_text, reply_markup=reply_markup, parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка при вводе промокода: {e}")
+        await update.callback_query.edit_message_text("❌ Ошибка при обработке промокода") 
