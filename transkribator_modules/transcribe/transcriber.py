@@ -251,8 +251,8 @@ async def format_transcript_with_openrouter(raw_transcript: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            "temperature": 0.1,  # Низкая температура для более детерминированных результатов
-            "max_tokens": 4096
+            "temperature": 0.3,
+            "max_tokens": 1024
         }
         
         # Отправляем запрос
@@ -380,7 +380,7 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str:
                     {"role": "user", "content": user_prompt}
                 ],
                 "temperature": 0.3,
-                "max_tokens": 4096
+                "max_tokens": 1024
             }
 
             timeout = aiohttp.ClientTimeout(total=120)
@@ -420,8 +420,9 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str:
 
     # Можно добавлять несколько кандидатов моделей для DeepInfra
     LLM_MODEL_CANDIDATES = [
-        "meta-llama/llama-3-8b-instruct",
-        "mistralai/mistral-7b-instruct",
+        "mistralai/Mistral-7B-Instruct-v0.2",
+        "mistralai/Mistral-Small-24B-Instruct-2501",
+        "meta-llama/Meta-Llama-3-8B-Instruct",
         "google/gemma-7b-it"
     ]
 
@@ -440,7 +441,7 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str:
                     {"role": "user", "content": user_prompt}
                 ],
                 "temperature": 0.3,
-                "max_tokens": 4096
+                "max_tokens": 1024
             }
 
             timeout = aiohttp.ClientTimeout(total=120)
