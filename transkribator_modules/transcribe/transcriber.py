@@ -354,60 +354,120 @@ async def generate_brief_summary(transcript: str) -> str:
         return f"Ай-ай! Киберошибка в моих схемах! 🤖⚡ Краткое саммари не получилось создать. Расскажите @Like_a_duck - он разберётся! 🔧\n\nДетали ошибки: {str(e)}"
 
 async def request_llm_response(system_prompt: str, user_prompt: str) -> str:
-    """Общая функция для отправки запросов к LLM через OpenRouter API."""
-    if not OPENROUTER_API_KEY or not OPENROUTER_MODEL:
-        logger.warning("OpenRouter API ключ или модель не настроены")
-        logger.warning(f"OPENROUTER_API_KEY exists: {bool(OPENROUTER_API_KEY)}")
-        logger.warning(f"OPENROUTER_MODEL: {OPENROUTER_MODEL}")
+    """Пробует отправить запрос сначала в OpenRouter, затем (при ошибке или отсутсвии ключа)
+    в DeepInfra. Это повышает надежность генерации саммари: если один провайдер недоступен,
+    используем другой, а при успехе немедленно возвращаем результат.
+
+    Возвращает строку с ответом модели или None, если все провайдеры недоступны. """
+
+    # =====================
+    # 1) OpenRouter attempt
+    # =====================
+
+    if OPENROUTER_API_KEY and OPENROUTER_MODEL:
+        try:
+            logger.info(f"Отправляю запрос к OpenRouter API, модель: {OPENROUTER_MODEL}")
+
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            }
+
+            payload = {
+                "model": OPENROUTER_MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 4096
+            }
+
+            timeout = aiohttp.ClientTimeout(total=120)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    logger.info(f"Ответ OpenRouter API: {response.status}")
+
+                    if response.status == 200:
+                        data = await response.json()
+                        result_text = data["choices"][0]["message"]["content"]
+                        logger.info(f"✅ Ответ LLM (OpenRouter), {len(result_text)} символов")
+                        return result_text
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Ошибка OpenRouter API: {response.status}, {error_text}")
+        except asyncio.TimeoutError:
+            logger.error("Таймаут при запросе к OpenRouter API")
+        except Exception as e:
+            logger.error(f"Сбой при обращении к OpenRouter API: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    else:
+        logger.warning("OpenRouter API не настроен, пробую DeepInfra")
+
+    # ====================
+    # 2) DeepInfra attempt
+    # ====================
+
+    if not DEEPINFRA_API_KEY:
+        logger.warning("DeepInfra API ключ не настроен, возвращаю None")
         return None
-        
-    try:
-        logger.info(f"Отправляю запрос к OpenRouter API, модель: {OPENROUTER_MODEL}")
-        
-        # Формируем запрос к API
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": OPENROUTER_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": 0.3,
-            "max_tokens": 4096
-        }
-        
-        # Отправляем запрос
-        timeout = aiohttp.ClientTimeout(total=120)  # 2 минуты таймаут
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=payload
-            ) as response:
-                logger.info(f"Получен ответ от OpenRouter API с кодом: {response.status}")
-                
-                if response.status == 200:
-                    data = await response.json()
-                    result_text = data["choices"][0]["message"]["content"]
-                    logger.info(f"Успешно получен ответ от LLM через OpenRouter API, длина: {len(result_text)} символов")
-                    return result_text
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Ошибка от OpenRouter API: {response.status}, {error_text}")
-                    return None
-        
-    except asyncio.TimeoutError:
-        logger.error("Таймаут при запросе к OpenRouter API")
-        return None
-    except Exception as e:
-        logger.error(f"Ошибка при запросе к OpenRouter API: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
+
+    # Можно добавлять несколько кандидатов моделей для DeepInfra
+    LLM_MODEL_CANDIDATES = [
+        "meta-llama/llama-3-8b-instruct",
+        "mistralai/mistral-7b-instruct",
+        "google/gemma-7b-it"
+    ]
+
+    headers = {
+        "Authorization": f"Bearer {DEEPINFRA_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    for model in LLM_MODEL_CANDIDATES:
+        try:
+            logger.info(f"Пробую DeepInfra LLM модель: {model}")
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 4096
+            }
+
+            timeout = aiohttp.ClientTimeout(total=120)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    "https://api.deepinfra.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    logger.info(f"Ответ DeepInfra ({model}): {response.status}")
+                    if response.status == 200:
+                        data = await response.json()
+                        result_text = data["choices"][0]["message"]["content"]
+                        logger.info(f"✅ Ответ LLM (DeepInfra {model}), {len(result_text)} символов")
+                        return result_text
+                    else:
+                        err_text = await response.text()
+                        logger.warning(f"⚠️ DeepInfra ошибка {response.status}: {err_text}")
+        except asyncio.TimeoutError:
+            logger.warning(f"Таймаут DeepInfra для модели {model}")
+        except Exception as e:
+            logger.warning(f"Ошибка DeepInfra модели {model}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+
+    logger.error("Все попытки обращения к LLM провайдерам завершились неудачей")
+    return None
 
 async def split_and_transcribe_audio(audio_path):
     """Разбивает длинное аудио на сегменты и транскрибирует каждый через DeepInfra API."""
