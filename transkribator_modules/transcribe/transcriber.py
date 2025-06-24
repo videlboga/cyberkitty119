@@ -446,7 +446,7 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str:
             timeout = aiohttp.ClientTimeout(total=120)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
-                    "https://api.deepinfra.com/v1/chat/completions",
+                    "https://api.deepinfra.com/v1/openai/chat/completions",
                     headers=headers,
                     json=payload
                 ) as response:
