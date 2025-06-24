@@ -1,0 +1,8 @@
+# Базовые зависимости для всех компонентов
+python-dotenv==1.0.1
+requests==2.31.0
+httpx==0.27.0
+aiohttp==3.9.1
+pydub==0.25.1
+ffmpeg-python==0.2.0
+replicate==0.22.0 

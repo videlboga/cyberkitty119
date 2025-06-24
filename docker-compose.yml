@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # Telegram бот
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cyberkitty19-transkribator-bot
+    env_file:
+      - .env
+    volumes:
+      - ./transkribator_modules:/app/transkribator_modules
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+      - ./data:/app/data
+      - ./cyberkitty19_pyro_worker_new.session:/app/cyberkitty19_pyro_worker_new.session
+      - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
+    restart: unless-stopped
+    depends_on:
+      - telegram-bot-api
+    networks:
+      - cyberkitty19-transkribator-network
+    environment:
+      - TELEGRAM_API_URL=http://telegram-bot-api:8081/bot
+      - GOOGLE_DRIVE_FOLDER_ID=16t4WGeDDrpGHKISxAyo6ZU8mJHhvQ6T8
+    command: sh -c "sleep 15 && python -m transkribator_modules.main"
+
+  # Pyrogram воркер для больших файлов
+  pyro-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.pyro
+    container_name: cyberkitty19-transkribator-pyro-worker
+    env_file:
+      - .env
+    volumes:
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+      - ./transkribator_modules/workers:/app/transkribator_modules/workers
+      - ./cyberkitty19_pyro_worker_new.session:/app/cyberkitty19_pyro_worker_new.session
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    networks:
+      - cyberkitty19-transkribator-network
+
+  # API сервер
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: cyberkitty19-transkribator-api
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+    restart: unless-stopped
+    networks:
+      - cyberkitty19-transkribator-network
+
+  # Telegram Bot API сервер
+  telegram-bot-api:
+    image: root_telegram-bot-api
+    container_name: cyberkitty19-telegram-bot-api
+    command: /entrypoint.sh telegram-bot-api --api-id=21532963 --api-hash=66e38ebc131425924c2680e6c8fb6c09 --local
+    restart: unless-stopped
+    networks:
+      cyberkitty19-transkribator-network:
+        aliases:
+          - api.telegram.org
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+
+networks:
+  cyberkitty19-transkribator-network:
+    driver: bridge
+
+volumes:
+  videos:
+  audio:
+  transcriptions:
+  telegram-bot-api-data: 
