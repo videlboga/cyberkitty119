@@ -468,163 +468,118 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str:
     return None
 
 async def split_and_transcribe_audio(audio_path):
-    """Разбивает длинное аудио на сегменты и транскрибирует каждый через DeepInfra API."""
+    """Пробует разные размеры сегментов (1–30 мин) и транскрибирует через DeepInfra.
+
+    Стратегия:
+    1. Берём список длительностей [60, 300, 600, 900, 1200, 1500, 1800] сек.
+    2. Для каждой длительности режем аудио, отправляем сегменты.
+    3. Если удалось расшифровать ≥80 % сегментов, считаем успехом и возвращаем текст.
+    4. Иначе пробуем следующую (меньшую) длительность.
+    """
+
     if not DEEPINFRA_API_KEY:
         logger.warning("DeepInfra API ключ не настроен")
         return None
-        
+
     import time
-    start_time = time.time()
-        
-    try:
-        audio_path = Path(audio_path)
-        logger.info(f"🚀 НАЧИНАЮ ОБРАБОТКУ АУДИО: {audio_path}")
-        logger.info(f"⏱️ Время старта: {time.strftime('%H:%M:%S', time.localtime(start_time))}")
-        
-        # Сначала сжимаем аудио
-        compressed_audio_path = await compress_audio_for_api(audio_path)
-        
-        # Создаём папку для сегментов
-        segments_dir = audio_path.parent / f"{audio_path.stem}_segments"
-        segments_dir.mkdir(exist_ok=True)
-        
-        # Сегменты по 30 минут для длинных видео
-        segment_duration = 1800  # секунд (30 минут)
-        segment_files = []
-        
-        # Получаем длительность аудио
-        cmd = [
-            'ffprobe',
-            '-v', 'quiet',
-            '-show_entries', 'format=duration',
-            '-of', 'csv=p=0',
-            str(compressed_audio_path)
-        ]
-        
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode != 0:
-            logger.error(f"Ошибка при получении длительности: {stderr.decode()}")
-            return None
-            
-        total_duration = float(stdout.decode().strip())
-        estimated_segments = int(total_duration / segment_duration) + 1
-        logger.info(f"Общая длительность аудио: {total_duration:.2f} секунд")
-        logger.info(f"Планируется создать {estimated_segments} сегментов по {segment_duration/60:.0f} минут")
-        
-        # Создаём сегменты
-        segment_count = 0
-        for start_time_sec in range(0, int(total_duration), segment_duration):
-            segment_path = segments_dir / f"segment_{start_time_sec:04d}.mp3"
-            
-            cmd = [
-                'ffmpeg',
-                '-i', str(compressed_audio_path),
-                '-ss', str(start_time_sec),
-                '-t', str(segment_duration),
-                '-c', 'copy',
-                '-y',
-                str(segment_path)
-            ]
-            
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode == 0 and segment_path.exists() and segment_path.stat().st_size > 1000:
-                segment_files.append(segment_path)
-                segment_count += 1
-                logger.info(f"✅ Создан сегмент {segment_count}/{estimated_segments}: {segment_path.name}")
-            else:
-                logger.warning(f"❌ Не удалось создать сегмент: {segment_path.name}")
-            
-        logger.info(f"📁 Создано {len(segment_files)} сегментов для транскрибации")
-        
-        # Транскрибируем сегменты ПОСЛЕДОВАТЕЛЬНО (не параллельно!) для стабильности
-        logger.info(f"🎙️ Начинаю ПОСЛЕДОВАТЕЛЬНУЮ транскрибацию {len(segment_files)} сегментов...")
-        
-        all_transcripts = []
-        failed_segments = []
-        
-        for i, segment_path in enumerate(segment_files):
-            logger.info(f"📝 Транскрибирую сегмент {i+1}/{len(segment_files)}: {segment_path.name}")
-            
-            # Добавляем retry логику для каждого сегмента
-            result = None
-            for retry in range(3):  # До 3 попыток на сегмент
-                try:
-                    result = await transcribe_segment_with_deepinfra(segment_path)
-                    if result:
-                        break
-                    else:
-                        logger.warning(f"⚠️ Попытка {retry+1}/3 не дала результата для {segment_path.name}")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка в попытке {retry+1}/3 для {segment_path.name}: {e}")
-                    
-                if retry < 2:  # Пауза между попытками
-                    await asyncio.sleep(2)
-            
-            if result:
-                all_transcripts.append(result)
-                logger.info(f"✅ Сегмент {segment_path.name} успешно транскрибирован ({len(result)} символов)")
-            else:
-                failed_segments.append(segment_path.name)
-                logger.error(f"❌ Не удалось транскрибировать сегмент {segment_path.name} после 3 попыток")
-        
-        # Проверяем результаты
-        if failed_segments:
-            logger.warning(f"⚠️ Не удалось транскрибировать {len(failed_segments)} сегментов: {failed_segments}")
-        
-        if not all_transcripts:
-            logger.error("❌ Ни один сегмент не был успешно транскрибирован!")
-            return None
-        
-        # Объединяем все транскрипции
-        full_transcript = " ".join(all_transcripts)
-        
-        # Очищаем временные файлы
+    audio_path = Path(audio_path)
+    logger.info(f"🚀 НАЧИНАЮ ОБРАБОТКУ АУДИО: {audio_path}")
+
+    SEGMENT_DURATION_CANDIDATES = [60, 300, 600, 900, 1200, 1500, 1800]
+
+    for segment_duration in SEGMENT_DURATION_CANDIDATES:
+        start_time_overall = time.time()
+        logger.info("==============================")
+        logger.info(f"🔪 Пробую длительность сегмента {segment_duration/60:.1f} мин ({segment_duration} сек)")
         try:
-            for segment_path in segment_files:
-                if segment_path.exists():
-                    segment_path.unlink()
-            if segments_dir.exists():
-                segments_dir.rmdir()
-            
-            # Удаляем сжатый файл, если он отличается от оригинала
-            if compressed_audio_path != str(audio_path):
-                compressed_path = Path(compressed_audio_path)
-                if compressed_path.exists():
-                    compressed_path.unlink()
-        except Exception as cleanup_error:
-            logger.warning(f"Ошибка при очистке временных файлов: {cleanup_error}")
-        
-        end_time = time.time()
-        processing_time = end_time - start_time
-        logger.info(f"✅ ТРАНСКРИБАЦИЯ ЗАВЕРШЕНА!")
-        logger.info(f"📊 Результат: {len(full_transcript)} символов")
-        logger.info(f"📈 Успешно обработано: {len(all_transcripts)}/{len(segment_files)} сегментов")
-        if failed_segments:
-            logger.info(f"⚠️ Проваленные сегменты: {len(failed_segments)}")
-        logger.info(f"⚡ Время обработки: {processing_time:.1f} секунд ({processing_time/60:.1f} минут)")
-        logger.info(f"🎯 Скорость: {len(full_transcript)/processing_time:.1f} символов/сек")
-        
-        return full_transcript
-        
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка при разбивке и транскрибации аудио: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
+            # Сжимаем аудио один раз перед первой итерацией и переиспользуем файл
+            compressed_audio_path = await compress_audio_for_api(audio_path)
+
+            # Папка для текущего размера сегментов
+            segments_dir = audio_path.parent / f"{audio_path.stem}_segments_{segment_duration}"
+            segments_dir.mkdir(exist_ok=True)
+
+            # 1) Узнаём длительность
+            cmd_duration = [
+                'ffprobe', '-v', 'quiet', '-show_entries', 'format=duration', '-of', 'csv=p=0', str(compressed_audio_path)
+            ]
+            proc = await asyncio.create_subprocess_exec(*cmd_duration, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, _ = await proc.communicate()
+            total_duration = float(stdout.decode().strip()) if proc.returncode == 0 else 0
+
+            # 2) Нарезаем сегменты
+            segment_files, created = [], 0
+            for start_sec in range(0, int(total_duration), segment_duration):
+                seg_path = segments_dir / f"segment_{start_sec:04d}.mp3"
+                cmd_cut = [
+                    'ffmpeg', '-loglevel', 'quiet', '-i', str(compressed_audio_path),
+                    '-ss', str(start_sec), '-t', str(segment_duration), '-c', 'copy', '-y', str(seg_path)
+                ]
+                cut_proc = await asyncio.create_subprocess_exec(*cmd_cut)
+                await cut_proc.communicate()
+                if cut_proc.returncode == 0 and seg_path.exists() and seg_path.stat().st_size > 1024:
+                    segment_files.append(seg_path)
+                    created += 1
+
+            logger.info(f"📁 Создано {created} сегментов по {segment_duration/60:.1f} мин")
+
+            # 3) Транскрибируем последовательно
+            ok, fail, transcripts = 0, 0, []
+            for idx, seg in enumerate(segment_files, 1):
+                logger.info(f"📝 [{idx}/{len(segment_files)}] {seg.name}")
+                res, attempt = None, 0
+                while attempt < 3 and not res:
+                    attempt += 1
+                    try:
+                        res = await transcribe_segment_with_deepinfra(seg)
+                        if not res:
+                            logger.warning(f"⚠️ {seg.name} попытка {attempt}/3 без результата")
+                    except Exception as e:
+                        logger.warning(f"❌ {seg.name} ошибка в попытке {attempt}: {e}")
+                    if not res and attempt < 3:
+                        await asyncio.sleep(2)
+                if res:
+                    transcripts.append(res)
+                    ok += 1
+                else:
+                    fail += 1
+
+            success_ratio = ok / len(segment_files) if segment_files else 0
+            logger.info(f"✅ Успешно {ok}/{len(segment_files)} сегментов (ratio {success_ratio:.2f})")
+
+            # 4) Проверяем успех
+            if success_ratio >= 0.8 and transcripts:
+                full_text = " ".join(transcripts)
+                dur = time.time() - start_time_overall
+                logger.info(f"🎉 Длительность {segment_duration/60:.1f} мин сработала ⇒ возврат результата")
+                logger.info(f"⏱️ Время обработки: {dur/60:.1f} мин, длина текста {len(full_text)} симв.")
+                # Чистим и выходим
+                await _cleanup_temp_files([compressed_audio_path], segment_files, segments_dir)
+                return full_text
+            else:
+                logger.warning("🔄 Недостаточно успешно, пробуем меньший сегмент…")
+                await _cleanup_temp_files([], segment_files, segments_dir)
+        except Exception as e:
+            logger.error(f"❌ Ошибка на длительности {segment_duration}: {e}")
+            import traceback; logger.debug(traceback.format_exc())
+
+    logger.error("Все размеры сегментов исчерпаны, транскрибация не удалась")
+    return None
+
+# --- helper for cleanup ----------------------------------------------------
+
+async def _cleanup_temp_files(extra_paths, segment_files, segments_dir):
+    try:
+        for p in segment_files:
+            if p.exists():
+                p.unlink()
+        if segments_dir.exists():
+            segments_dir.rmdir()
+        for ep in extra_paths:
+            if isinstance(ep, (str, Path)) and Path(ep).exists():
+                Path(ep).unlink()
+    except Exception as ce:
+        logger.debug(f"Ошибка очистки временных файлов: {ce}")
 
 async def transcribe_segment_with_deepinfra(segment_path):
     """Транскрибирует один сегмент аудио через DeepInfra API."""
