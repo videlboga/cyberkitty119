@@ -204,8 +204,11 @@ async def format_transcript_with_llm(raw_transcript: str) -> str:
         # Используем OpenRouter API для форматирования
         if OPENROUTER_API_KEY:
             formatted = await format_transcript_with_openrouter(raw_transcript)
-            if formatted:
+            # Если LLM вернул ощутимо короче (< 90 % исходного) — считаем, что обрезал и отдаем оригинал
+            if formatted and len(formatted) >= len(raw_transcript) * 0.9:
                 return formatted
+            else:
+                logger.warning("LLM сократил транскрипцию — возвращаю исходный текст без обрезки")
         
         # Формальное форматирование, если не удалось использовать LLM
         return raw_transcript
