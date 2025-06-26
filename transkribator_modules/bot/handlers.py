@@ -2,11 +2,14 @@ import asyncio
 from pathlib import Path
 from telegram import Update
 from telegram.ext import ContextTypes
+import re
+from urllib.parse import urlparse
 
 from transkribator_modules.config import (
-    logger, user_transcriptions, VIDEOS_DIR, TRANSCRIPTIONS_DIR, MAX_MESSAGE_LENGTH
+    logger, user_transcriptions, VIDEOS_DIR, TRANSCRIPTIONS_DIR, MAX_MESSAGE_LENGTH, AUDIO_DIR
 )
-from transkribator_modules.utils.processor import process_video, process_video_file
+from transkribator_modules.utils.processor import process_video, process_video_file, process_audio_file
+from transkribator_modules.utils.downloader import download_media
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает нажатия на кнопки в сообщениях."""
@@ -60,7 +63,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Логируем сообщение
     logger.info(f"Получено сообщение от пользователя {user_id}")
     
-    # Обработка промокодов (если сообщение является текстом и выглядит как промокод)
+    URL_RE = re.compile(r"https?://\S+")
+
+    # 1) Ссылки на медиа / YouTube
+    if update.message.text and URL_RE.search(update.message.text):
+        url = URL_RE.search(update.message.text).group(0)
+        status = await update.message.reply_text("🔗 Скачиваю медиа по ссылке…")
+        target_dir = VIDEOS_DIR
+        dl_path = await download_media(url, target_dir)
+        if not dl_path:
+            await status.edit_text("Не удалось скачать файл по ссылке 😿")
+            return
+
+        ext = dl_path.suffix.lower()
+        if ext in {'.mp3', '.wav', '.flac', '.m4a'}:
+            await process_audio_file(dl_path, chat_id, message_id, context, status_message=status)
+        else:
+            await process_video_file(dl_path, chat_id, message_id, context, status_message=status)
+        return
+
+    # 2) Обработка промокодов (если сообщение является текстом и выглядит как промокод)
     if update.message.text and not update.message.video and not update.message.document:
         text = update.message.text.strip().upper()
         
@@ -78,6 +100,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 return
     
     # Проверяем наличие видео в сообщении
+    if update.message.voice or update.message.audio:
+        # ----- аудио или голосовое сообщение -----
+        status = await update.message.reply_text("Скачиваю аудио…")
+        audio_file = await context.bot.get_file(update.message.voice.file_id if update.message.voice else update.message.audio.file_id)
+        audio_path = AUDIO_DIR / f"telegram_audio_{message_id}{Path(audio_file.file_path).suffix or '.ogg'}"
+        await audio_file.download_to_drive(custom_path=audio_path)
+        await process_audio_file(audio_path, chat_id, message_id, context, status_message=status)
+        return
+
+    elif update.message.document and update.message.document.mime_type:
+        mime = update.message.document.mime_type
+        if mime.startswith('video/') or mime.startswith('audio/'):
+            status = await update.message.reply_text("Скачиваю файл…")
+            doc_file = await context.bot.get_file(update.message.document.file_id)
+            ext = Path(doc_file.file_path).suffix or ''.join(['.', mime.split('/')[-1]])
+            if mime.startswith('audio/'):
+                local_path = AUDIO_DIR / f"telegram_audio_{message_id}{ext}"
+                await doc_file.download_to_drive(custom_path=local_path)
+                await process_audio_file(local_path, chat_id, message_id, context, status_message=status)
+            else:
+                local_path = VIDEOS_DIR / f"telegram_video_{message_id}{ext}"
+                await doc_file.download_to_drive(custom_path=local_path)
+                await process_video_file(local_path, chat_id, message_id, context, status_message=status)
+            return
+
     if update.message.video:
         logger.info(f"Получено видео от пользователя {user_id}")
         

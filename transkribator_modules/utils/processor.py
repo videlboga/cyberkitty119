@@ -362,4 +362,54 @@ def _get_next_reset_date():
     else:
         next_month = datetime(now.year, now.month + 1, 1)
     
-    return next_month.strftime('%d.%m.%Y') 
+    return next_month.strftime('%d.%m.%Y')
+
+# --- новый путь для чистых аудио ---------------------------------------------------
+
+async def process_audio_file(audio_path, chat_id, message_id, context, status_message=None):
+    """Обрабатывает аудио-файл (без этапа извлечения из видео)."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    try:
+        if not audio_path.exists():
+            await context.bot.send_message(chat_id=chat_id, text="Файл не найден 😿")
+            return
+
+        if not status_message:
+            status_message = await context.bot.send_message(chat_id=chat_id, text="Начинаю транскрипцию аудио…")
+
+        # 1. Транскрипция
+        await status_message.edit_text("Транскрибирую… 🐾")
+        raw_transcript = await transcribe_audio(audio_path)
+        if not raw_transcript:
+            await status_message.edit_text("Не удалось выполнить транскрипцию 😿")
+            return
+
+        # 2. Форматирование
+        await status_message.edit_text("Форматирую текст… ✨")
+        formatted_transcript = await format_transcript_with_llm(raw_transcript)
+
+        # 3. Сохраняем файлы
+        transcript_path = TRANSCRIPTIONS_DIR / f"telegram_audio_{message_id}.txt"
+        raw_path = TRANSCRIPTIONS_DIR / f"telegram_audio_{message_id}_raw.txt"
+        with open(transcript_path, "w", encoding="utf-8") as f:
+            f.write(formatted_transcript)
+        with open(raw_path, "w", encoding="utf-8") as f:
+            f.write(raw_transcript)
+
+        # 4. Отправляем результат
+        if len(formatted_transcript) > MAX_MESSAGE_LENGTH:
+            await status_message.edit_text("Текст длинный, отправляю файлом…")
+            with open(transcript_path, "rb") as f:
+                await context.bot.send_document(chat_id=chat_id, document=f, filename=f"transcript_{message_id}.txt")
+        else:
+            await status_message.edit_text(f"Расшифровка готова:\n\n{formatted_transcript}")
+
+        # 5. Кнопка саммари
+        keyboard = [[InlineKeyboardButton("📋 Краткое саммари", callback_data=f"brief_summary_{message_id}")]]
+        await context.bot.send_message(chat_id=chat_id, text="Хочешь краткое саммари?", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    except Exception as e:
+        logger.error(f"Ошибка process_audio_file: {e}")
+        if status_message:
+            await status_message.edit_text(f"Произошла ошибка: {e}") 
