@@ -4,8 +4,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from transkribator_modules.config import (
-    logger, user_transcriptions, VIDEOS_DIR, TRANSCRIPTIONS_DIR, MAX_MESSAGE_LENGTH,
-    TELETHON_WORKER_CHAT_ID, PYROGRAM_WORKER_ENABLED, PYROGRAM_WORKER_CHAT_ID
+    logger, user_transcriptions, VIDEOS_DIR, TRANSCRIPTIONS_DIR, MAX_MESSAGE_LENGTH
 )
 from transkribator_modules.utils.processor import process_video, process_video_file
 
@@ -180,81 +179,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception as e:
             logger.error(f"Ошибка при скачивании видео: {e}")
             
-            # Проверяем, является ли ошибка "File is too big"
+            # Ранее здесь вызывались отвратительные Pyrogram/Telethon воркеры.
+            # Код перенесён в archive/awful и больше не используется.
+
             if "File is too big" in str(e):
-                worker_available = False
-                
-                # Сначала проверяем доступность Pyro воркера
-                if PYROGRAM_WORKER_ENABLED and PYROGRAM_WORKER_CHAT_ID != 0:
-                    logger.info(f"Файл слишком большой для прямой загрузки, использую Pyrogram воркер")
-                    
-                    # Обновляем статус
-                    await status_message.edit_text(
-                        "Видео слишком большое для прямой загрузки. Использую Pyrogram воркер... *сосредоточенно стучит по клавиатуре*"
-                    )
-                    
-                    try:
-                        # Формируем команду
-                        command_text = f"#pyro_download_{chat_id}_{message_id}"
-                        logger.info(f"Отправляю команду в Pyro релейный чат: {command_text}, chat_id={PYROGRAM_WORKER_CHAT_ID}")
-                        
-                        # Отправляем видео с командой в релейный чат
-                        await context.bot.copy_message(
-                            chat_id=PYROGRAM_WORKER_CHAT_ID,
-                            from_chat_id=chat_id,
-                            message_id=message_id,
-                            caption=command_text  # Устанавливаем текст команды как подпись к видео
-                        )
-                        
-                        # Обновляем статус
-                        await status_message.edit_text(
-                            "Запрос на скачивание отправлен! Ожидаю ответа... *нетерпеливо постукивает лапкой*"
-                        )
-                        worker_available = True
-                        
-                    except Exception as pyro_error:
-                        logger.error(f"Ошибка при отправке запроса Pyro воркеру: {pyro_error}")
-                        # Не обновляем статус, так как может быть доступен Telethon воркер
-                
-                # Пробуем использовать Telethon воркер, если Pyro недоступен или произошла ошибка
-                if not worker_available and TELETHON_WORKER_CHAT_ID != 0:
-                    logger.info(f"Файл слишком большой для прямой загрузки, использую Telethon воркер")
-                    
-                    # Обновляем статус
-                    await status_message.edit_text(
-                        "Видео слишком большое для прямой загрузки. Использую Telethon воркер... *сосредоточенно стучит по клавиатуре*"
-                    )
-                    
-                    try:
-                        # Формируем команду
-                        command_text = f"#video_download_{chat_id}_{message_id}"
-                        logger.info(f"Отправляю команду в релейный чат: {command_text}, chat_id={TELETHON_WORKER_CHAT_ID}")
-                        
-                        # Отправляем видео с командой в релейный чат
-                        await context.bot.copy_message(
-                            chat_id=TELETHON_WORKER_CHAT_ID,
-                            from_chat_id=chat_id,
-                            message_id=message_id,
-                            caption=command_text  # Устанавливаем текст команды как подпись к видео
-                        )
-                        
-                        # Обновляем статус
-                        await status_message.edit_text(
-                            "Запрос на скачивание отправлен! Ожидаю ответа... *нетерпеливо постукивает лапкой*"
-                        )
-                        worker_available = True
-                        
-                    except Exception as telethon_error:
-                        logger.error(f"Ошибка при отправке запроса Telethon воркеру: {telethon_error}")
-                        await status_message.edit_text(
-                            f"Произошла ошибка при обработке видео через Telethon релейный чат: {str(telethon_error)} *смущенно прячет мордочку*"
-                        )
-                
-                # Если ни один воркер не доступен
-                if not worker_available:
-                    await status_message.edit_text(
-                        "К сожалению, видео слишком большое для прямой загрузки, а ни один воркер не настроен. *печально вздыхает*"
-                    )
+                await status_message.edit_text(
+                    "😿 Файл превышает лимит Telegram (≈ 2 ГБ). \n"
+                    "Пожалуйста, пришлите прямую ссылку на файл — скоро добавим поддержку скачивания по URL."
+                )
             else:
                 await status_message.edit_text(
                     f"Произошла ошибка при скачивании видео: {str(e)} *испуганно прячется*"
