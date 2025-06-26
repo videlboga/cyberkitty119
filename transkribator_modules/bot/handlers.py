@@ -77,52 +77,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await update.message.reply_text("🤔 Это похоже на промокод, но я его не нашёл. *задумчиво наклоняет голову*")
                 return
     
-    # Проверяем сообщения от воркера (уведомления о скачивании)
-    if update.message.text and ("#video_downloaded_" in update.message.text or "#pyro_downloaded_" in update.message.text):
-        try:
-            # Извлекаем chat_id и message_id из сообщения
-            parts = update.message.text.split('_')
-            if len(parts) >= 4:
-                original_chat_id = int(parts[2])
-                original_message_id = int(parts[3])
-                
-                logger.info(f"Получено уведомление о скачивании видео: chat_id={original_chat_id}, message_id={original_message_id}")
-                
-                # Проверяем наличие видео
-                video_path = VIDEOS_DIR / f"telegram_video_{original_message_id}.mp4"
-                
-                if video_path.exists() and video_path.stat().st_size > 0:
-                    logger.info(f"Видео найдено: {video_path}, начинаю обработку")
-                    
-                    # Отправляем пользователю уведомление о начале обработки
-                    status_message = await context.bot.send_message(
-                        chat_id=original_chat_id,
-                        text="Видео успешно скачано! Начинаю обработку... *радостно мурчит*"
-                    )
-                    
-                    # Обрабатываем видео
-                    try:
-                        await process_video_file(video_path, original_chat_id, original_message_id, context, status_message=status_message)
-                    except Exception as process_error:
-                        logger.error(f"Ошибка при обработке видео: {process_error}")
-                        # Отправляем сообщение об ошибке
-                        await context.bot.send_message(
-                            chat_id=original_chat_id,
-                            text=f"Произошла ошибка при обработке видео: {process_error}. *виновато опускает уши*"
-                        )
-                else:
-                    logger.error(f"Видео не найдено или пустое: {video_path}")
-                    await context.bot.send_message(
-                        chat_id=original_chat_id,
-                        text="Не удалось найти скачанное видео. *растерянно оглядывается*"
-                    )
-        except Exception as e:
-            logger.error(f"Ошибка при обработке уведомления от воркера: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-    
     # Проверяем наличие видео в сообщении
-    elif update.message.video:
+    if update.message.video:
         logger.info(f"Получено видео от пользователя {user_id}")
         
         # Отправляем сообщение о начале загрузки
