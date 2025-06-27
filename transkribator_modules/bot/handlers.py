@@ -19,11 +19,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if query.data.startswith("raw_"):
         try:
             message_id = query.data.split("_")[1]
+            # Сначала пробуем видео-файл, затем аудио
             raw_transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}_raw.txt"
+            if not raw_transcript_path.exists():
+                raw_transcript_path = TRANSCRIPTIONS_DIR / f"telegram_audio_{message_id}_raw.txt"
             
             if not raw_transcript_path.exists():
                 await query.message.reply_text(
-                    "Не могу найти сырую транскрипцию для этого видео. *растерянно смотрит*"
+                    "Не могу найти сырую транскрипцию для этого файла. *растерянно смотрит*"
                 )
                 return
                 
@@ -223,12 +226,14 @@ async def handle_summary_callback(update: Update, context: ContextTypes.DEFAULT_
             f"Генерирую {summary_type} саммари для этого видео... *сосредоточенно обдумывает содержание*"
         )
         
-        # Загружаем транскрипцию
+        # Загружаем транскрипцию (видео или аудио)
         transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}.txt"
-        
+        if not transcript_path.exists():
+            transcript_path = TRANSCRIPTIONS_DIR / f"telegram_audio_{message_id}.txt"
+
         if not transcript_path.exists():
             await status_message.edit_text(
-                "Мяу... Не могу найти транскрипцию для этого видео! 🔍 *растерянно оглядывается* Возможно, что-то пошло не так при обработке. Напишите @Like_a_duck - он разберётся! 🕵️‍♂️"
+                "Мяу... Не могу найти транскрипцию для этого файла! 🔍 *растерянно оглядывается* Возможно, что-то пошло не так при обработке. Напишите @Like_a_duck - он разберётся! ��️‍♂️"
             )
             return
             
