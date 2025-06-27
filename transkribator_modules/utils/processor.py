@@ -143,16 +143,14 @@ async def process_video_file(video_path, chat_id, message_id, context, status_me
         keyboard = [
             [
                 InlineKeyboardButton("📝 Подробное саммари", callback_data=f"detailed_summary_{message_id}"),
-                InlineKeyboardButton("📋 Краткое саммари", callback_data=f"brief_summary_{message_id}")
+                InlineKeyboardButton("📋 Краткое саммари", callback_data=f"brief_summary_{message_id}"),
             ],
-            [InlineKeyboardButton("🔍 Показать сырую транскрипцию", callback_data=f"raw_{message_id}")]
+            [InlineKeyboardButton("🔍 Показать сырую транскрипцию", callback_data=f"raw_{message_id}")],
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await context.bot.send_message(
             chat_id=chat_id,
-            text="Вы можете получить саммари или необработанную версию транскрипции, нажав на кнопки ниже:",
-            reply_markup=reply_markup
+            text='Вы можете получить саммари или необработанную версию транскрипции:\nНажмите кнопку ниже:',
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         
         logger.info(f"Транскрипция видео успешно завершена, файлы: {transcript_path}, {raw_transcript_path}")
@@ -271,14 +269,14 @@ async def process_video(chat_id, message_id, update, context):
         keyboard = [
             [
                 InlineKeyboardButton("📝 Подробное саммари", callback_data=f"detailed_summary_{message_id}"),
-                InlineKeyboardButton("📋 Краткое саммари", callback_data=f"brief_summary_{message_id}")
+                InlineKeyboardButton("📋 Краткое саммари", callback_data=f"brief_summary_{message_id}"),
             ],
-            [InlineKeyboardButton("🔍 Показать сырую транскрипцию", callback_data=f"raw_{message_id}")]
+            [InlineKeyboardButton("🔍 Показать сырую транскрипцию", callback_data=f"raw_{message_id}")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "Вы можете получить саммари или необработанную версию транскрипции, нажав на кнопки ниже:",
+            'Вы можете получить саммари или необработанную версию транскрипции:\nНажмите кнопку ниже:',
             reply_markup=reply_markup
         )
         
@@ -366,6 +364,123 @@ def _get_next_reset_date():
 
 # --- новый путь для чистых аудио ---------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Helper: unified result sending for any media type (video, audio, links)
+# -----------------------------------------------------------------------------
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+
+async def send_transcription_result(
+    *,
+    chat_id: int,
+    message_id: int,
+    formatted_transcript: str,
+    raw_transcript: str,
+    media_prefix: str,
+    context,
+    status_message=None,
+):
+    """Отправляет пользователю результаты транскрипции в едином формате.
+
+    media_prefix — строка-«префикс» для имён файлов (например, `telegram_video` или
+    `telegram_audio`). Таким образом везде будет единый стиль, и функцию можно
+    использовать для любого источника.
+    """
+
+    # --- 1. Сохраняем файлы ---------------------------------------------------
+    transcript_path = TRANSCRIPTIONS_DIR / f"{media_prefix}_{message_id}.txt"
+    raw_transcript_path = TRANSCRIPTIONS_DIR / f"{media_prefix}_{message_id}_raw.txt"
+
+    # гарантируем директорию
+    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(transcript_path, "w", encoding="utf-8") as f:
+        f.write(formatted_transcript)
+
+    with open(raw_transcript_path, "w", encoding="utf-8") as f:
+        f.write(raw_transcript)
+
+    # --- 2. Кэшируем для дальнейших команд -----------------------------------
+    user_transcriptions[chat_id] = {
+        "raw": raw_transcript,
+        "formatted": formatted_transcript,
+        "path": str(transcript_path),
+        "raw_path": str(raw_transcript_path),
+        "timestamp": asyncio.get_event_loop().time(),
+    }
+
+    # --- 3. Отправляем результат ---------------------------------------------
+    if len(formatted_transcript) > MAX_MESSAGE_LENGTH:
+        # Попытка создать Google Doc (как в обработке видео)
+        if status_message:
+            await status_message.edit_text(
+                "Готово! Транскрипция получилась длинной, создаю Google Doc… 📝"
+            )
+        try:
+            from transkribator_modules.utils.google_docs import create_transcript_google_doc
+
+            filename = f"{media_prefix}_{message_id}.mp4" if media_prefix.endswith("video") else f"{media_prefix}_{message_id}.wav"
+            doc_url = await create_transcript_google_doc(formatted_transcript, filename, chat_id)
+
+            if doc_url:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "✅ **Транскрипция готова!**\n\n"
+                        f"📄 **Google Doc:** [Открыть документ]({doc_url})\n\n"
+                        "📋 Документ содержит полную транскрипцию с красивым оформлением\n"
+                        "🔗 Ссылка остаётся активной навсегда\n\n"
+                        "🐾 *гордо машет хвостом*"
+                    ),
+                    parse_mode="Markdown",
+                    disable_web_page_preview=False,
+                )
+            else:
+                raise RuntimeError("Google Docs недоступен")
+        except Exception:
+            # Fallback — отправляем файлом
+            if status_message:
+                await status_message.edit_text(
+                    "Не удалось создать Google Doc, отправляю файлом… 📄"
+                )
+            with open(transcript_path, "rb") as file:
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=file,
+                    filename=f"Транскрипция {message_id}.txt",
+                    caption="📄 Полная транскрипция во вложении",
+                )
+    else:
+        # Помещается в сообщение — отвечаем текстом
+        if status_message:
+            await status_message.edit_text(
+                f"✅ **Готово! Вот транскрипция:**\n\n{formatted_transcript}\n\n@CyberKitty19_bot",
+                parse_mode="Markdown",
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ **Готово! Вот транскрипция:**\n\n{formatted_transcript}\n\n@CyberKitty19_bot",
+                parse_mode="Markdown",
+            )
+
+    # --- 4. Кнопочки ----------------------------------------------------------
+    keyboard = [
+        [
+            InlineKeyboardButton("📝 Подробное саммари", callback_data=f"detailed_summary_{message_id}"),
+            InlineKeyboardButton("📋 Краткое саммари", callback_data=f"brief_summary_{message_id}"),
+        ],
+        [InlineKeyboardButton("🔍 Показать сырую транскрипцию", callback_data=f"raw_{message_id}")],
+    ]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text='Вы можете получить саммари или необработанную версию транскрипции:\nНажмите кнопку ниже:',
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+    return transcript_path, raw_transcript_path
+
 async def process_audio_file(audio_path, chat_id, message_id, context, status_message=None):
     """Обрабатывает аудио-файл (без этапа извлечения из видео)."""
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -389,25 +504,19 @@ async def process_audio_file(audio_path, chat_id, message_id, context, status_me
         await status_message.edit_text("Форматирую текст… ✨")
         formatted_transcript = await format_transcript_with_llm(raw_transcript)
 
-        # 3. Сохраняем файлы
-        transcript_path = TRANSCRIPTIONS_DIR / f"telegram_audio_{message_id}.txt"
-        raw_path = TRANSCRIPTIONS_DIR / f"telegram_audio_{message_id}_raw.txt"
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            f.write(formatted_transcript)
-        with open(raw_path, "w", encoding="utf-8") as f:
-            f.write(raw_transcript)
+        # 3. Унифицированный вывод
+        await send_transcription_result(
+            chat_id=chat_id,
+            message_id=message_id,
+            formatted_transcript=formatted_transcript,
+            raw_transcript=raw_transcript,
+            media_prefix="telegram_audio",
+            context=context,
+            status_message=status_message,
+        )
 
-        # 4. Отправляем результат
-        if len(formatted_transcript) > MAX_MESSAGE_LENGTH:
-            await status_message.edit_text("Текст длинный, отправляю файлом…")
-            with open(transcript_path, "rb") as f:
-                await context.bot.send_document(chat_id=chat_id, document=f, filename=f"transcript_{message_id}.txt")
-        else:
-            await status_message.edit_text(f"Расшифровка готова:\n\n{formatted_transcript}")
-
-        # 5. Кнопка саммари
-        keyboard = [[InlineKeyboardButton("📋 Краткое саммари", callback_data=f"brief_summary_{message_id}")]]
-        await context.bot.send_message(chat_id=chat_id, text="Хочешь краткое саммари?", reply_markup=InlineKeyboardMarkup(keyboard))
+        # 4. Проверка лимитов
+        await check_user_limits_and_notify(chat_id, context)
 
     except Exception as e:
         logger.error(f"Ошибка process_audio_file: {e}")
