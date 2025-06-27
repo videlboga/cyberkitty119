@@ -6,6 +6,12 @@ from pathlib import Path
 from transkribator_modules.config import logger, OPENROUTER_API_KEY, OPENROUTER_MODEL, DEEPINFRA_API_KEY
 import io
 
+# Конфигурируемый таймаут (по умолчанию 20 минут)
+try:
+    _DEFAULT_DI_TIMEOUT = int(os.getenv("DEEPINFRA_TIMEOUT_SECONDS", "1200"))
+except Exception:
+    _DEFAULT_DI_TIMEOUT = 1200  # fallback 20 мин
+
 async def compress_audio_for_api(audio_path):
     """Сжимает аудиофайл для отправки в API, уменьшая размер."""
     try:
@@ -116,12 +122,14 @@ async def transcribe_audio(audio_path, model_name="base"):
         return await transcribe_audio_direct(audio_path)
 
 DEEPINFRA_MODEL_CANDIDATES = [
-    "openai/whisper-large-v3-turbo",  # быстрый но не всегда доступен
-    "openai/whisper-large-v3",        # стандартный
-    "openai/whisper-large-v2",        # предыдущая версия
+    "openai/whisper-large-v3",        # стабильная
+    "openai/whisper-large-v3-turbo",  # turbo вторым номером — если очередь длинная, быстро переключимся
+    "openai/whisper-large-v2",        # fallback
+    "openai/whisper-base",            # доступна без платной подписки
+    "openai/whisper-tiny",            # самый лёгкий резерв
 ]
 
-async def _post_to_deepinfra(audio_fp, file_name: str, timeout: aiohttp.ClientTimeout):
+async def _post_to_deepinfra(audio_fp, file_name: str, timeout: aiohttp.ClientTimeout | None = None):
     """Пробует отправить файл в DeepInfra на несколько моделей по очереди.
 
     Возвращает текст транскрипции или None.
@@ -131,22 +139,50 @@ async def _post_to_deepinfra(audio_fp, file_name: str, timeout: aiohttp.ClientTi
     # Читать файл в память один раз, чтобы затем переиспользовать для каждой попытки
     audio_bytes = audio_fp.read()
 
+    if timeout is None:
+        timeout = aiohttp.ClientTimeout(total=_DEFAULT_DI_TIMEOUT)
+
     async with aiohttp.ClientSession(timeout=timeout) as session:
         for model in DEEPINFRA_MODEL_CANDIDATES:
             url = f"https://api.deepinfra.com/v1/inference/{model}"
             try:
                 form_data = aiohttp.FormData()
                 # Создаём новый BytesIO каждый раз, иначе положение указателя собьётся
-                form_data.add_field('audio', io.BytesIO(audio_bytes), filename=file_name)
+                form_data.add_field('audio', io.BytesIO(audio_bytes), filename=file_name, content_type='audio/mpeg' if file_name.lower().endswith(('.mp3','mpeg')) else 'audio/wav')
 
-                logger.info(f"📤 Отправляю {file_name} в DeepInfra, модель: {model}…")
-                async with session.post(url, headers=headers, data=form_data) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data.get('text', '')
-                    else:
-                        err = await resp.text()
-                        logger.warning(f"⚠️ DeepInfra {model} ответ {resp.status}: {err}")
+                logger.info(f"📤 Отправляю {file_name} в DeepInfra, модель: {model}… (таймаут {_DEFAULT_DI_TIMEOUT}s)")
+
+                import time
+                _t0 = time.perf_counter()
+
+                # для turbo-модели ограничим ожидание 120 с, чтобы не висеть в очереди
+                _timeout_ctx = session.post(url, headers=headers, data=form_data)
+                if model.endswith("v3-turbo"):
+                    import asyncio
+                    try:
+                        resp = await asyncio.wait_for(_timeout_ctx, timeout=120)
+                    except asyncio.TimeoutError:
+                        logger.warning(f"⏰ turbo-модель ждёт >120 с, переключаюсь на следующую…")
+                        continue
+                elif model.endswith("large-v3"):
+                    # стабильная large-v3 иногда обрабатывает >5 мин – ограничимся 300 с
+                    import asyncio
+                    try:
+                        resp = await asyncio.wait_for(_timeout_ctx, timeout=300)
+                    except asyncio.TimeoutError:
+                        logger.warning("⏰ large-v3 ждёт >5 мин, переключаюсь на следующую…")
+                        continue
+                else:
+                    resp = await _timeout_ctx
+
+                elapsed = time.perf_counter() - _t0
+                if resp.status == 200:
+                    data = await resp.json()
+                    logger.info(f"✅ DeepInfra {model} успешно ответила за {elapsed:.1f} с")
+                    return data.get('text', '')
+                else:
+                    err = await resp.text()
+                    logger.warning(f"⚠️ DeepInfra {model} ответ {resp.status} спустя {elapsed:.1f} с: {err}")
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 logger.warning(f"⚠️ Сбой запроса к DeepInfra модель {model}: {e}")
 
@@ -166,8 +202,8 @@ async def transcribe_audio_direct(audio_path):
         
         file_name = Path(compressed_audio_path).name
         with open(compressed_audio_path, 'rb') as audio_file:
-            timeout = aiohttp.ClientTimeout(total=600)  # 10-мин на файл
-            transcript_text = await _post_to_deepinfra(audio_file, file_name, timeout)
+            # Используем общий таймаут; при желании можно переопределить переменной окружения
+            transcript_text = await _post_to_deepinfra(audio_file, file_name)
 
         if transcript_text:
             logger.info("✅ ПРЯМАЯ ТРАНСКРИБАЦИЯ ЗАВЕРШЕНА!")
@@ -594,7 +630,7 @@ async def transcribe_segment_with_deepinfra(segment_path):
         file_name = Path(segment_path).name
         with open(segment_path, 'rb') as audio_file:
             timeout = aiohttp.ClientTimeout(total=900)  # 15-мин на сегмент
-            transcript_text = await _post_to_deepinfra(audio_file, file_name, timeout)
+            transcript_text = await _post_to_deepinfra(audio_file, file_name)
 
         if transcript_text:
             logger.info(f"📥 Сегмент {file_name} получен, {len(transcript_text)} символов")

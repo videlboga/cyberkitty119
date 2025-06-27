@@ -15,37 +15,14 @@ services:
       - ./audio:/app/audio
       - ./transcriptions:/app/transcriptions
       - ./data:/app/data
-      - ./cyberkitty19_pyro_worker_new.session:/app/cyberkitty19_pyro_worker_new.session
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
     restart: unless-stopped
     depends_on:
       - telegram-bot-api
-    networks:
-      - cyberkitty19-transkribator-network
+    network_mode: host
     environment:
-      - TELEGRAM_API_URL=http://telegram-bot-api:8081/bot
-      - GOOGLE_DRIVE_FOLDER_ID=16t4WGeDDrpGHKISxAyo6ZU8mJHhvQ6T8
+      - TELEGRAM_API_URL=http://localhost:8081/bot
     command: sh -c "sleep 15 && python -m transkribator_modules.main"
-
-  # Pyrogram воркер для больших файлов
-  pyro-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.pyro
-    container_name: cyberkitty19-transkribator-pyro-worker
-    env_file:
-      - .env
-    volumes:
-      - ./videos:/app/videos
-      - ./audio:/app/audio
-      - ./transcriptions:/app/transcriptions
-      - ./transkribator_modules/workers:/app/transkribator_modules/workers
-      - ./cyberkitty19_pyro_worker_new.session:/app/cyberkitty19_pyro_worker_new.session
-    restart: unless-stopped
-    stdin_open: true
-    tty: true
-    networks:
-      - cyberkitty19-transkribator-network
 
   # API сервер
   api:
@@ -77,6 +54,9 @@ services:
           - api.telegram.org
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
+    ports:
+      - "8081:8081"
+      - "8082:8082"
 
 networks:
   cyberkitty19-transkribator-network:
