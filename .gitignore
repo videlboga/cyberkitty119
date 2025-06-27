@@ -65,4 +65,7 @@ logs/
 .DS_Store
 
 # New tar.gz files
-*.tar.gz 
+*.tar.gz
+
+# Google credentials
+data/google_credentials.json 
