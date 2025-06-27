@@ -62,4 +62,7 @@ logs/
 .vscode/
 *.swp
 *.swo
-.DS_Store 
+.DS_Store
+
+# New tar.gz files
+*.tar.gz 
