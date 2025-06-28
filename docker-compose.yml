@@ -16,14 +16,12 @@ services:
       - ./transcriptions:/app/transcriptions
       - ./data:/app/data
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
-      - ./secrets/google-sa.json:/app/credentials/google-sa.json:ro
     restart: unless-stopped
     depends_on:
       - telegram-bot-api
     network_mode: host
     environment:
       - TELEGRAM_API_URL=http://localhost:8081/bot
-      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/google-sa.json
     command: sh -c "sleep 15 && python -m transkribator_modules.main"
 
   # API сервер
