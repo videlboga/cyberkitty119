@@ -69,3 +69,5 @@ logs/
 
 # Google credentials
 data/google_credentials.json transcriptions/
+.env
+secrets/
