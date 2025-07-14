@@ -41,7 +41,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")
         ],
         [
-            InlineKeyboardButton("⭐ Тарифы", callback_data="show_payment_plans"),
+            InlineKeyboardButton("👥 Добавить в группу", callback_data="add_to_group"),
             InlineKeyboardButton("💡 Помощь", callback_data="show_help")
         ]
     ]
