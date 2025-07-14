@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, MessageHandler, 
     CallbackQueryHandler, ContextTypes, filters, PreCheckoutQueryHandler,
-    ConversationHandler
+    ConversationHandler, ChatJoinRequestHandler
 )
 
 import os
@@ -15,7 +15,7 @@ from transkribator_modules.bot.commands import (
     plans_command, stats_command, api_command, promo_codes_command, broadcast_command
 )
 from transkribator_modules.bot.handlers import (
-    button_callback, handle_message
+    button_callback, handle_message, handle_chat_join_request, handle_my_chat_member
 )
 from transkribator_modules.bot.callbacks import handle_callback_query
 from transkribator_modules.bot.payments import (
@@ -89,6 +89,9 @@ def main() -> None:
     # Обработчик «тяжёлых» сообщений (видео/аудио) перенесён в отдельную группу, 
     # чтобы команды вроде /start отвечали моментально и не стояли в очереди
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message), group=1)
+    
+    # Обработчики для групповых чатов
+    application.add_handler(ChatJoinRequestHandler(handle_chat_join_request))
     
     # Обработчики для кнопок (новый обработчик имеет приоритет)
     application.add_handler(CallbackQueryHandler(handle_payment_callback))  # Платежные callback'ы

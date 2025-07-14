@@ -11,6 +11,87 @@ from transkribator_modules.config import (
 from transkribator_modules.utils.processor import process_video, process_video_file, process_audio_file
 from transkribator_modules.utils.downloader import download_media
 
+# --- Обработчики для групповых чатов ---
+
+async def handle_chat_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает запрос на добавление бота в чат."""
+    chat_join_request = update.chat_join_request
+    chat = chat_join_request.chat
+    user = chat_join_request.from_user
+    
+    logger.info(f"Запрос на добавление бота в чат {chat.id} ({chat.title}) от пользователя {user.id}")
+    
+    # Автоматически принимаем запрос
+    try:
+        await context.bot.approve_chat_join_request(
+            chat_id=chat.id,
+            user_id=user.id
+        )
+        logger.info(f"Бот добавлен в чат {chat.id}")
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении бота в чат {chat.id}: {e}")
+
+async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает изменения статуса бота в чате."""
+    # Проверяем, есть ли информация о статусе бота
+    if hasattr(update, 'my_chat_member') and update.my_chat_member:
+        chat_member = update.my_chat_member
+        chat = chat_member.chat
+        new_status = chat_member.new_chat_member.status
+        old_status = chat_member.old_chat_member.status
+        
+        logger.info(f"Статус бота в чате {chat.id} изменился: {old_status} -> {new_status}")
+        
+        # Если бота добавили в группу
+        if new_status in ['member', 'administrator'] and old_status in ['left', 'kicked']:
+            await send_welcome_message(chat, context)
+        
+        # Если бота удалили из группы
+        elif new_status in ['left', 'kicked']:
+            logger.info(f"Бот удален из чата {chat.id} ({chat.title})")
+    
+    # Если это обычное сообщение, просто пропускаем
+    return
+
+async def send_welcome_message(chat, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправляет приветственное сообщение при добавлении бота в чат."""
+    try:
+        welcome_text = (
+            f"🐱 Мяу! Привет, {chat.title}! Я CyberKitty — бот для транскрипции аудио и видео.\n\n"
+            "**Что я умею:**\n"
+            "• Транскрибировать видео и аудио файлы\n"
+            "• Обрабатывать голосовые сообщения\n"
+            "• Создавать краткие саммари\n"
+            "• Работать с ссылками на YouTube\n\n"
+            "**Как использовать:**\n"
+            "Просто отправьте мне видео, аудио или голосовое сообщение!\n\n"
+            "**Команды:**\n"
+            "/start - Начать работу\n"
+            "/help - Справка\n"
+            "/plans - Тарифные планы\n\n"
+            "Приятного использования! *радостно мурчит*"
+        )
+        
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=welcome_text,
+            parse_mode='Markdown'
+        )
+        
+        logger.info(f"Отправлено приветственное сообщение в чат {chat.id}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при отправке приветственного сообщения в чат {chat.id}: {e}")
+
+async def check_bot_permissions(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Проверяет права бота в чате."""
+    try:
+        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+        return bot_member.status in ['member', 'administrator']
+    except Exception as e:
+        logger.error(f"Ошибка при проверке прав бота в чате {chat_id}: {e}")
+        return False
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает нажатия на кнопки в сообщениях."""
     query = update.callback_query
@@ -62,9 +143,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     message_id = update.message.message_id
+    chat_type = update.effective_chat.type
     
     # Логируем сообщение
-    logger.info(f"Получено сообщение от пользователя {user_id}")
+    logger.info(f"Получено сообщение от пользователя {user_id} в чате {chat_id} (тип: {chat_type})")
+    
+    # Проверяем права бота в групповых чатах
+    if chat_type in ['group', 'supergroup']:
+        has_permissions = await check_bot_permissions(chat_id, context)
+        if not has_permissions:
+            logger.warning(f"Бот не имеет прав в чате {chat_id}")
+            return
     
     URL_RE = re.compile(r"https?://\S+")
 
