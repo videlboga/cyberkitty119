@@ -198,30 +198,44 @@ DEFAULT_PLANS = [
         "name": PlanType.BASIC,
         "display_name": "⭐ Базовый",
         "minutes_per_month": 180.0,  # 3 часа
-        "max_file_size_mb": 200.0,
+        "max_file_size_mb": None, # Убрал лимит на размер файла
         "price_rub": 990.0,
         "price_usd": 10.0,
         "description": "Для регулярного использования",
-        "features": '["3 часа в месяц", "Файлы до 200 МБ", "ИИ-форматирование"]'
+        "features": '["3 часа в месяц", "Без лимита на размер файла", "ИИ-форматирование"]'
     },
     {
         "name": PlanType.PRO,
         "display_name": "💎 Профессиональный", 
         "minutes_per_month": 600.0,  # 10 часов
-        "max_file_size_mb": 500.0,
+        "max_file_size_mb": None, # Убрал лимит на размер файла
         "price_rub": 2990.0,
         "price_usd": 30.0,
         "description": "Для бизнеса и работы",
-        "features": '["10 часов в месяц", "Файлы до 500 МБ", "API доступ", "Приоритет"]'
+        "features": '["10 часов в месяц", "Без лимита на размер файла", "API доступ", "Приоритет"]'
     },
     {
         "name": PlanType.UNLIMITED,
         "display_name": "🚀 Безлимитный",
         "minutes_per_month": None,  # Безлимитный
-        "max_file_size_mb": 2000.0,
+        "max_file_size_mb": None, # Убрал лимит на размер файла
         "price_rub": 9990.0,
         "price_usd": 100.0,
         "description": "Максимальные возможности",
-        "features": '["Безлимитные минуты", "Файлы до 2 ГБ", "VIP поддержка", "Все функции"]'
+        "features": '["Безлимитные минуты", "Без лимита на размер файла", "VIP поддержка", "Все функции"]'
     }
-] 
+]
+
+# ---------------------------------------------------------------------------
+# Результаты асинхронных заданий DeepInfra
+# ---------------------------------------------------------------------------
+
+class DeepInfraJob(Base):
+    __tablename__ = "deepinfra_jobs"
+
+    id = Column(String, primary_key=True, index=True)  # request_id из DeepInfra
+    status = Column(String, default="queued")  # queued / succeeded / failed
+    text = Column(Text, nullable=True)  # результат транскрипции (если succeeded)
+    model = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow) 

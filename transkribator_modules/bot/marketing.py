@@ -41,50 +41,9 @@ class MarketingManager:
         ]
     
     async def send_daily_promo(self):
-        """Отправляет ежедневные промо-сообщения активным пользователям"""
-        try:
-            current_day = datetime.now().weekday()
-            
-            # Ищем подходящее промо для текущего дня
-            today_promos = [promo for promo in self.promo_messages if promo["day"] == current_day]
-            
-            if not today_promos:
-                return  # Нет промо на сегодня
-            
-            promo = random.choice(today_promos)
-            
-            db = SessionLocal()
-            try:
-                user_service = UserService(db)
-                # Получаем активных пользователей (которые использовали бота в последние 7 дней)
-                active_users = user_service.get_active_users(days=7)
-                
-                sent_count = 0
-                for user in active_users:
-                    try:
-                        # Отправляем промо только пользователям с бесплатным и базовым тарифом
-                        if user.current_plan in ["free", "basic"]:
-                            await self.bot.send_message(
-                                chat_id=user.telegram_id,
-                                text=promo["text"],
-                                parse_mode='Markdown'
-                            )
-                            sent_count += 1
-                            
-                            # Небольшая пауза между отправками
-                            await asyncio.sleep(0.1)
-                            
-                    except Exception as e:
-                        logger.error(f"Ошибка отправки промо пользователю {user.telegram_id}: {e}")
-                        continue
-                
-                logger.info(f"📢 Отправлено {sent_count} промо-сообщений")
-                
-            finally:
-                db.close()
-                
-        except Exception as e:
-            logger.error(f"Ошибка в send_daily_promo: {e}")
+        """(Отключено) Ранее отправляло ежедневные промо-сообщения. Теперь не используется."""
+        logger.info("send_daily_promo вызван, но функция отключена и ничего не делает.")
+        return
     
     async def send_limit_reminder(self, user_telegram_id, remaining_minutes):
         """Отправляет напоминание о лимитах"""

@@ -8,13 +8,11 @@ from transkribator_modules.transcribe.transcriber import (
     transcribe_audio, format_transcript_with_llm
 )
 from transkribator_modules.db.database import SessionLocal, UserService
-from transkribator_modules.db.models import PlanType
+from transkribator_modules.db.models import PlanType, Transcription
 
 async def process_video_file(video_path, chat_id, message_id, context, status_message=None):
     """Обрабатывает видео из файла, извлекает аудио и выполняет транскрибацию.
     Эта версия не требует объекта Update и может быть использована напрямую с файлами."""
-    
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     
     try:
         # Пути к файлам
@@ -71,91 +69,18 @@ async def process_video_file(video_path, chat_id, message_id, context, status_me
         
         formatted_transcript = await format_transcript_with_llm(raw_transcript)
         
-        # Создаем файлы с транскрипциями
-        transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}.txt"
-        raw_transcript_path = TRANSCRIPTIONS_DIR / f"telegram_video_{message_id}_raw.txt"
-        
-        with open(transcript_path, "w", encoding="utf-8") as f:
-            f.write(formatted_transcript)
-            
-        with open(raw_transcript_path, "w", encoding="utf-8") as f:
-            f.write(raw_transcript)
-        
-        # Сохраняем транскрипции для пользователя
-        user_transcriptions[chat_id] = {
-            'raw': raw_transcript,
-            'formatted': formatted_transcript,
-            'path': str(transcript_path),
-            'raw_path': str(raw_transcript_path),
-            'timestamp': asyncio.get_event_loop().time()
-        }
-        
-        # Отправляем результаты пользователю
-        if len(formatted_transcript) > MAX_MESSAGE_LENGTH:
-            # Если транскрипция слишком длинная, создаем Google Doc
-            await status_message.edit_text(
-                "Готово! Транскрипция получилась длинной, создаю Google Doc... *деловито стучит лапками*"
-            )
-            
-            # Пробуем создать Google Doc
-            try:
-                from transkribator_modules.utils.google_docs import create_transcript_google_doc
-                video_filename = f"telegram_video_{message_id}.mp4"
-                doc_url = await create_transcript_google_doc(formatted_transcript, video_filename, chat_id)
-                
-                if doc_url:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"✅ **Транскрипция готова!**\n\n"
-                             f"📄 **Google Doc:** [Открыть документ]({doc_url})\n\n"
-                             f"📋 Документ содержит полную транскрипцию с красивым оформлением\n"
-                             f"🔗 Ссылка остается активной навсегда\n\n"
-                             f"🐾 *гордо машет хвостом*",
-                        parse_mode='Markdown',
-                        disable_web_page_preview=False
-                    )
-                else:
-                    # Fallback к файлу если Google Docs недоступен
-                    with open(transcript_path, "rb") as file:
-                        await context.bot.send_document(
-                            chat_id=chat_id,
-                            document=file,
-                            filename=f"Транскрипция видео {message_id}.txt",
-                            caption="📄 Google Docs недоступен, отправляю файлом! *извиняющееся мяуканье*"
-                        )
-            except Exception as e:
-                logger.error(f"Ошибка создания Google Doc: {e}")
-                # Fallback к файлу
-                with open(transcript_path, "rb") as file:
-                    await context.bot.send_document(
-                        chat_id=chat_id,
-                        document=file,
-                        filename=f"Транскрипция видео {message_id}.txt",
-                        caption="📄 Ошибка создания Google Doc, отправляю файлом! *смущенно прячется*"
-                    )
-        else:
-            # Если транскрипция не слишком длинная, отправляем текстом
-            await status_message.edit_text(
-                f"✅ **Готово! Вот транскрипция видео:**\n\n{formatted_transcript}\n\n@CyberKitty19_bot"
-            )
-        
-        # Добавляем кнопки для получения саммари и сырой транскрипции
-        keyboard = [
-            [
-                InlineKeyboardButton("📝 Подробное саммари", callback_data=f"detailed_summary_{message_id}"),
-                InlineKeyboardButton("📋 Краткое саммари", callback_data=f"brief_summary_{message_id}"),
-            ],
-            [InlineKeyboardButton("🔍 Показать сырую транскрипцию", callback_data=f"raw_{message_id}")],
-        ]
-        await context.bot.send_message(
+        # --- Унифицированный вывод ---
+        transcript_path, raw_transcript_path = await send_transcription_result(
             chat_id=chat_id,
-            text='Вы можете получить саммари или необработанную версию транскрипции:\nНажмите кнопку ниже:',
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            message_id=message_id,
+            formatted_transcript=formatted_transcript,
+            raw_transcript=raw_transcript,
+            media_prefix="telegram_video",
+            context=context,
+            status_message=status_message,
         )
         
-        logger.info(f"Транскрипция видео успешно завершена, файлы: {transcript_path}, {raw_transcript_path}")
-        
-        # Проверяем лимиты и отправляем уведомления после успешной обработки
+        # Проверяем лимиты
         await check_user_limits_and_notify(chat_id, context)
         
         return transcript_path, raw_transcript_path
@@ -260,9 +185,11 @@ async def process_video(chat_id, message_id, update, context):
                     caption="Вот ваша транскрипция! *гордо поднимает хвост*"
                 )
         else:
-            # Иначе отправляем текстом
+            # Иначе отправляем текстом без parse_mode, чтобы избежать ошибок Telegram
             await status_message.edit_text(
-                f"Готово! Вот транскрипция видео:\n\n{formatted_transcript}\n\n@CyberKitty19_bot"
+                f"Готово! Вот транскрипция видео:\n\n{formatted_transcript}\n\n@CyberKitty19_bot",
+                parse_mode=None,
+                disable_web_page_preview=True,
             )
         
         # Добавляем кнопки для получения саммари и исходной транскрипции
@@ -330,15 +257,7 @@ async def check_user_limits_and_notify(chat_id, context):
                     parse_mode='Markdown'
                 )
         
-        # Промо-уведомления для новых пользователей
-        if db_user.transcriptions_count == 0:  # Первая транскрибация
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"🎉 **Поздравляю с первой транскрибацией!**\n\n"
-                     f"🎁 **Специально для тебя промокод:** `ПЕРВЫЙ2024` — дает +50% к лимиту на месяц!\n\n"
-                     f"💡 Просто отправь промокод следующим сообщением",
-                parse_mode='Markdown'
-            )
+        # Ранее здесь отправлялся промокод для первой транскрибации — отключено
         
         return True
         
@@ -455,14 +374,14 @@ async def send_transcription_result(
         # Помещается в сообщение — отвечаем текстом
         if status_message:
             await status_message.edit_text(
-                f"✅ **Готово! Вот транскрипция:**\n\n{formatted_transcript}\n\n@CyberKitty19_bot",
-                parse_mode="Markdown",
+                f"Готово! Вот транскрипция:\n\n{formatted_transcript}\n\n@CyberKitty19_bot",
+                parse_mode=None,
             )
         else:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"✅ **Готово! Вот транскрипция:**\n\n{formatted_transcript}\n\n@CyberKitty19_bot",
-                parse_mode="Markdown",
+                text=f"Готово! Вот транскрипция:\n\n{formatted_transcript}\n\n@CyberKitty19_bot",
+                parse_mode=None,
             )
 
     # --- 4. Кнопочки ----------------------------------------------------------

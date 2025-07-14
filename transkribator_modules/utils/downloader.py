@@ -26,6 +26,9 @@ async def _download_youtube(url: str, target_dir: Path) -> Optional[Path]:
         "outtmpl": str(target_dir / "yt_%(id)s.%(ext)s"),
         "quiet": True,
         "no_warnings": True,
+        "socket_timeout": 30,
+        "retries": 5,
+        "fragment_retries": 5,
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",

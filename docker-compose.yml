@@ -16,6 +16,7 @@ services:
       - ./transcriptions:/app/transcriptions
       - ./data:/app/data
       - ./secrets/google-sa.json:/app/credentials/google-sa.json:ro
+      - ./transkribator.db:/app/transkribator.db
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
     restart: unless-stopped
     depends_on:
@@ -40,6 +41,7 @@ services:
       - ./videos:/app/videos
       - ./audio:/app/audio
       - ./transcriptions:/app/transcriptions
+      - ./transkribator.db:/app/transkribator.db
     restart: unless-stopped
     networks:
       - cyberkitty19-transkribator-network
@@ -67,5 +69,7 @@ networks:
 volumes:
   videos:
   audio:
+  transcriptions:
+  telegram-bot-api-data: 
   transcriptions:
   telegram-bot-api-data: 

@@ -1,9 +1,10 @@
 import json
+import asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from transkribator_modules.config import logger
+from transkribator_modules.config import logger, ADMIN_IDS
 from transkribator_modules.db.database import (
     SessionLocal, UserService, ApiKeyService, TransactionService, PromoCodeService
 )
@@ -357,12 +358,58 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 🤖 **Бот:** ✅ Работает
 🌐 **API сервер:** ✅ Активен
-🔧 **Pyrogram Worker:** ✅ Готов
+🔧 **Система транскрибации:** ✅ Готов
 💾 **База данных:** ✅ Подключена
 
 😸 *все системы мурчат исправно*"""
     
     await update.message.reply_text(status_text, parse_mode='Markdown')
+
+# ----------------------------------------------------------------------------
+# 📢 Рассылка сообщений администраторами
+# ----------------------------------------------------------------------------
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/broadcast <текст> – рассылает сообщение всем активным пользователям (30 дн.)."""
+
+    # Проверяем права
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("🚫 У вас нет прав для этой команды.")
+        return
+
+    # Определяем текст рассылки
+    text = " ".join(context.args) if context.args else None
+
+    # Если текста нет, но команда была как ответ на сообщение – берём его
+    if not text and update.message.reply_to_message and update.message.reply_to_message.text:
+        text = update.message.reply_to_message.text
+
+    if not text:
+        await update.message.reply_text("Использование: /broadcast <текст> или ответьте на сообщение командой.")
+        return
+
+    await update.message.reply_text("🔄 Начинаю рассылку…")
+
+    # Собираем пользователей
+    from datetime import timedelta, datetime
+    db = SessionLocal()
+    sent = 0
+    try:
+        user_service = UserService(db)
+        users = user_service.get_active_users(days=30)
+
+        for user in users:
+            try:
+                await context.bot.send_message(chat_id=user.telegram_id, text=text, parse_mode='Markdown')
+                sent += 1
+                await asyncio.sleep(0.05)  # мелкая пауза
+            except Exception as e:
+                logger.warning(f"Не удалось отправить сообщение пользователю {user.telegram_id}: {e}")
+
+        await update.message.reply_text(f"✅ Рассылка завершена. Отправлено {sent} пользователям.")
+
+    finally:
+        db.close()
 
 async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда для получения сырой транскрибации"""

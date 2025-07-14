@@ -9,9 +9,12 @@ import os
 from pathlib import Path
 from typing import Optional, Callable
 import asyncio
+import socket
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+import httplib2
+from google_auth_httplib2 import AuthorizedHttp  # Используем для авторизации кастомного HTTP
 
 from transkribator_modules.config import logger
 
@@ -24,11 +27,23 @@ SCOPES = [
 # Путь к JSON-файлу сервис-аккаунта можно переопределить переменной окружения
 DEFAULT_CREDS_PATH = "/app/data/google_credentials.json"
 
+# Таймаут 300 с; параметр retries не поддерживается в версии httplib2 внутри контейнера
+# Создаём объект HTTP, который затем авторизуем через google-auth-httplib2
+_HTTP = httplib2.Http(timeout=300)
+
 
 def _get_credentials() -> Credentials:
     """Возвращает учетные данные сервис-аккаунта."""
 
-    creds_path = os.getenv("GOOGLE_CREDENTIALS_PATH", DEFAULT_CREDS_PATH)
+    # Возможные варианты:
+    # 1. Явно указан GOOGLE_CREDENTIALS_PATH (наш приоритет)
+    # 2. Стандартная переменная Google SDK – GOOGLE_APPLICATION_CREDENTIALS
+    # 3. Путь по умолчанию внутри контейнера
+    creds_path = (
+        os.getenv("GOOGLE_CREDENTIALS_PATH")
+        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        or DEFAULT_CREDS_PATH
+    )
 
     if not Path(creds_path).exists():
         raise FileNotFoundError(
@@ -53,11 +68,17 @@ async def create_transcript_google_doc(
 
     def _sync_create() -> Optional[str]:
         try:
+            socket.setdefaulttimeout(300)
+
             creds = _get_credentials()
 
-            # Выключаем дискавери-кэш, чтобы не плодить файлы в контейнере
-            docs_service = build("docs", "v1", credentials=creds, cache_discovery=False)
-            drive_service = build("drive", "v3", credentials=creds, cache_discovery=False)
+            # Авторизуем ранее созданный HTTP-клиент, чтобы не передавать одновременно
+            # credentials и http (эти аргументы взаимно исключают друг друга).
+            authed_http = AuthorizedHttp(creds, http=_HTTP)
+
+            # Выключаем discovery-кэш, чтобы не плодить файлы в контейнере
+            docs_service = build("docs", "v1", http=authed_http, cache_discovery=False)
+            drive_service = build("drive", "v3", http=authed_http, cache_discovery=False)
 
             title = f"Транскрипция – {video_filename}"
 

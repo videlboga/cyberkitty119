@@ -12,6 +12,11 @@ try:
 except Exception:
     _DEFAULT_DI_TIMEOUT = 1200  # fallback 20 мин
 
+# --- Whisper tuneables ------------------------------------------------------
+
+CHUNK_LENGTH_S = int(os.getenv("WHISPER_CHUNK_LEN", "30"))  # 0 = не передавать
+BATCH_SIZE = int(os.getenv("WHISPER_BATCH_SIZE", "8"))      # 0 = не передавать
+
 async def compress_audio_for_api(audio_path):
     """Сжимает аудиофайл для отправки в API, уменьшая размер."""
     try:
@@ -121,12 +126,15 @@ async def transcribe_audio(audio_path, model_name="base"):
         logger.info("Ошибка при анализе, пробую прямую транскрибацию...")
         return await transcribe_audio_direct(audio_path)
 
+# Оптимизируем порядок: сначала turbo, затем сразу small/base — так мы получаем текст за 1-2 мин,
+# и лишь при необходимости пробуем «большие» модели. Это экономит 5-6 мин ожидания в очереди.
 DEEPINFRA_MODEL_CANDIDATES = [
-    "openai/whisper-large-v3",        # стабильная
-    "openai/whisper-large-v3-turbo",  # turbo вторым номером — если очередь длинная, быстро переключимся
-    "openai/whisper-large-v2",        # fallback
-    "openai/whisper-base",            # доступна без платной подписки
-    "openai/whisper-tiny",            # самый лёгкий резерв
+    "openai/whisper-large-v3-turbo",  # первая попытка (60 с таймаут)
+    "openai/whisper-small",           # быстрый резерв (~30-60 с)
+    "openai/whisper-base",            # бюджетный fallback
+    "openai/whisper-large-v3",        # точный, но даём ему максимум 180 с
+    "openai/whisper-large-v2",        # старый large
+    "openai/whisper-tiny",            # минимальный запас
 ]
 
 async def _post_to_deepinfra(audio_fp, file_name: str, timeout: aiohttp.ClientTimeout | None = None):
@@ -150,6 +158,12 @@ async def _post_to_deepinfra(audio_fp, file_name: str, timeout: aiohttp.ClientTi
                 # Создаём новый BytesIO каждый раз, иначе положение указателя собьётся
                 form_data.add_field('audio', io.BytesIO(audio_bytes), filename=file_name, content_type='audio/mpeg' if file_name.lower().endswith(('.mp3','mpeg')) else 'audio/wav')
 
+                # Параметры chunk/batch (поддерживают whisper-модели DeepInfra)
+                if CHUNK_LENGTH_S:
+                    form_data.add_field("chunk_length_s", str(CHUNK_LENGTH_S))
+                if BATCH_SIZE:
+                    form_data.add_field("batch_size", str(BATCH_SIZE))
+
                 logger.info(f"📤 Отправляю {file_name} в DeepInfra, модель: {model}… (таймаут {_DEFAULT_DI_TIMEOUT}s)")
 
                 import time
@@ -160,20 +174,26 @@ async def _post_to_deepinfra(audio_fp, file_name: str, timeout: aiohttp.ClientTi
                 if model.endswith("v3-turbo"):
                     import asyncio
                     try:
-                        resp = await asyncio.wait_for(_timeout_ctx, timeout=120)
+                        resp = await asyncio.wait_for(_timeout_ctx, timeout=60)  # ждём не более 60 секунд
                     except asyncio.TimeoutError:
-                        logger.warning(f"⏰ turbo-модель ждёт >120 с, переключаюсь на следующую…")
+                        logger.warning(f"⏰ turbo-модель ждёт >60 с, переключаюсь…")
                         continue
                 elif model.endswith("large-v3"):
-                    # стабильная large-v3 иногда обрабатывает >5 мин – ограничимся 300 с
+                    # стабильная large-v3 часто обрабатывает долго – ограничим до 180 с
                     import asyncio
                     try:
-                        resp = await asyncio.wait_for(_timeout_ctx, timeout=300)
+                        resp = await asyncio.wait_for(_timeout_ctx, timeout=180)  # ждём не более 3 минут
                     except asyncio.TimeoutError:
-                        logger.warning("⏰ large-v3 ждёт >5 мин, переключаюсь на следующую…")
+                        logger.warning(f"⏰ large-v3 ждёт >3 мин, переключаюсь…")
                         continue
                 else:
-                    resp = await _timeout_ctx
+                    # остальные (small/base/v2/tiny) – ждём не дольше 120 с
+                    import asyncio
+                    try:
+                        resp = await asyncio.wait_for(_timeout_ctx, timeout=120)  # ждём не более 2 минут
+                    except asyncio.TimeoutError:
+                        logger.warning(f"⏰ {model} ждёт >2 мин, переключаюсь…")
+                        continue
 
                 elapsed = time.perf_counter() - _t0
                 if resp.status == 200:
@@ -565,24 +585,35 @@ async def split_and_transcribe_audio(audio_path):
 
             # 3) Транскрибируем последовательно
             ok, fail, transcripts = 0, 0, []
-            for idx, seg in enumerate(segment_files, 1):
-                logger.info(f"📝 [{idx}/{len(segment_files)}] {seg.name}")
-                res, attempt = None, 0
-                while attempt < 3 and not res:
+            concurrency = int(os.getenv("TRANSCRIBE_CONCURRENCY", "3"))
+
+            sem = asyncio.Semaphore(concurrency)
+
+            async def _process_segment(idx: int, seg_path):
+                """Транскрибирует сегмент с повторными попытками, ограниченными семафором."""
+                nonlocal ok, fail
+                logger.info(f"📝 [{idx}/{len(segment_files)}] {seg_path.name}")
+                attempt, result = 0, None
+                while attempt < 3 and not result:
                     attempt += 1
                     try:
-                        res = await transcribe_segment_with_deepinfra(seg)
-                        if not res:
-                            logger.warning(f"⚠️ {seg.name} попытка {attempt}/3 без результата")
+                        async with sem:
+                            result = await transcribe_segment_with_deepinfra(seg_path)
+                        if not result:
+                            logger.warning(f"⚠️ {seg_path.name} попытка {attempt}/3 без результата")
                     except Exception as e:
-                        logger.warning(f"❌ {seg.name} ошибка в попытке {attempt}: {e}")
-                    if not res and attempt < 3:
+                        logger.warning(f"❌ {seg_path.name} ошибка в попытке {attempt}: {e}")
+                    if not result and attempt < 3:
                         await asyncio.sleep(2)
-                if res:
-                    transcripts.append(res)
+                if result:
+                    transcripts.append(result)
                     ok += 1
                 else:
                     fail += 1
+
+            # Запускаем задачи параллельно, но не более concurrency одновременно
+            tasks = [_process_segment(idx, seg) for idx, seg in enumerate(segment_files, 1)]
+            await asyncio.gather(*tasks)
 
             success_ratio = ok / len(segment_files) if segment_files else 0
             logger.info(f"✅ Успешно {ok}/{len(segment_files)} сегментов (ratio {success_ratio:.2f})")

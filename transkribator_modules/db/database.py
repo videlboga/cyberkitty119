@@ -7,7 +7,10 @@ from sqlalchemy import create_engine, desc
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError
 
-from .models import Base, User, Plan, Transaction, Transcription, ApiKey, PromoCode, PromoActivation, DEFAULT_PLANS, PlanType
+from .models import (
+    Base, User, Plan, Transaction, Transcription, ApiKey, PromoCode, PromoActivation,
+    DEFAULT_PLANS, PlanType, DeepInfraJob
+)
 
 # Настройка базы данных
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./transkribator.db")
@@ -159,6 +162,14 @@ class UserService:
                 user.minutes_used_this_month = 0.0
                 user.last_reset_date = datetime.utcnow()
                 self.db.commit()
+
+    # -----------------------------------------------------------------
+    # 🔔 Активные пользователи
+    # -----------------------------------------------------------------
+    def get_active_users(self, days: int = 7) -> List[User]:
+        """Вернуть пользователей, использовавших бота за последние *days* суток."""
+        threshold = datetime.utcnow() - timedelta(days=days)
+        return self.db.query(User).filter(User.updated_at >= threshold, User.is_active == True).all()
 
 class ApiKeyService:
     def __init__(self, db: Session):
@@ -358,16 +369,10 @@ class PromoCodeService:
     
     def activate_promo_code(self, promo: PromoCode, user: User) -> PromoActivation:
         """Активировать промокод для пользователя"""
-        # Вычисляем срок действия
-        expires_at = None
-        if promo.duration_days:
-            expires_at = datetime.utcnow() + timedelta(days=promo.duration_days)
-        
-        # Создаем активацию
         activation = PromoActivation(
             user_id=user.id,
             promo_code_id=promo.id,
-            expires_at=expires_at
+            expires_at=datetime.utcnow() + timedelta(days=promo.duration_days) if promo.duration_days else None
         )
         
         # Обновляем счетчик использований
@@ -375,8 +380,8 @@ class PromoCodeService:
         
         # Обновляем план пользователя
         user.current_plan = promo.plan_type
-        if expires_at:
-            user.plan_expires_at = expires_at
+        if activation.expires_at:
+            user.plan_expires_at = activation.expires_at
         else:
             user.plan_expires_at = None  # Бессрочный
         
@@ -417,16 +422,22 @@ def init_promo_codes():
     try:
         promo_service = PromoCodeService(db)
         
-        # Промокод на 3 дня безлимитного тарифа
+        # Промокод KITTY3D — 3 дня безлимита (оставляем активным)
         if not promo_service.get_promo_code("KITTY3D"):
             promo_service.create_promo_code(
                 code="KITTY3D",
                 plan_type=PlanType.UNLIMITED,
                 duration_days=3,
-                max_uses=999999,  # Практически безлимитный
+                max_uses=999999,
                 description="🎁 3 дня безлимитного тарифа",
-                expires_at=datetime.utcnow() + timedelta(days=365)  # Действует год
+                expires_at=datetime.utcnow() + timedelta(days=365)
             )
+        
+        # Промокод ПЕРВЫЙ2025 — временно отключаем
+        existing_first = promo_service.get_promo_code("ПЕРВЫЙ2025")
+        if existing_first:
+            existing_first.is_active = False
+            db.commit()
         
         # Бессрочный безлимитный тариф (VIP промокод)
         if not promo_service.get_promo_code("LIGHTKITTY"):
@@ -439,7 +450,46 @@ def init_promo_codes():
                 expires_at=datetime.utcnow() + timedelta(days=365)  # Действует год
             )
             
+        # Новый промокод от пользователя: 3 дня безлимита
+        if not promo_service.get_promo_code("VOINP"):
+            promo_service.create_promo_code(
+                code="VOINP",
+                plan_type=PlanType.UNLIMITED,
+                duration_days=3,
+                max_uses=999999,
+                description="🎁 Промокод VOINP — 3 дня безлимитного тарифа",
+                expires_at=datetime.utcnow() + timedelta(days=365)
+            )
+            
     except Exception as e:
         print(f"Ошибка при создании промокодов: {e}")
     finally:
-        db.close() 
+        db.close()
+
+# ---------------------------------------------------------------------------
+# DeepInfra Job Service (для асинхронного вебхука)
+# ---------------------------------------------------------------------------
+
+class DeepInfraJobService:
+    """Сохраняет результаты асинхронных вызовов DeepInfra."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def save_or_update_job(self, job_id: str, status: str, text: str | None = None, model: str | None = None):
+        job = self.db.query(DeepInfraJob).filter(DeepInfraJob.id == job_id).first()
+        if not job:
+            job = DeepInfraJob(id=job_id, status=status, text=text, model=model)
+            self.db.add(job)
+        else:
+            job.status = status
+            if text:
+                job.text = text
+            if model:
+                job.model = model
+            job.updated_at = datetime.utcnow()
+        self.db.commit()
+        return job
+
+    def get_job(self, job_id: str) -> DeepInfraJob | None:
+        return self.db.query(DeepInfraJob).filter(DeepInfraJob.id == job_id).first() 

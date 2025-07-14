@@ -7,11 +7,13 @@ import time
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Header, Query
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Header, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles  # для раздачи сегментов аудио
 from pydantic import BaseModel
 import uvicorn
+import httpx
 
 # Добавляем корневую директорию проекта в sys.path
 import sys
@@ -21,12 +23,21 @@ sys.path.append(str(current_dir))
 try:
     from transkribator_modules.transcribe.transcriber import transcribe_audio, format_transcript_with_llm
     from transkribator_modules.audio.extractor import extract_audio_from_video
-    from transkribator_modules.config import logger
+    from transkribator_modules.config import logger, BOT_TOKEN, MAX_MESSAGE_LENGTH, YUKASSA_WEBHOOK_SECRET
     from transkribator_modules.db.database import (
         init_database, get_db, UserService, ApiKeyService, TranscriptionService, 
-        calculate_audio_duration, get_plans
+        calculate_audio_duration, get_plans, DeepInfraJobService
     )
     from transkribator_modules.db.models import User, ApiKey
+    
+    # Импортируем ЮKassa сервис
+    try:
+        from transkribator_modules.payments.yukassa import YukassaPaymentService
+        YUKASSA_AVAILABLE = True
+    except ImportError:
+        YUKASSA_AVAILABLE = False
+        logger.warning("ЮKassa SDK не установлен")
+        
 except ImportError as e:
     print(f"Ошибка импорта: {e}")
     sys.exit(1)
@@ -392,6 +403,182 @@ async def transcribe_video(
             logger.info(f"Временные файлы очищены для task_id: {task_id}")
         except Exception as e:
             logger.warning(f"Не удалось очистить временные файлы: {e}")
+
+# ---------------------------------------------------------------------------
+# DeepInfra webhook (асинхронный вывод моделей)
+# ---------------------------------------------------------------------------
+
+# DeepInfra делает предварительный HEAD-запрос, чтобы убедиться, что URL достижим
+# (документация: https://deepinfra.com/docs/advanced/webhooks). FastAPI по
+# умолчанию отвечает 405, из-за чего DeepInfra помечает webhook как недоступный
+# и удаляет задачу. Добавляем обработчик, который просто возвращает 200 OK.
+
+@app.head("/deepinfra-webhook")
+async def deepinfra_webhook_head():
+    return Response(status_code=200)
+
+@app.post("/deepinfra-webhook")
+async def deepinfra_webhook(request: Request, db = Depends(get_db)):
+    """Принимает callback DeepInfra и сохраняет результат в БД.
+
+    DeepInfra отправляет JSON с полями:
+        request_id, inference_status.status, text, ...
+    Мы сохраняем их в таблицу deepinfra_jobs, чтобы бот/клиенты смогли
+    позднее забрать готовую транскрипцию.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    request_id = payload.get("request_id") or payload.get("id")
+    status = payload.get("inference_status", {}).get("status", "unknown")
+    text = payload.get("text") or ""
+    model = payload.get("model") or payload.get("model_name")
+
+    if not request_id:
+        raise HTTPException(status_code=400, detail="Missing request_id")
+
+    # Сохраняем в БД
+    job_service = DeepInfraJobService(db)
+    job_service.save_or_update_job(request_id, status, text, model)
+
+    # --- Обработка Telegram callback --------------------------------------
+    chat_id = request.query_params.get("chat_id")
+    msg_id = request.query_params.get("msg_id")
+
+    if status == "succeeded" and text and BOT_TOKEN and chat_id:
+        # 1. Форматируем через LLM (best-effort)
+        try:
+            formatted = await format_transcript_with_llm(text)
+            if formatted and len(formatted) >= len(text) * 0.9:
+                text_to_send = formatted
+            else:
+                text_to_send = text
+        except Exception as e:
+            logger.warning(f"LLM format failed: {e}")
+            text_to_send = text
+
+        # Ограничиваем длину, иначе Telegram ругнётся
+        if len(text_to_send) > MAX_MESSAGE_LENGTH:
+            text_to_send = text_to_send[: MAX_MESSAGE_LENGTH - 10] + "…"
+
+        base_url = os.getenv("TELEGRAM_API_URL", "http://telegram-bot-api:8081/bot")
+        api_url = f"{base_url}{BOT_TOKEN}/editMessageText" if msg_id else f"{base_url}{BOT_TOKEN}/sendMessage"
+
+        payload_send = {
+            "chat_id": int(chat_id),
+            "text": text_to_send,
+            "parse_mode": None,
+            "disable_web_page_preview": True,
+        }
+        if msg_id:
+            payload_send["message_id"] = int(msg_id)
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(api_url, json=payload_send)
+                logger.info(f"Telegram API response {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.warning(f"Failed to send Telegram message: {e}")
+
+    return {"ok": True, "request_id": request_id, "status": status}
+
+# ---------------------------------------------------------------------------
+# Статическая раздача аудио-сегментов для DeepInfra (audio_url)
+# ---------------------------------------------------------------------------
+# Скрипт parallel_deepinfra.py копирует mp3-файлы в каталог "audio/url_segments".
+# Благодаря шарингу volume ./audio ↔ /app/audio этот путь виден как хосту,
+# так и контейнеру. Делим его через FastAPI статикой по URL /audio/<file>.
+
+STATIC_AUDIO_DIR = Path("audio/url_segments")
+STATIC_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/audio", StaticFiles(directory=str(STATIC_AUDIO_DIR)), name="audio")
+
+@app.get("/check_deepinfra_connection")
+async def check_deepinfra_connection():
+    """Проверка доступности DeepInfra API."""
+    test_url = "https://api.deepinfra.com/"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(test_url, timeout=5)
+            if response.status_code == 200:
+                return {"status": "success", "message": f"DeepInfra API доступен. Статус: {response.status_code}"}
+            else:
+                return {"status": "failed", "message": f"DeepInfra API вернул статус: {response.status_code}", "response_text": response.text}
+    except httpx.RequestError as e:
+        return {"status": "failed", "message": f"Ошибка соединения с DeepInfra API: {e}"}
+    except Exception as e:
+        return {"status": "error", "message": f"Непредвиденная ошибка при проверке DeepInfra: {e}"}
+
+# ---------------------------------------------------------------------------
+# ЮKassa webhook обработчики
+# ---------------------------------------------------------------------------
+
+@app.head("/yukassa-webhook")
+async def yukassa_webhook_head():
+    """HEAD запрос для проверки webhook URL"""
+    return Response(status_code=200)
+
+@app.post("/yukassa-webhook")
+async def yukassa_webhook(request: Request, db = Depends(get_db)):
+    """Обработка webhook'ов от ЮKassa"""
+    if not YUKASSA_AVAILABLE:
+        raise HTTPException(status_code=503, detail="ЮKassa недоступен")
+    
+    try:
+        # Получаем данные webhook'а
+        webhook_data = await request.json()
+        logger.info(f"Получен webhook от ЮKassa: {webhook_data.get('event', 'unknown')}")
+        
+        # Проверяем подпись webhook'а (если настроен секрет)
+        if YUKASSA_WEBHOOK_SECRET:
+            # TODO: Добавить проверку подписи webhook'а
+            pass
+        
+        # Создаем сервис ЮKassa
+        yukassa_service = YukassaPaymentService()
+        
+        # Обрабатываем webhook
+        payment_info = yukassa_service.process_webhook(webhook_data)
+        
+        if payment_info and payment_info['status'] == 'succeeded':
+            # Платеж успешен - активируем план
+            user_id = payment_info['metadata'].get('user_id')
+            plan_type = payment_info['metadata'].get('plan_type')
+            
+            if user_id and plan_type:
+                # Импортируем функцию активации плана
+                from transkribator_modules.bot.payments import activate_plan_after_payment
+                
+                # Активируем план
+                await activate_plan_after_payment(user_id, payment_info)
+                
+                logger.info(f"План {plan_type} активирован для пользователя {user_id} через webhook")
+                
+                return {"status": "success", "message": "Платеж обработан"}
+            else:
+                logger.error(f"Не найдены user_id или plan_type в webhook: {payment_info}")
+                return {"status": "error", "message": "Неверные данные платежа"}
+        else:
+            logger.info(f"Webhook не требует обработки: {webhook_data.get('event')}")
+            return {"status": "ignored", "message": "Webhook не требует обработки"}
+            
+    except Exception as e:
+        logger.error(f"Ошибка обработки webhook ЮKassa: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка обработки webhook: {str(e)}")
+
+@app.get("/yukassa-status")
+async def yukassa_status():
+    """Проверка статуса ЮKassa"""
+    if not YUKASSA_AVAILABLE:
+        return {"status": "unavailable", "message": "ЮKassa SDK не установлен"}
+    
+    try:
+        yukassa_service = YukassaPaymentService()
+        return {"status": "available", "message": "ЮKassa настроен и готов к работе"}
+    except Exception as e:
+        return {"status": "error", "message": f"Ошибка инициализации ЮKassa: {str(e)}"}
 
 if __name__ == "__main__":
     # Запускаем сервер
