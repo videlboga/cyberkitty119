@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from transkribator_modules.config import (
     logger, user_transcriptions, VIDEOS_DIR, TRANSCRIPTIONS_DIR, MAX_MESSAGE_LENGTH, AUDIO_DIR
 )
-from transkribator_modules.utils.processor import process_video, process_video_file, process_audio_file
+from transkribator_modules.utils.processor import process_video, process_video_file, process_audio_file, process_video_file_silent, process_audio_file_silent
 from transkribator_modules.utils.downloader import download_media
 
 # --- Обработчики для групповых чатов ---
@@ -194,98 +194,146 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Проверяем наличие видео в сообщении
     if update.message.voice or update.message.audio:
         # ----- аудио или голосовое сообщение -----
-        status = await update.message.reply_text("Скачиваю аудио…")
-        audio_file = await context.bot.get_file(update.message.voice.file_id if update.message.voice else update.message.audio.file_id)
-        audio_path = AUDIO_DIR / f"telegram_audio_{message_id}{Path(audio_file.file_path).suffix or '.ogg'}"
-        await audio_file.download_to_drive(custom_path=audio_path)
-        await process_audio_file(audio_path, chat_id, message_id, context, status_message=status)
+        if chat_type in ['group', 'supergroup']:
+            # В группах - без статусных сообщений
+            audio_file = await context.bot.get_file(update.message.voice.file_id if update.message.voice else update.message.audio.file_id)
+            audio_path = AUDIO_DIR / f"telegram_audio_{message_id}{Path(audio_file.file_path).suffix or '.ogg'}"
+            await audio_file.download_to_drive(custom_path=audio_path)
+            await process_audio_file_silent(audio_path, chat_id, message_id, context)
+        else:
+            # В личном чате - как раньше
+            status = await update.message.reply_text("Скачиваю аудио…")
+            audio_file = await context.bot.get_file(update.message.voice.file_id if update.message.voice else update.message.audio.file_id)
+            audio_path = AUDIO_DIR / f"telegram_audio_{message_id}{Path(audio_file.file_path).suffix or '.ogg'}"
+            await audio_file.download_to_drive(custom_path=audio_path)
+            await process_audio_file(audio_path, chat_id, message_id, context, status_message=status)
         return
 
     elif update.message.document and update.message.document.mime_type:
         mime = update.message.document.mime_type
         if mime.startswith('video/') or mime.startswith('audio/'):
-            status = await update.message.reply_text("Скачиваю файл…")
-            doc_file = await context.bot.get_file(update.message.document.file_id)
-            ext = Path(doc_file.file_path).suffix or ''.join(['.', mime.split('/')[-1]])
-            if mime.startswith('audio/'):
-                local_path = AUDIO_DIR / f"telegram_audio_{message_id}{ext}"
-                await doc_file.download_to_drive(custom_path=local_path)
-                await process_audio_file(local_path, chat_id, message_id, context, status_message=status)
+            if chat_type in ['group', 'supergroup']:
+                # В группах - без статусных сообщений
+                doc_file = await context.bot.get_file(update.message.document.file_id)
+                ext = Path(doc_file.file_path).suffix or ''.join(['.', mime.split('/')[-1]])
+                if mime.startswith('audio/'):
+                    local_path = AUDIO_DIR / f"telegram_audio_{message_id}{ext}"
+                    await doc_file.download_to_drive(custom_path=local_path)
+                    await process_audio_file_silent(local_path, chat_id, message_id, context)
+                else:
+                    local_path = VIDEOS_DIR / f"telegram_video_{message_id}{ext}"
+                    await doc_file.download_to_drive(custom_path=local_path)
+                    await process_video_file_silent(local_path, chat_id, message_id, context)
             else:
-                local_path = VIDEOS_DIR / f"telegram_video_{message_id}{ext}"
-                await doc_file.download_to_drive(custom_path=local_path)
-                await process_video_file(local_path, chat_id, message_id, context, status_message=status)
+                # В личном чате - как раньше
+                status = await update.message.reply_text("Скачиваю файл…")
+                doc_file = await context.bot.get_file(update.message.document.file_id)
+                ext = Path(doc_file.file_path).suffix or ''.join(['.', mime.split('/')[-1]])
+                if mime.startswith('audio/'):
+                    local_path = AUDIO_DIR / f"telegram_audio_{message_id}{ext}"
+                    await doc_file.download_to_drive(custom_path=local_path)
+                    await process_audio_file(local_path, chat_id, message_id, context, status_message=status)
+                else:
+                    local_path = VIDEOS_DIR / f"telegram_video_{message_id}{ext}"
+                    await doc_file.download_to_drive(custom_path=local_path)
+                    await process_video_file(local_path, chat_id, message_id, context, status_message=status)
             return
 
     if update.message.video:
         logger.info(f"Получено видео от пользователя {user_id}")
         
-        # Отправляем сообщение о начале загрузки
-        status_message = await update.message.reply_text(
-            "Мяу! Вижу видео! Скачиваю его... *возбужденно виляет хвостом*"
-        )
-        
-        video = update.message.video
-        
-        try:
-            # Пытаемся скачать видео напрямую
-            video_file = await context.bot.get_file(video.file_id)
-            
-            # Создаем директорию, если не существует
-            video_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
-            video_path.parent.mkdir(exist_ok=True)
-            
-            # Скачиваем видео
+        if chat_type in ['group', 'supergroup']:
+            # В группах - без статусных сообщений
+            video = update.message.video
             try:
-                await video_file.download_to_drive(custom_path=video_path)
-            except Exception as download_err:
-                # Попытка прямого копирования файла из общей директории локального Bot API
-                api_file_path = getattr(video_file, "file_path", None)
-                if api_file_path and str(api_file_path).startswith("/var/lib/telegram-bot-api"):
-                    try:
-                        # Копируем файл внутри контейнера, так как директория примонтирована read-only
-                        import shutil, os
-                        os.makedirs(video_path.parent, exist_ok=True)
-                        shutil.copy(api_file_path, video_path)
-                        logger.info(f"Скопировал файл напрямую из {api_file_path} в {video_path}")
-                    except Exception as copy_err:
-                        logger.error(f"Ошибка при копировании файла из локального Bot API: {copy_err}")
+                video_file = await context.bot.get_file(video.file_id)
+                video_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
+                video_path.parent.mkdir(exist_ok=True)
+                
+                try:
+                    await video_file.download_to_drive(custom_path=video_path)
+                except Exception as download_err:
+                    api_file_path = getattr(video_file, "file_path", None)
+                    if api_file_path and str(api_file_path).startswith("/var/lib/telegram-bot-api"):
+                        try:
+                            import shutil, os
+                            os.makedirs(video_path.parent, exist_ok=True)
+                            shutil.copy(api_file_path, video_path)
+                            logger.info(f"Скопировал файл напрямую из {api_file_path} в {video_path}")
+                        except Exception as copy_err:
+                            logger.error(f"Ошибка при копировании файла из локального Bot API: {copy_err}")
+                            raise download_err
+                    else:
                         raise download_err
+                
+                if video_path.exists() and video_path.stat().st_size > 0:
+                    logger.info(f"Видео успешно загружено: {video_path} (размер: {video_path.stat().st_size} байт)")
+                    await process_video_file_silent(video_path, chat_id, message_id, context)
                 else:
-                    raise download_err
+                    logger.error(f"Ошибка при скачивании видео: файл не существует или пустой")
+                    
+            except Exception as e:
+                logger.error(f"Ошибка при скачивании видео: {e}")
+                if "File is too big" in str(e):
+                    await update.message.reply_text(
+                        "😿 Файл превышает лимит Telegram (≈ 2 ГБ). Пришлите прямую ссылку на файл."
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"Произошла ошибка при скачивании видео: {str(e)}"
+                    )
+        else:
+            # В личном чате - как раньше
+            status_message = await update.message.reply_text(
+                "Мяу! Вижу видео! Скачиваю его... *возбужденно виляет хвостом*"
+            )
             
-            # Проверяем, что файл существует и не пустой
-            if video_path.exists() and video_path.stat().st_size > 0:
-                logger.info(f"Видео успешно загружено: {video_path} (размер: {video_path.stat().st_size} байт)")
-                
-                # Обновляем статус
-                await status_message.edit_text(
-                    "Видео успешно загружено! Начинаю обработку... *радостно мурчит*"
-                )
-                
-                # Обрабатываем видео
-                await process_video(chat_id, message_id, update, context)
-            else:
-                logger.error(f"Ошибка при скачивании видео: файл не существует или пустой")
-                await status_message.edit_text(
-                    "Не удалось скачать видео. Пожалуйста, попробуйте снова. *печально опускает ушки*"
-                )
-                
-        except Exception as e:
-            logger.error(f"Ошибка при скачивании видео: {e}")
+            video = update.message.video
             
-            # Система обработки больших файлов была упрощена.
-            # Теперь все файлы обрабатываются напрямую через Telegram Bot API.
-
-            if "File is too big" in str(e):
-                await status_message.edit_text(
-                    "😿 Бот больше не имеет лимитов на размер файла, но **файл превышает лимит Telegram (≈ 2 ГБ)**. \n"
-                    "Пожалуйста, пришлите прямую ссылку на файл — скоро добавим поддержку скачивания по URL."
-                )
-            else:
-                await status_message.edit_text(
-                    f"Произошла ошибка при скачивании видео: {str(e)} *испуганно прячется*"
-                )
+            try:
+                video_file = await context.bot.get_file(video.file_id)
+                video_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
+                video_path.parent.mkdir(exist_ok=True)
+                
+                try:
+                    await video_file.download_to_drive(custom_path=video_path)
+                except Exception as download_err:
+                    api_file_path = getattr(video_file, "file_path", None)
+                    if api_file_path and str(api_file_path).startswith("/var/lib/telegram-bot-api"):
+                        try:
+                            import shutil, os
+                            os.makedirs(video_path.parent, exist_ok=True)
+                            shutil.copy(api_file_path, video_path)
+                            logger.info(f"Скопировал файл напрямую из {api_file_path} в {video_path}")
+                        except Exception as copy_err:
+                            logger.error(f"Ошибка при копировании файла из локального Bot API: {copy_err}")
+                            raise download_err
+                    else:
+                        raise download_err
+                
+                if video_path.exists() and video_path.stat().st_size > 0:
+                    logger.info(f"Видео успешно загружено: {video_path} (размер: {video_path.stat().st_size} байт)")
+                    await status_message.edit_text(
+                        "Видео успешно загружено! Начинаю обработку... *радостно мурчит*"
+                    )
+                    await process_video(chat_id, message_id, update, context)
+                else:
+                    logger.error(f"Ошибка при скачивании видео: файл не существует или пустой")
+                    await status_message.edit_text(
+                        "Не удалось скачать видео. Пожалуйста, попробуйте снова. *печально опускает ушки*"
+                    )
+                    
+            except Exception as e:
+                logger.error(f"Ошибка при скачивании видео: {e}")
+                if "File is too big" in str(e):
+                    await status_message.edit_text(
+                        "😿 Бот больше не имеет лимитов на размер файла, но **файл превышает лимит Telegram (≈ 2 ГБ)**. \n"
+                        "Пожалуйста, пришлите прямую ссылку на файл — скоро добавим поддержку скачивания по URL."
+                    )
+                else:
+                    await status_message.edit_text(
+                        f"Произошла ошибка при скачивании видео: {str(e)} *испуганно прячется*"
+                    )
     
     # В минимальном режиме просто отвечаем текстом
     else:

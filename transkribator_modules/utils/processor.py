@@ -440,4 +440,126 @@ async def process_audio_file(audio_path, chat_id, message_id, context, status_me
     except Exception as e:
         logger.error(f"Ошибка process_audio_file: {e}")
         if status_message:
-            await status_message.edit_text(f"Произошла ошибка: {e}") 
+            await status_message.edit_text(f"Произошла ошибка: {e}")
+
+async def process_audio_file_silent(audio_path, chat_id, message_id, context):
+    """Обрабатывает аудио-файл в группах без промежуточных сообщений."""
+    try:
+        if not audio_path.exists():
+            await context.bot.send_message(chat_id=chat_id, text="Файл не найден 😿")
+            return
+
+        # 1. Транскрипция
+        raw_transcript = await transcribe_audio(audio_path)
+        if not raw_transcript:
+            await context.bot.send_message(chat_id=chat_id, text="Не удалось выполнить транскрипцию 😿")
+            return
+
+        # 2. Форматирование
+        formatted_transcript = await format_transcript_with_llm(raw_transcript)
+
+        # 3. Отправляем результат без кнопок
+        await send_transcription_result_silent(
+            chat_id=chat_id,
+            message_id=message_id,
+            formatted_transcript=formatted_transcript,
+            raw_transcript=raw_transcript,
+            media_prefix="telegram_audio",
+            context=context,
+        )
+
+        # 4. Проверка лимитов
+        await check_user_limits_and_notify(chat_id, context)
+
+    except Exception as e:
+        logger.error(f"Ошибка process_audio_file_silent: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=f"Произошла ошибка: {e}")
+
+async def process_video_file_silent(video_path, chat_id, message_id, context):
+    """Обрабатывает видео-файл в группах без промежуточных сообщений."""
+    try:
+        if not video_path.exists():
+            await context.bot.send_message(chat_id=chat_id, text="Видеофайл не найден 😿")
+            return
+
+        # 1. Извлекаем аудио
+        audio_path = AUDIO_DIR / f"telegram_video_{message_id}.wav"
+        audio_extracted = await extract_audio_from_video(video_path, audio_path)
+        if not audio_extracted:
+            await context.bot.send_message(chat_id=chat_id, text="Не удалось извлечь аудио из видео 😿")
+            return
+
+        # 2. Транскрибируем аудио
+        raw_transcript = await transcribe_audio(audio_path)
+        if not raw_transcript:
+            await context.bot.send_message(chat_id=chat_id, text="Не удалось выполнить транскрипцию 😿")
+            return
+
+        # 3. Форматируем транскрипцию
+        formatted_transcript = await format_transcript_with_llm(raw_transcript)
+
+        # 4. Отправляем результат без кнопок
+        await send_transcription_result_silent(
+            chat_id=chat_id,
+            message_id=message_id,
+            formatted_transcript=formatted_transcript,
+            raw_transcript=raw_transcript,
+            media_prefix="telegram_video",
+            context=context,
+        )
+
+        # 5. Проверка лимитов
+        await check_user_limits_and_notify(chat_id, context)
+
+    except Exception as e:
+        logger.error(f"Ошибка process_video_file_silent: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=f"Произошла ошибка: {e}")
+
+async def send_transcription_result_silent(
+    *,
+    chat_id: int,
+    message_id: int,
+    formatted_transcript: str,
+    raw_transcript: str,
+    media_prefix: str,
+    context,
+):
+    """Отправляет пользователю результаты транскрипции в группах без кнопок."""
+    
+    # Сохраняем файлы
+    transcript_path = TRANSCRIPTIONS_DIR / f"{media_prefix}_{message_id}.txt"
+    raw_transcript_path = TRANSCRIPTIONS_DIR / f"{media_prefix}_{message_id}_raw.txt"
+    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(transcript_path, "w", encoding="utf-8") as f:
+        f.write(formatted_transcript)
+
+    with open(raw_transcript_path, "w", encoding="utf-8") as f:
+        f.write(raw_transcript)
+
+    # Кэшируем для дальнейших команд
+    user_transcriptions[chat_id] = {
+        "raw": raw_transcript,
+        "formatted": formatted_transcript,
+        "path": str(transcript_path),
+        "raw_path": str(raw_transcript_path),
+        "timestamp": asyncio.get_event_loop().time(),
+    }
+
+    # Отправляем результат
+    if len(formatted_transcript) > MAX_MESSAGE_LENGTH:
+        # Если транскрипция слишком длинная, отправляем файлом
+        with open(transcript_path, "rb") as file:
+            await context.bot.send_document(
+                chat_id=chat_id,
+                document=file,
+                filename=f"Транскрипция {message_id}.txt",
+                caption="📄 Полная транскрипция во вложении",
+            )
+    else:
+        # Помещается в сообщение — отвечаем текстом
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=formatted_transcript,
+            parse_mode=None,
+        ) 
