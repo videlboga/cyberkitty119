@@ -147,8 +147,8 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
         # API ключи только для Pro+ планов
         if db_user.current_plan in ["pro", "unlimited"]:
             keyboard.append([InlineKeyboardButton("🔑 API ключи", callback_data="show_api_keys")])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")])
+          
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="show_help")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -378,7 +378,7 @@ async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 Если есть вопросы, предложения, или какой-нибудь тип файла/ссылки не прочитался - пиши @like\\_a\\_duck, он поможет."""
 
     keyboard = [
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")]
+        [InlineKeyboardButton("🔙 Назад", callback_data="show_help")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -389,7 +389,7 @@ async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = "💸 *Реферальная программа скоро появится!*\n\nТы сможешь приглашать друзей и получать бонусы за их регистрацию и покупки. Следи за новостями!"
-    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")]]
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="show_help")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')

@@ -64,7 +64,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             key_id = int(data.split("_")[-1])
             await delete_api_key_callback(query, user, key_id)
         elif data == "back_to_start":
-            await back_to_start_callback(query, user)
+            from transkribator_modules.bot.commands import start_command
+            await start_command(update, context)
         else:
             # Если это неизвестный callback, логируем для отладки
             logger.warning(f"Неизвестный callback_data: {data}")
@@ -128,7 +129,7 @@ async def show_plans_callback(query, user):
     plans_text += "⭐ **Покупка через Telegram Stars**"
 
     # Определяем, откуда вызвано меню тарифов
-    back_callback = "personal_cabinet" if query.data == "show_plans_from_cabinet" else "back_to_start"
+    back_callback = "personal_cabinet" if query.data == "show_plans_from_cabinet" else "show_help"
     keyboard = [
         [InlineKeyboardButton("⭐ Купить план", callback_data="show_payment_plans")],
         [InlineKeyboardButton("🔙 Назад", callback_data=back_callback)]
@@ -451,25 +452,8 @@ async def add_to_group_callback(query, user):
 
     keyboard = [
         [InlineKeyboardButton("🔗 Ссылка на бота", url="https://t.me/CyberKitty19_bot")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")]
+        [InlineKeyboardButton("🔙 Назад", callback_data="show_help")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(group_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-async def back_to_start_callback(query, user):
-    """Вернуться в главное меню - вызывает тот же экран, что и команда /start"""
-    from transkribator_modules.bot.commands import start_command
-    
-    # Создаём фейковый update для вызова start_command
-    class FakeUpdate:
-        def __init__(self, user, query):
-            self.effective_user = user
-            self.callback_query = query
-            # Добавляем message из callback_query
-            self.message = query.message
-    
-    fake_update = FakeUpdate(user, query)
-    
-    # Вызываем start_command с правильным контекстом
-    await start_command(fake_update, None) 
+    await query.edit_message_text(group_text, reply_markup=reply_markup, parse_mode='Markdown') 

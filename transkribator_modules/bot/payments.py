@@ -98,14 +98,14 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         if not keyboard:
             plans_text += "✅ У вас уже максимальный план!"
-            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")])
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="show_help")])
         else:
             plans_text += "💡 **Способы оплаты:**\n"
             plans_text += "• 💳 Банковская карта (ЮKassa)\n"
             plans_text += "• ⭐ Telegram Stars\n\n"
             plans_text += "🔒 **Безопасность:** Все платежи защищены"
             
-            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")])
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="show_help")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -264,7 +264,7 @@ async def check_yukassa_payment(update: Update, context: ContextTypes.DEFAULT_TY
 
 🎉 Ваш план активирован!"""
 
-            keyboard = [[InlineKeyboardButton("🏠 В главное меню", callback_data="back_to_start")]]
+            keyboard = [[InlineKeyboardButton("🏠 В главное меню", callback_data="show_help")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await query.edit_message_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
