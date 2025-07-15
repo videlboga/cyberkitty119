@@ -69,12 +69,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             # Если это неизвестный callback, логируем для отладки
             logger.warning(f"Неизвестный callback_data: {data}")
-            await query.edit_message_text("🙈 Неизвестная команда. *растерянно моргает*")
+            await query.edit_message_text("🙈 Неизвестная команда. растерянно моргает")
             
     except Exception as e:
         logger.error(f"Ошибка в callback handler: {e}")
         await query.edit_message_text(
-            "😿 Произошла ошибка при обработке запроса. *смущенно прячет мордочку*"
+            "😿 Произошла ошибка при обработке запроса. смущенно прячет мордочку"
         )
 
 async def enter_promo_code_callback(query, user):
@@ -90,7 +90,7 @@ async def enter_promo_code_callback(query, user):
 • В специальных акциях
 • За активность в сообществе
 
-😸 *ожидает с нетерпением*"""
+😸 ожидает с нетерпением"""
 
     keyboard = [
         [InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")]
@@ -316,7 +316,7 @@ curl -X POST "http://localhost:8000/transcribe" \\
     except Exception as e:
         logger.error(f"Ошибка при создании API ключа: {e}")
         await query.edit_message_text(
-            "Произошла ошибка при создании API ключа. *смущенно прячет мордочку*",
+            "Произошла ошибка при создании API ключа. смущенно прячет мордочку",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔙 Назад", callback_data="show_api_keys")
             ]])
