@@ -11,8 +11,7 @@ import os
 
 from transkribator_modules.config import logger, BOT_TOKEN
 from transkribator_modules.bot.commands import (
-    start_command, help_command, status_command, raw_transcript_command,
-    plans_command, stats_command, api_command, promo_codes_command, broadcast_command
+    start_command
 )
 from transkribator_modules.bot.handlers import (
     button_callback, handle_message, handle_chat_join_request, handle_my_chat_member
@@ -59,17 +58,6 @@ def main() -> None:
 
     # Обработчики команд
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("rawtranscript", raw_transcript_command))
-    
-    # Новые команды для монетизации
-    application.add_handler(CommandHandler("plans", plans_command))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("api", api_command))
-    application.add_handler(CommandHandler("buy", show_payment_plans))  # Команда для покупки
-    application.add_handler(CommandHandler("promo", promo_codes_command))  # Команда для промокодов
-    application.add_handler(CommandHandler("broadcast", broadcast_command))  # Админ-рассылка
     
     # Обработчики платежей
     application.add_handler(PreCheckoutQueryHandler(handle_pre_checkout_query))
@@ -92,11 +80,11 @@ def main() -> None:
     
     # Обработчики для групповых чатов
     application.add_handler(ChatJoinRequestHandler(handle_chat_join_request))
+    # application.add_handler(MessageHandler(filters.StatusUpdate.MY_CHAT_MEMBER, handle_my_chat_member))
     
-    # Обработчики для кнопок (новый обработчик имеет приоритет)
-    application.add_handler(CallbackQueryHandler(handle_payment_callback))  # Платежные callback'ы
-    application.add_handler(CallbackQueryHandler(handle_callback_query))
-    application.add_handler(CallbackQueryHandler(button_callback))
+    # Обработчики для кнопок
+    application.add_handler(CallbackQueryHandler(handle_callback_query))  # Основной обработчик
+    application.add_handler(CallbackQueryHandler(button_callback))  # Резервный обработчик
 
     # Запуск бота
     logger.info("Бот запущен и слушает сообщения...")

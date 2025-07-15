@@ -69,7 +69,6 @@ class PlanInfo(BaseModel):
     name: str
     display_name: str
     minutes_per_month: Optional[float]
-    max_file_size_mb: float
     price_rub: float
     price_usd: float
     description: str
@@ -189,7 +188,6 @@ async def get_plans_endpoint():
             name=plan.name,
             display_name=plan.display_name,
             minutes_per_month=plan.minutes_per_month,
-            max_file_size_mb=plan.max_file_size_mb,
             price_rub=plan.price_rub,
             price_usd=plan.price_usd,
             description=plan.description or "",
@@ -267,15 +265,8 @@ async def transcribe_video(
         file_size_mb = len(content) / (1024 * 1024)
         logger.info(f"Файл сохранен, размер: {file_size_mb:.1f} МБ")
         
-        # Проверяем лимиты размера файла
+        # Инициализируем сервисы
         user_service = UserService(db)
-        plan = user_service.get_user_plan(user)
-        
-        if plan and file_size_mb > plan.max_file_size_mb:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Файл слишком большой. Максимальный размер для вашего плана: {plan.max_file_size_mb} МБ"
-            )
         
         # Оцениваем длительность аудио
         estimated_duration = calculate_audio_duration(file_size_mb)

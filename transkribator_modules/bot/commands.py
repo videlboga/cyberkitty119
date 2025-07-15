@@ -11,42 +11,32 @@ from transkribator_modules.db.database import (
 from transkribator_modules.db.models import ApiKey, PlanType
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /start с новым котячим стартовым экраном"""
     user = update.effective_user
-    
     welcome_text = f"""🐱 **Мяу! Добро пожаловать в CyberKitty Transkribator!**
 
 Привет, {user.first_name or 'котик'}! Я умный котик-транскрибатор! 
 
-🎬 **Просто отправь мне видео** — я сделаю всё сам!
+🎬 Просто отправь мне видео — я сделаю всё сам!
 
-✨ **Что я умею:**
+✨ Что я умею:
 • 📝 Превращаю речь в текст
 • 🤖 Делаю красивое форматирование с ИИ  
 • 📋 Создаю краткие и подробные саммари
-• 🔄 Работаю с файлами до 2 ГБ
+• 🔄 Работаю с файлами любого размера
 
-🚀 **Начинаем?**
+🚀 Начинаем?
 1️⃣ Отправь мне видео (любой формат)
 2️⃣ Выбери тип обработки  
 3️⃣ Получи готовую транскрипцию!
 
-💡 *Подсказка: нажми "📖 Как пользоваться" для подробной инструкции*
-
-*мурчит и готов к работе* 🐾"""
-
+*мурчит и готов к работе  🐾*"""
     keyboard = [
-        [
-            InlineKeyboardButton("📖 Как пользоваться", callback_data="show_tutorial"),
-            InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")
-        ],
-        [
-            InlineKeyboardButton("👥 Добавить в группу", callback_data="add_to_group"),
-            InlineKeyboardButton("💡 Помощь", callback_data="show_help")
-        ]
+        [InlineKeyboardButton("📖 Как пользоваться", callback_data="show_tutorial")],
+        [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
+        [InlineKeyboardButton("👥 Добавить в группу", callback_data="add_to_group")],
+        [InlineKeyboardButton("💸 Реферальная программа", callback_data="show_referral")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -82,46 +72,8 @@ async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         db.close()
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /help с котячим описанием"""
-    help_text = """🔧 **Справка по командам**
-
-**Основные команды:**
-/start - Главный экран
-/help - Эта справка  
-/status - Проверить работу сервисов
-/buy - Купить тарифный план
-
-**Как пользоваться:**
-🎬 Отправь мне видео (до 50 МБ на бесплатном тарифе)
-🤖 Выбери тип обработки:
-   • Обычная транскрибация
-   • С ИИ-форматированием
-   • Краткое саммари
-   • Подробное саммари
-
-**Форматы видео:** MP4, AVI, MOV, MKV, WebM
-**Языки:** Русский, английский и другие
-
-**Тарифные планы:**
-🆓 Бесплатный - 30 мин/месяц
-⭐ Базовый - 3 часа/месяц  
-💎 Профессиональный - 10 часов/месяц + API
-🚀 Безлимитный - без ограничений + VIP
-
-Есть вопросы? Напиши @kiryanovpro 
-
-*мурчит и подмигивает* 😸"""
-
-    keyboard = [
-        [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
-        [InlineKeyboardButton("⭐ Купить план", callback_data="show_payment_plans")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    if update.callback_query:
-        await update.callback_query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(help_text, reply_markup=reply_markup, parse_mode='Markdown')
+    """Команда /help - перенаправляет на show_tutorial"""
+    await show_tutorial(update, context)
 
 async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Личный кабинет пользователя"""
@@ -189,14 +141,14 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
         keyboard = [
             [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
             [InlineKeyboardButton("🎁 Промокоды", callback_data="show_promo_codes")],
-            [InlineKeyboardButton("⭐ Купить план", callback_data="show_payment_plans")],
+            [InlineKeyboardButton("⭐ Купить план", callback_data="show_plans_from_cabinet")],
         ]
         
         # API ключи только для Pro+ планов
         if db_user.current_plan in ["pro", "unlimited"]:
             keyboard.append([InlineKeyboardButton("🔑 API ключи", callback_data="show_api_keys")])
         
-        keyboard.append([InlineKeyboardButton("💡 Помощь", callback_data="show_help")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -272,7 +224,7 @@ async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         keyboard = [
             [InlineKeyboardButton("✏️ Ввести промокод", callback_data="enter_promo_code")],
-            [InlineKeyboardButton("🔙 Личный кабинет", callback_data="personal_cabinet")]
+            [InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -332,15 +284,14 @@ async def activate_promo_code(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 🎁 **Что теперь доступно:**
 • Безлимитные минуты транскрибации
-• Файлы до 2 ГБ  
+• Файлы любого размера  
 • VIP поддержка
 • Все функции сервиса
 
 😻 *счастливо мурчит и делает кульбит*"""
 
         keyboard = [
-            [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
-            [InlineKeyboardButton("🎬 Начать работу", callback_data="back_to_start")]
+            [InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -420,47 +371,14 @@ async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_T
 
 async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Подробная инструкция по использованию бота"""
-    tutorial_text = """📖 **Как пользоваться CyberKitty Transkribator**
+    tutorial_text = """🎬 **Как пользоваться CyberKitty**
 
-🎬 **Шаг 1: Отправь видео**
-• Просто перетащи видеофайл в чат
-• Поддерживаемые форматы: MP4, AVI, MOV, MKV, WebM
-• Максимальный размер зависит от тарифа:
-  🆓 Бесплатный: до 50 МБ
-  ⭐ Базовый: до 500 МБ  
-  💎 Профессиональный: до 2 ГБ
-  🚀 Безлимитный: до 2 ГБ
+🎬 Отправь мне видео, аудио, файл, ссылку, я всё прочитаю и верну обработанный текст. Потом могу из него сделать краткое/подробное саммори или вернуть необработанную транскрипцию (если так больше нравится, но они обычно хуже)
 
-🤖 **Шаг 2: Выбери обработку**
-После загрузки видео я предложу варианты:
-• 📝 **Сырая транскрипция** — как есть
-• ✨ **С ИИ-форматированием** — красиво оформленный текст
-• 📋 **Краткое саммари** — основные моменты
-• 📄 **Подробное саммари** — развёрнутый анализ
-
-⚡ **Шаг 3: Получи результат**
-• Короткие транскрипции — сразу в чате
-• Длинные — ссылкой на Google Docs
-• Файлы сохраняются в твоём аккаунте
-
-🎁 **Полезные команды:**
-/start — главное меню
-/plans — тарифы и покупка
-/stats — статистика использования  
-/help — справка по командам
-
-💡 **Промокоды:**
-Вводи промокоды прямо в чат (например: KITTY2024)
-Следи за акциями в @kiryanovpro
-
-🐾 *Готов транскрибировать? Отправляй видео!*"""
+Если есть вопросы, предложения, или какой-нибудь тип файла/ссылки не прочитался - пиши @like\\_a\\_duck, он поможет."""
 
     keyboard = [
-        [
-            InlineKeyboardButton("🎬 Попробовать сейчас", callback_data="back_to_start"),
-            InlineKeyboardButton("⭐ Посмотреть тарифы", callback_data="show_payment_plans")
-        ],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_start")]
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -468,3 +386,12 @@ async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.callback_query.edit_message_text(tutorial_text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text(tutorial_text, reply_markup=reply_markup, parse_mode='Markdown') 
+
+async def referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = "💸 *Реферальная программа скоро появится!*\n\nТы сможешь приглашать друзей и получать бонусы за их регистрацию и покупки. Следи за новостями!"
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown') 

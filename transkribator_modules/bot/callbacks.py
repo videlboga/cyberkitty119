@@ -18,34 +18,39 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     
     try:
         # Обработка платежных callback'ов
-        if data in ["show_payment_plans"] or data.startswith("buy_plan_"):
+        if data == "show_payment_plans" or data.startswith("buy_plan_"):
             await handle_payment_callback(update, context)
             return
-        
+
         # Обработка кнопок саммари
         elif data.startswith("detailed_summary_") or data.startswith("brief_summary_"):
             from transkribator_modules.bot.handlers import handle_summary_callback
             await handle_summary_callback(update, context)
             return
-        
+
         # Основные разделы
-        if data == "personal_cabinet":
+        elif data == "personal_cabinet":
             from transkribator_modules.bot.commands import personal_cabinet_command
             await personal_cabinet_command(update, context)
         elif data == "show_tutorial":
             from transkribator_modules.bot.commands import show_tutorial
             await show_tutorial(update, context)
         elif data == "show_help":
-            from transkribator_modules.bot.commands import help_command
-            await help_command(update, context)
+            from transkribator_modules.bot.commands import start_command
+            await start_command(update, context)
         elif data == "show_promo_codes":
             from transkribator_modules.bot.commands import promo_codes_command
             await promo_codes_command(update, context)
+        elif data == "show_referral":
+            from transkribator_modules.bot.commands import referral_command
+            await referral_command(update, context)
         elif data == "add_to_group":
             await add_to_group_callback(query, user)
         elif data == "enter_promo_code":
             await enter_promo_code_callback(query, user)
         elif data == "show_plans":
+            await show_plans_callback(query, user)
+        elif data == "show_plans_from_cabinet":
             await show_plans_callback(query, user)
         elif data == "show_stats":
             await show_stats_callback(query, user)
@@ -61,6 +66,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         elif data == "back_to_start":
             await back_to_start_callback(query, user)
         else:
+            # Если это неизвестный callback, логируем для отладки
+            logger.warning(f"Неизвестный callback_data: {data}")
             await query.edit_message_text("🙈 Неизвестная команда. *растерянно моргает*")
             
     except Exception as e:
@@ -85,7 +92,7 @@ async def enter_promo_code_callback(query, user):
 😸 *ожидает с нетерпением*"""
 
     keyboard = [
-        [InlineKeyboardButton("🔙 Назад к промокодам", callback_data="show_promo_codes")]
+        [InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -111,7 +118,7 @@ async def show_plans_callback(query, user):
         
         plans_text += f"**{plan.display_name}** - {price_text}\n"
         plans_text += f"• {minutes_text} в месяц\n"
-        plans_text += f"• Файлы до {plan.max_file_size_mb:.0f} МБ\n"
+        plans_text += f"• Файлы любого размера\n"
         
         for feature in features:
             plans_text += f"• {feature}\n"
@@ -120,9 +127,11 @@ async def show_plans_callback(query, user):
     
     plans_text += "⭐ **Покупка через Telegram Stars**"
 
+    # Определяем, откуда вызвано меню тарифов
+    back_callback = "personal_cabinet" if query.data == "show_plans_from_cabinet" else "back_to_start"
     keyboard = [
         [InlineKeyboardButton("⭐ Купить план", callback_data="show_payment_plans")],
-        [InlineKeyboardButton("🔙 Личный кабинет", callback_data="personal_cabinet")]
+        [InlineKeyboardButton("🔙 Назад", callback_data=back_callback)]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -168,9 +177,7 @@ async def show_stats_callback(query, user):
                 stats_text += f"\n{i}. {trans.filename or 'Видео'} ({trans.audio_duration_minutes:.1f} мин) - {date_str}"
         
         keyboard = [
-            [InlineKeyboardButton("🔑 API ключи", callback_data="show_api_keys")],
-            [InlineKeyboardButton("📊 Планы", callback_data="show_plans")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")]
+            [InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -199,7 +206,7 @@ API доступен начиная с плана "Профессиональн�
             
             keyboard = [
                 [InlineKeyboardButton("📊 Посмотреть планы", callback_data="show_plans")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")]
+                [InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")]
             ]
         else:
             # Получаем API ключи
@@ -237,7 +244,7 @@ API доступен начиная с плана "Профессиональн�
             if api_keys:
                 keyboard.append([InlineKeyboardButton("📋 Управление ключами", callback_data="list_api_keys")])
             
-            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")])
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(api_text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -299,7 +306,7 @@ curl -X POST "http://localhost:8000/transcribe" \\
         
         keyboard = [
             [InlineKeyboardButton("📋 Мои ключи", callback_data="show_api_keys")],
-            [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_start")]
+            [InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -396,7 +403,7 @@ async def delete_api_key_callback(query, user, key_id):
             f"✅ API ключ '{api_key.name}' успешно удален.",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("📋 Мои ключи", callback_data="show_api_keys"),
-                InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_start")
+                InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")
             ]])
         )
         
@@ -451,29 +458,18 @@ async def add_to_group_callback(query, user):
     await query.edit_message_text(group_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def back_to_start_callback(query, user):
-    """Вернуться в главное меню"""
-    welcome_text = f"""🐱 **Мяу! Добро пожаловать в Cyberkitty19 Transkribator!**
-
-Привет, {user.first_name or 'котик'}! Я умный котик-транскрибатор, который превращает твои видео в текст! 
-
-🎬 **Что я умею:**
-• Транскрибирую видео любого формата в текст
-• Форматирую текст с помощью ИИ 
-• Создаю краткие и подробные саммари
-• Работаю с большими файлами через API
-
-🚀 **Как это работает:**
-Просто отправь мне видео, и я создам красивую текстовую расшифровку! Можешь выбрать обычную транскрибацию или с ИИ-форматированием.
-
-💡 **Готов начать?**
-Нажми кнопку ниже, чтобы войти в личный кабинет, или просто отправь мне видео!
-
-*мурчит и виляет хвостиком* 🐾"""
-
-    keyboard = [
-        [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
-        [InlineKeyboardButton("💡 Помощь", callback_data="show_help")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    """Вернуться в главное меню - вызывает тот же экран, что и команда /start"""
+    from transkribator_modules.bot.commands import start_command
     
-    await query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown') 
+    # Создаём фейковый update для вызова start_command
+    class FakeUpdate:
+        def __init__(self, user, query):
+            self.effective_user = user
+            self.callback_query = query
+            # Добавляем message из callback_query
+            self.message = query.message
+    
+    fake_update = FakeUpdate(user, query)
+    
+    # Вызываем start_command с правильным контекстом
+    await start_command(fake_update, None) 

@@ -46,10 +46,10 @@ PLAN_DESCRIPTIONS = {
     },
     PlanType.UNLIMITED: {
         "title": "Безлимитный план",
-        "description": "Безлимитные минуты, файлы до 2 ГБ, расширенный API",
+        "description": "Безлимитные минуты, файлы любого размера, расширенный API",
         "features": [
             "Безлимитные минуты транскрибации",
-            "Файлы до 2 ГБ",
+            "Файлы любого размера",
             "Максимальный приоритет",
             "Расширенный API доступ", 
             "Поддержка 24/7"
@@ -496,7 +496,7 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
         keyboard = [
             [InlineKeyboardButton("📊 Моя статистика", callback_data="show_stats")],
             [InlineKeyboardButton("🔑 API ключи", callback_data="show_api_keys")] if plan_type in ["pro", "unlimited"] else [],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_start")]
+            [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")]
         ]
         # Убираем пустые списки
         keyboard = [row for row in keyboard if row]
