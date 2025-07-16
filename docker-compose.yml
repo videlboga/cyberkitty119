@@ -49,9 +49,6 @@ services:
   telegram-bot-api:
     image: aiogram/telegram-bot-api:latest
     container_name: cyberkitty19-telegram-bot-api
-    environment:
-      - TELEGRAM_API_ID=21532963
-      - TELEGRAM_API_HASH=66e38ebc131425924c2680e6c8fb6c09
     restart: unless-stopped
     networks:
       cyberkitty19-transkribator-network:
@@ -62,6 +59,14 @@ services:
     ports:
       - "8081:8081"
       - "8082:8082"
+    command: >
+      --local
+      --api-id=21532963
+      --api-hash=66e38ebc131425924c2680e6c8fb6c09
+      --max-file-size=2147483648
+      --max-request-size=2147483648
+      --max-concurrent-uploads=10
+      --max-concurrent-downloads=10
 
 networks:
   cyberkitty19-transkribator-network:
