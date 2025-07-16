@@ -23,7 +23,6 @@ services:
       - telegram-bot-api
     network_mode: host
     environment:
-      - TELEGRAM_API_URL=http://localhost:8081/bot
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/google-sa.json
     command: sh -c "sleep 15 && python -m transkribator_modules.main"
 
@@ -48,9 +47,11 @@ services:
 
   # Telegram Bot API сервер
   telegram-bot-api:
-    image: root_telegram-bot-api
+    image: aiogram/telegram-bot-api:latest
     container_name: cyberkitty19-telegram-bot-api
-    command: /entrypoint.sh telegram-bot-api --api-id=21532963 --api-hash=66e38ebc131425924c2680e6c8fb6c09 --local
+    environment:
+      - TELEGRAM_API_ID=21532963
+      - TELEGRAM_API_HASH=66e38ebc131425924c2680e6c8fb6c09
     restart: unless-stopped
     networks:
       cyberkitty19-transkribator-network:
@@ -69,7 +70,5 @@ networks:
 volumes:
   videos:
   audio:
-  transcriptions:
-  telegram-bot-api-data: 
   transcriptions:
   telegram-bot-api-data: 

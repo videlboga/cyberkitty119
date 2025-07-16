@@ -6,8 +6,23 @@ from dotenv import load_dotenv
 # Загрузка переменных окружения
 load_dotenv()
 
+# Настройка логирования
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("cyberkitty119.log")
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
 # Получаем настройки из .env файла
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+if not BOT_TOKEN:
+    logger.error("TELEGRAM_BOT_TOKEN не установлен в .env файле!")
+    raise ValueError("TELEGRAM_BOT_TOKEN не установлен в .env файле!")
 
 # Настройки для API
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
@@ -19,6 +34,14 @@ DEEPINFRA_API_KEY = os.getenv('DEEPINFRA_API_KEY', '')
 YUKASSA_SHOP_ID = os.getenv('YUKASSA_SHOP_ID', '')
 YUKASSA_SECRET_KEY = os.getenv('YUKASSA_SECRET_KEY', '')
 YUKASSA_WEBHOOK_SECRET = os.getenv('YUKASSA_WEBHOOK_SECRET', '')
+
+# Проверка доступности ЮKassa
+try:
+    from transkribator_modules.payments.yukassa import YukassaPaymentService
+    YUKASSA_AVAILABLE = bool(YUKASSA_SHOP_ID and YUKASSA_SECRET_KEY)
+except ImportError:
+    YUKASSA_AVAILABLE = False
+    logger.warning("ЮKassa SDK не установлен")
 
 # Настройки для Replicate API
 REPLICATE_API_TOKEN = os.getenv('REPLICATE_API_TOKEN', '')
@@ -36,16 +59,6 @@ VIDEOS_DIR.mkdir(exist_ok=True)
 AUDIO_DIR.mkdir(exist_ok=True)
 TRANSCRIPTIONS_DIR.mkdir(exist_ok=True)
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("cyberkitty119.log")
-    ]
-)
-
 # ID администратора по умолчанию (добавьте свои при необходимости)
 DEFAULT_ADMIN_IDS = {648981358}
 
@@ -55,19 +68,6 @@ env_admins = {int(x) for x in _admin_env.split(",") if x.strip().isdigit()}
 
 # Итоговый список админов без дубликатов
 ADMIN_IDS = list(DEFAULT_ADMIN_IDS.union(env_admins))
-
-logger = logging.getLogger(__name__)
-
-# Константы
-MAX_MESSAGE_LENGTH = 4096  # Максимальная длина сообщения в Telegram
-
-# Глобальный словарь для хранения транскрипций пользователей
-user_transcriptions = {} 
-
-# Итоговый список админов без дубликатов
-ADMIN_IDS = list(DEFAULT_ADMIN_IDS.union(env_admins))
-
-logger = logging.getLogger(__name__)
 
 # Константы
 MAX_MESSAGE_LENGTH = 4096  # Максимальная длина сообщения в Telegram

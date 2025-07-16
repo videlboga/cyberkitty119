@@ -134,11 +134,16 @@ async def choose_payment_method(update: Update, context: ContextTypes.DEFAULT_TY
     user = update.effective_user
     query = update.callback_query
     
-    if plan_type not in PLAN_PRICES_STARS:
+    try:
+        plan_enum = PlanType(plan_type)
+    except ValueError:
         await query.edit_message_text("❌ Неизвестный план")
         return
     
-    plan_enum = PlanType(plan_type)
+    if plan_enum not in PLAN_PRICES_STARS:
+        await query.edit_message_text("❌ Неизвестный план")
+        return
+    
     plan_info = PLAN_DESCRIPTIONS[plan_enum]
     price_rub = PLAN_PRICES_STARS[plan_enum] * 1.3
     
@@ -362,7 +367,7 @@ async def create_payment_invoice(update: Update, context: ContextTypes.DEFAULT_T
         
         await context.bot.send_invoice(
             chat_id=user.id,
-            title=f"⭐ {plan_info['title']}",
+            title=f"{plan_info['title']}",
             description=plan_info['description'],
             payload=payload,
             provider_token="",  # Пустой для Telegram Stars
@@ -528,25 +533,31 @@ async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_
     
     data = query.data
     
-    if data == "show_payment_plans":
-        await show_payment_plans(update, context)
-    elif data.startswith("choose_payment_"):
-        plan_type = data.replace("choose_payment_", "")
-        await choose_payment_method(update, context, plan_type)
-    elif data.startswith("pay_yukassa_"):
-        # Обрабатывается через ConversationHandler
-        await query.edit_message_text("Обрабатывается...")
-    elif data.startswith("pay_stars_"):
-        plan_type = data.replace("pay_stars_", "")
-        await create_payment_invoice(update, context, plan_type)
-    elif data.startswith("check_yukassa_"):
-        payment_id = data.replace("check_yukassa_", "")
-        await check_yukassa_payment(update, context, payment_id)
-    elif data.startswith("buy_plan_"):
-        plan_type = data.replace("buy_plan_", "")
-        await create_payment_invoice(update, context, plan_type)
-    else:
-        await query.edit_message_text("Неизвестная команда платежей") 
+    try:
+        if data == "show_payment_plans":
+            await show_payment_plans(update, context)
+        elif data.startswith("choose_payment_"):
+            plan_type = data.replace("choose_payment_", "")
+            await choose_payment_method(update, context, plan_type)
+        elif data.startswith("pay_yukassa_"):
+            # Обрабатывается через ConversationHandler
+            plan_type = data.replace("pay_yukassa_", "")
+            await ask_contact_or_email(update, context, plan_type)
+        elif data.startswith("pay_stars_"):
+            plan_type = data.replace("pay_stars_", "")
+            await create_payment_invoice(update, context, plan_type)
+        elif data.startswith("check_yukassa_"):
+            payment_id = data.replace("check_yukassa_", "")
+            await check_yukassa_payment(update, context, payment_id)
+        elif data.startswith("buy_plan_"):
+            plan_type = data.replace("buy_plan_", "")
+            await create_payment_invoice(update, context, plan_type)
+        else:
+            logger.warning(f"Неизвестная команда платежей: {data}")
+            await query.edit_message_text("Неизвестная команда платежей")
+    except Exception as e:
+        logger.error(f"Ошибка в handle_payment_callback: {e}")
+        await query.edit_message_text("Произошла ошибка при обработке платежа") 
 
 # --- Новый шаг: запрос контакта или e-mail ---
 async def ask_contact_or_email_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):

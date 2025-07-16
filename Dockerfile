@@ -9,7 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Копируем файлы с зависимостями
-COPY requirements/ ./requirements/
 COPY requirements.txt .
 
 # Устанавливаем зависимости

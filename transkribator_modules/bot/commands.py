@@ -75,6 +75,40 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Команда /help - перенаправляет на show_tutorial"""
     await show_tutorial(update, context)
 
+async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать главное меню (для callback)"""
+    user = update.effective_user
+    welcome_text = f"""🐱 **Мяу! Добро пожаловать в CyberKitty Transkribator!**
+
+Привет, {user.first_name or 'котик'}! Я умный котик-транскрибатор! 
+
+🎬 Просто отправь мне видео — я сделаю всё сам!
+
+✨ Что я умею:
+• 📝 Превращаю речь в текст
+• 🤖 Делаю красивое форматирование с ИИ  
+• 📋 Создаю краткие и подробные саммари
+• 🔄 Работаю с файлами любого размера
+
+🚀 Начинаем?
+1️⃣ Отправь мне видео (любой формат)
+2️⃣ Выбери тип обработки  
+3️⃣ Получи готовую транскрипцию!
+
+*мурчит и готов к работе  🐾*"""
+    keyboard = [
+        [InlineKeyboardButton("📖 Как пользоваться", callback_data="show_tutorial")],
+        [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
+        [InlineKeyboardButton("👥 Добавить в группу", callback_data="add_to_group")],
+        [InlineKeyboardButton("💸 Реферальная программа", callback_data="show_referral")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+
 async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Личный кабинет пользователя"""
     user = update.effective_user

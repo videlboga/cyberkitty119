@@ -18,7 +18,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     
     try:
         # Обработка платежных callback'ов
-        if data == "show_payment_plans" or data.startswith("buy_plan_"):
+        if (data == "show_payment_plans" or 
+            data.startswith("buy_plan_") or 
+            data.startswith("choose_payment_") or
+            data.startswith("pay_yukassa_") or
+            data.startswith("pay_stars_") or
+            data.startswith("check_yukassa_")):
             await handle_payment_callback(update, context)
             return
 
@@ -36,8 +41,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             from transkribator_modules.bot.commands import show_tutorial
             await show_tutorial(update, context)
         elif data == "show_help":
-            from transkribator_modules.bot.commands import start_command
-            await start_command(update, context)
+            from transkribator_modules.bot.commands import show_help
+            await show_help(update, context)
         elif data == "show_promo_codes":
             from transkribator_modules.bot.commands import promo_codes_command
             await promo_codes_command(update, context)
@@ -64,8 +69,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             key_id = int(data.split("_")[-1])
             await delete_api_key_callback(query, user, key_id)
         elif data == "back_to_start":
-            from transkribator_modules.bot.commands import start_command
-            await start_command(update, context)
+            from transkribator_modules.bot.commands import show_help
+            await show_help(update, context)
         else:
             # Если это неизвестный callback, логируем для отладки
             logger.warning(f"Неизвестный callback_data: {data}")
@@ -421,28 +426,28 @@ async def delete_api_key_callback(query, user, key_id):
 
 async def add_to_group_callback(query, user):
     """Информация о добавлении бота в группу"""
-    group_text = """👥 **Добавить бота в группу**
+    group_text = """👥 Добавить бота в группу
 
-🐱 **CyberKitty** может работать в группах и каналах!
+🐱 CyberKitty может работать в группах и каналах!
 
-✨ **Что умеет в группах:**
+✨ Что умеет в группах:
 • Автоматически транскрибирует аудио и видео
 • Отвечает только на медиа-файлы
 • Не спамит лишними сообщениями
 • Сразу отправляет готовую транскрипцию
 
-📋 **Как добавить:**
+📋 Как добавить:
 1. Добавьте @CyberKitty19_bot в группу
 2. Сделайте бота администратором (для загрузки файлов)
 3. Отправьте видео или аудио в группу
 4. Бот автоматически обработает и ответит
 
-🔧 **Требования:**
+🔧 Требования:
 • Бот должен быть администратором группы
 • Права на чтение сообщений
 • Права на отправку сообщений
 
-💡 **Особенности работы в группах:**
+💡 Особенности работы в группах:
 • Бот отвечает только на аудио/видео
 • Без промежуточных статусных сообщений
 • Сразу отправляет готовую транскрипцию
@@ -451,9 +456,9 @@ async def add_to_group_callback(query, user):
 😸 готов помочь в любой группе"""
 
     keyboard = [
-        [InlineKeyboardButton("🔗 Ссылка на бота", url="https://t.me/CyberKitty19_bot")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="show_help")]
+        [InlineKeyboardButton("➕ Добавить в группу", switch_inline_query_current_chat="")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(group_text, reply_markup=reply_markup, parse_mode='Markdown') 
+    await query.edit_message_text(group_text, reply_markup=reply_markup) 

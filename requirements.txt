@@ -1,5 +1,18 @@
-# Основные зависимости проекта (для полной установки)
--r requirements/bot.txt
+# Основные зависимости проекта
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+sqlalchemy==2.0.23
+aiofiles==23.2.1
+openai==1.3.7
+requests==2.31.0
+pydub==0.25.1
+ffmpeg-python==0.2.0
+aiohttp==3.9.1
+yt-dlp==2023.12.30
+yookassa==3.0.0
+fastapi==0.104.1
+uvicorn==0.24.0
+python-multipart==0.0.6
 
 # Дополнительные зависимости для разработки
 pyrogram==2.0.106
