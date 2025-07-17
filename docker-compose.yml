@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Telegram бот
+  # Telegram бот (отвечает на команды)
   bot:
     build:
       context: .
@@ -21,10 +21,39 @@ services:
     restart: unless-stopped
     depends_on:
       - telegram-bot-api
-    network_mode: host
+    networks:
+      - cyberkitty19-transkribator-network
     environment:
+      - TELEGRAM_API_URL=http://telegram-bot-api:8081/bot
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/google-sa.json
     command: sh -c "sleep 15 && python -m transkribator_modules.main"
+
+  # Локальный бот (работает с API сервером для больших файлов)
+  local-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cyberkitty19-transkribator-local-bot
+    env_file:
+      - .env
+    volumes:
+      - ./transkribator_modules:/app/transkribator_modules
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+      - ./data:/app/data
+      - ./secrets/google-sa.json:/app/credentials/google-sa.json:ro
+      - ./transkribator.db:/app/transkribator.db
+    restart: unless-stopped
+    depends_on:
+      - api
+    networks:
+      - cyberkitty19-transkribator-network
+    environment:
+      - LOCAL_API_URL=http://api:8000
+      - LOCAL_API_KEY=${LOCAL_API_KEY:-}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/google-sa.json
+    command: sh -c "sleep 10 && python -m transkribator_modules.local_bot"
 
   # API сервер
   api:
@@ -47,8 +76,9 @@ services:
 
   # Telegram Bot API сервер
   telegram-bot-api:
-    image: aiogram/telegram-bot-api:latest
+    image: transkribator-telegram-bot-api
     container_name: cyberkitty19-telegram-bot-api
+    command: /entrypoint.sh telegram-bot-api --api-id=21532963 --api-hash=66e38ebc131425924c2680e6c8fb6c09 --local
     restart: unless-stopped
     networks:
       cyberkitty19-transkribator-network:
@@ -59,14 +89,6 @@ services:
     ports:
       - "8081:8081"
       - "8082:8082"
-    command: >
-      --local
-      --api-id=21532963
-      --api-hash=66e38ebc131425924c2680e6c8fb6c09
-      --max-file-size=2147483648
-      --max-request-size=2147483648
-      --max-concurrent-uploads=10
-      --max-concurrent-downloads=10
 
 networks:
   cyberkitty19-transkribator-network:

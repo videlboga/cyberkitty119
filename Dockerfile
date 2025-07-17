@@ -21,5 +21,5 @@ COPY .env .
 # Создаем необходимые директории
 RUN mkdir -p /app/videos /app/audio /app/transcriptions
 
-# Запускаем модульного бота
+# Запускаем модульного бота (будет переопределено в docker-compose)
 CMD ["python", "-m", "transkribator_modules.main"] 

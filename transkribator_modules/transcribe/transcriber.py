@@ -545,7 +545,7 @@ async def split_and_transcribe_audio(audio_path):
     audio_path = Path(audio_path)
     logger.info(f"🚀 НАЧИНАЮ ОБРАБОТКУ АУДИО: {audio_path}")
 
-    SEGMENT_DURATION_CANDIDATES = [60, 300, 600, 900, 1200, 1500, 1800]
+    SEGMENT_DURATION_CANDIDATES = [1140, 900, 600, 300, 60]
 
     for segment_duration in SEGMENT_DURATION_CANDIDATES:
         start_time_overall = time.time()

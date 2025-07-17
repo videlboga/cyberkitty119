@@ -276,8 +276,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.error(f"Ошибка при скачивании видео: {e}")
                 if "File is too big" in str(e):
                     await update.message.reply_text(
-                        "😿 Файл превышает лимит Telegram. Пришлите прямую ссылку на файл."
+                        "Мяу! Вижу видео! Начинаю обработку... *возбужденно виляет хвостом*"
                     )
+                    # Сохраняем информацию о файле для локального бота
+                    await save_file_info_for_local_bot(update, context, "video")
                 else:
                     await update.message.reply_text(
                         f"Произошла ошибка при скачивании видео: {str(e)}"
@@ -327,9 +329,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 logger.error(f"Ошибка при скачивании видео: {e}")
                 if "File is too big" in str(e):
                     await status_message.edit_text(
-                        "😿 Бот больше не имеет лимитов на размер файла, но **файл превышает лимит Telegram**. \n"
-                        "Пожалуйста, пришлите прямую ссылку на файл — скоро добавим поддержку скачивания по URL."
+                        "Мяу! Вижу видео! Начинаю обработку... *возбужденно виляет хвостом*"
                     )
+                    # Сохраняем информацию о файле для локального бота
+                    await save_file_info_for_local_bot(update, context, "video")
                 else:
                     await status_message.edit_text(
                         f"Произошла ошибка при скачивании видео: {str(e)} *испуганно прячется*"
@@ -431,3 +434,27 @@ async def handle_summary_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text(
             f"Ой-ой! Произошла киберошибка при генерации {summary_type} саммари! 🤖💥 *смущенно прячет мордочку* \n\nРасскажите @Like\\_a\\_duck что случилось - он разберётся с моими схемами! 🔧\n\nДетали: {str(e)}"
         ) 
+
+async def save_file_info_for_local_bot(update: Update, context: ContextTypes.DEFAULT_TYPE, file_type: str) -> None:
+    """Сохраняет информацию о файле для обработки локальным ботом."""
+    try:
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        message_id = update.message.message_id
+        
+        # Создаем файл с информацией о том, что нужно обработать
+        if file_type == "video":
+            info_file = VIDEOS_DIR / f"pending_{file_type}_{message_id}.txt"
+        else:
+            info_file = AUDIO_DIR / f"pending_{file_type}_{message_id}.txt"
+        with open(info_file, "w", encoding="utf-8") as f:
+            f.write(f"user_id={user_id}\n")
+            f.write(f"chat_id={chat_id}\n")
+            f.write(f"message_id={message_id}\n")
+            f.write(f"file_type={file_type}\n")
+            f.write(f"timestamp={update.message.date.isoformat()}\n")
+        
+        logger.info(f"Сохранена информация о файле {file_type} для локального бота: {info_file}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении информации о файле для локального бота: {e}")

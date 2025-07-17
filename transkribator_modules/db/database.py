@@ -492,4 +492,8 @@ class DeepInfraJobService:
         return job
 
     def get_job(self, job_id: str) -> DeepInfraJob | None:
-        return self.db.query(DeepInfraJob).filter(DeepInfraJob.id == job_id).first() 
+        return self.db.query(DeepInfraJob).filter(DeepInfraJob.id == job_id).first()
+        
+    def get_job_by_request_id(self, request_id: str) -> DeepInfraJob | None:
+        """Получить задачу по request_id (алиас для get_job)"""
+        return self.get_job(request_id) 

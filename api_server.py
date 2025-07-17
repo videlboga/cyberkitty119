@@ -475,6 +475,32 @@ async def deepinfra_webhook(request: Request, db = Depends(get_db)):
 
     return {"ok": True, "request_id": request_id, "status": status}
 
+@app.get("/transcription/{task_id}/status")
+async def get_transcription_status(task_id: str, db = Depends(get_db)):
+    """Получить статус транскрибации по task_id"""
+    try:
+        # Ищем задачу в базе данных
+        job_service = DeepInfraJobService(db)
+        job = job_service.get_job_by_request_id(task_id)
+        
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Задача {task_id} не найдена")
+            
+        return {
+            "task_id": task_id,
+            "status": job.status,
+            "text": job.text if job.text else "",
+            "model": job.model,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "updated_at": job.updated_at.isoformat() if job.updated_at else None
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ошибка получения статуса транскрибации {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера: {str(e)}")
+
 # ---------------------------------------------------------------------------
 # Статическая раздача аудио-сегментов для DeepInfra (audio_url)
 # ---------------------------------------------------------------------------
