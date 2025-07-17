@@ -26,6 +26,7 @@ services:
     environment:
       - TELEGRAM_API_URL=http://telegram-bot-api:8081/bot
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/google-sa.json
+      - GOOGLE_CREDENTIALS_PATH=/app/credentials/google-sa.json
     command: sh -c "sleep 15 && python -m transkribator_modules.main"
 
   # Локальный бот (работает с API сервером для больших файлов)
@@ -70,9 +71,12 @@ services:
       - ./audio:/app/audio
       - ./transcriptions:/app/transcriptions
       - ./transkribator.db:/app/transkribator.db
+      - ./secrets/google-sa.json:/app/credentials/google-sa.json:ro
     restart: unless-stopped
     networks:
       - cyberkitty19-transkribator-network
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/google-sa.json
 
   # Telegram Bot API сервер
   telegram-bot-api:

@@ -25,7 +25,7 @@ SCOPES = [
 ]
 
 # Путь к JSON-файлу сервис-аккаунта можно переопределить переменной окружения
-DEFAULT_CREDS_PATH = "/app/data/google_credentials.json"
+DEFAULT_CREDS_PATH = "/app/credentials/google-sa.json"
 
 # Таймаут 300 с; параметр retries не поддерживается в версии httplib2 внутри контейнера
 # Создаём объект HTTP, который затем авторизуем через google-auth-httplib2
