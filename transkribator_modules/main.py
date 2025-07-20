@@ -9,7 +9,7 @@ from telegram.ext import (
 
 import os
 
-from transkribator_modules.config import logger, BOT_TOKEN
+from transkribator_modules.config import logger, BOT_TOKEN, TELEGRAM_API_URL
 from transkribator_modules.bot.commands import (
     start_command
 )
@@ -35,24 +35,15 @@ def main() -> None:
     except Exception as e:
         logger.error(f"Ошибка при инициализации базы данных: {e}")
     
-    # Инициализация бота с поддержкой локального Bot API
-    # Если переменная окружения TELEGRAM_API_URL задана, используем её в качестве base_url,
-    # иначе обращаемся к стандартному https://api.telegram.org
+    # Инициализация бота
     builder = ApplicationBuilder().token(BOT_TOKEN).read_timeout(300).connect_timeout(300)
-
-    telegram_api_url = os.getenv("TELEGRAM_API_URL")
-    if telegram_api_url:
-        logger.info(f"Используем пользовательский TELEGRAM_API_URL: {telegram_api_url}")
-        # При использовании локального Bot API (поднят с флагом --local)
-        # обязательно указываем base_file_url и включаем local_mode,
-        # чтобы библиотека не пыталась скачивать файлы через HTTP, а
-        # пользовалась локальными путями (см. wiki PTB "Local Bot API Server").
-        builder = (
-            builder
-            .base_url(telegram_api_url)
-            .base_file_url(telegram_api_url.replace('/bot', '/file/bot'))
-            .local_mode(True)
-        )
+    
+    # Если указан локальный API URL, используем его
+    if TELEGRAM_API_URL:
+        builder = builder.base_url(TELEGRAM_API_URL)
+        logger.info(f"🚀 Использую локальный Telegram Bot API: {TELEGRAM_API_URL}")
+    else:
+        logger.info("🚀 Использую официальный Telegram Bot API")
 
     application = builder.build()
 
@@ -64,15 +55,16 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
     
     # Обработчики для запроса контакта/email перед оплатой ЮKassa
-    conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(ask_contact_or_email_wrapper, pattern=r'^pay_yukassa_')],
-        states={
-            ASK_CONTACT: [MessageHandler(filters.CONTACT, handle_contact)],
-            ASK_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email)]
-        },
-        fallbacks=[CallbackQueryHandler(handle_payment_callback)]
-    )
-    application.add_handler(conv_handler)
+    # ВРЕМЕННО ОТКЛЮЧЕНО для отладки
+    # conv_handler = ConversationHandler(
+    #     entry_points=[CallbackQueryHandler(ask_contact_or_email_wrapper, pattern=r'^pay_yukassa_')],
+    #     states={
+    #         ASK_CONTACT: [MessageHandler(filters.CONTACT, handle_contact)],
+    #         ASK_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email)]
+    #     },
+    #     fallbacks=[CallbackQueryHandler(handle_payment_callback)]
+    # )
+    # application.add_handler(conv_handler)
     
     # Обработчик «тяжёлых» сообщений (видео/аудио) перенесён в отдельную группу, 
     # чтобы команды вроде /start отвечали моментально и не стояли в очереди
@@ -88,6 +80,8 @@ def main() -> None:
 
     # Запуск бота
     logger.info("Бот запущен и слушает сообщения...")
+    
+    # Запускаем основной бот
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == '__main__':
