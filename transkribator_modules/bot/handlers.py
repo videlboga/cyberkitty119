@@ -4,12 +4,63 @@ from telegram import Update
 from telegram.ext import ContextTypes
 import re
 from urllib.parse import urlparse
+import httpx
+import os
+import time
 
 from transkribator_modules.config import (
-    logger, user_transcriptions, VIDEOS_DIR, TRANSCRIPTIONS_DIR, MAX_MESSAGE_LENGTH, AUDIO_DIR
+    logger, user_transcriptions, VIDEOS_DIR, TRANSCRIPTIONS_DIR, MAX_MESSAGE_LENGTH, AUDIO_DIR, BOT_TOKEN
 )
 from transkribator_modules.utils.processor import process_video, process_video_file, process_audio_file, process_video_file_silent, process_audio_file_silent
 from transkribator_modules.utils.downloader import download_media
+from transkribator_modules.utils.large_file_downloader import download_large_file, get_file_info
+
+# --- Функции для работы с API сервером ---
+
+async def send_file_to_api_server(file_path: Path, chat_id: int, message_id: int, file_type: str) -> dict:
+    """Отправляет файл в API сервер для обработки"""
+    try:
+        api_url = os.getenv("API_SERVER_URL", "http://api:8000")
+        
+        # Создаем API ключ для бота (если нужно)
+        api_key = await get_or_create_bot_api_key()
+        
+        with open(file_path, "rb") as f:
+            files = {"file": (file_path.name, f, "application/octet-stream")}
+            data = {
+                "format_with_llm": "true",
+                "chat_id": str(chat_id),
+                "message_id": str(message_id)
+            }
+            headers = {"X-API-Key": api_key}
+            
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                response = await client.post(
+                    f"{api_url}/transcribe",
+                    files=files,
+                    data=data,
+                    headers=headers
+                )
+                
+                if response.status_code == 200:
+                    return response.json()
+                else:
+                    logger.error(f"API сервер вернул ошибку: {response.status_code} - {response.text}")
+                    return None
+                    
+    except Exception as e:
+        logger.error(f"Ошибка при отправке файла в API сервер: {e}")
+        return None
+
+async def get_or_create_bot_api_key() -> str:
+    """Получает или создает API ключ для бота"""
+    # Используем ключ из переменной окружения или дефолтный
+    import os
+    return os.getenv('LOCAL_API_KEY', 'cyberkitty_local_api_key_2024')
+
+
+
+
 
 # --- Обработчики для групповых чатов ---
 
@@ -139,12 +190,46 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик для всех типов сообщений."""
+    """Обработчик всех сообщений"""
+    print("=== ПОЛУЧЕНО СООБЩЕНИЕ ===")
+    print(f"Пользователь: {update.effective_user.id}")
+    print(f"Chat ID: {update.effective_chat.id}")
+    print(f"Тип чата: {update.effective_chat.type}")
+    
+    # Определяем тип сообщения
+    message_type = "text"
+    if update.message.video:
+        message_type = "video"
+    elif update.message.audio:
+        message_type = "audio"
+    elif update.message.document:
+        message_type = "document"
+    
+    print(f"Тип сообщения: {message_type}")
+    
+    if update.message.video:
+        print("=== ЭТО ВИДЕО! ===")
+        print(f"Размер видео: {update.message.video.file_size}")
+        print(f"File ID: {update.message.video.file_id}")
+    
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     message_id = update.message.message_id
     chat_type = update.effective_chat.type
     
+    print(f"Обрабатываю сообщение для пользователя {user_id} в чате {chat_id}")
+    
+    # Проверяем, является ли пользователь администратором
+    # ADMIN_IDS = [123456789, 987654321] # Placeholder for actual admin IDs
+    # if user_id in ADMIN_IDS:
+    #     print("Пользователь является администратором")
+    #     # Для администраторов - полная функциональность
+    #     await handle_admin_message(update, context)
+    # else:
+    #     print("Пользователь НЕ является администратором")
+    #     # Для обычных пользователей - минимальная функциональность
+    #     await handle_regular_user_message(update, context)
+
     # Логируем сообщение
     logger.info(f"Получено сообщение от пользователя {user_id} в чате {chat_id} (тип: {chat_type})")
     
@@ -176,178 +261,255 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # 2) Обработка промокодов (если сообщение является текстом и выглядит как промокод)
     if update.message.text and not update.message.video and not update.message.document:
-        text = update.message.text.strip().upper()
-        
-        # Проверяем, похоже ли это на промокод (определенные паттерны)
-        if (text.startswith(("KITTY", "LIGHTKITTY", "LIGHT", "VIP", "SPECIAL", "PROMO")) or 
-            (len(text) >= 5 and len(text) <= 20 and text.replace("-", "").replace("_", "").isalnum())):
-            from transkribator_modules.bot.commands import activate_promo_code
-            try:
-                await activate_promo_code(update, context, text)
-                return  # Прекращаем обработку как обычного сообщения
-            except Exception as e:
-                logger.error(f"Ошибка при обработке возможного промокода '{text}': {e}")
-                # Если промокод не найден, отвечаем мягко
-                await update.message.reply_text("🤔 Это похоже на промокод, но я его не нашёл. *задумчиво наклоняет голову*")
-                return
+        # --- Фикс: не реагировать на промокоды в группах ---
+        if chat_type in ['group', 'supergroup']:
+            pass  # Игнорируем текстовые сообщения в группах
+        else:
+            text = update.message.text.strip().upper()
+            # Проверяем, похоже ли это на промокод (определенные паттерны)
+            if (text.startswith(("KITTY", "LIGHTKITTY", "LIGHT", "VIP", "SPECIAL", "PROMO")) or 
+                (len(text) >= 5 and len(text) <= 20 and text.replace("-", "").replace("_", "").isalnum())):
+                from transkribator_modules.bot.commands import activate_promo_code
+                try:
+                    await activate_promo_code(update, context, text)
+                    return  # Прекращаем обработку как обычного сообщения
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке возможного промокода '{text}': {e}")
+                    # Если промокод не найден, отвечаем мягко
+                    await update.message.reply_text("🤔 Это похоже на промокод, но я его не нашёл. *задумчиво наклоняет голову*")
+                    return
     
     # Проверяем наличие видео в сообщении
     if update.message.voice or update.message.audio:
         # ----- аудио или голосовое сообщение -----
         if chat_type in ['group', 'supergroup']:
-            # В группах - без статусных сообщений
+            # В группах - без статусных сообщений и меню
             audio_file = await context.bot.get_file(update.message.voice.file_id if update.message.voice else update.message.audio.file_id)
-            audio_path = AUDIO_DIR / f"telegram_audio_{message_id}{Path(audio_file.file_path).suffix or '.ogg'}"
+            audio_path = AUDIO_DIR / f"telegram_audio_{message_id}_chat_{chat_id}{Path(audio_file.file_path).suffix or '.ogg'}"
             await audio_file.download_to_drive(custom_path=audio_path)
-            await process_audio_file_silent(audio_path, chat_id, message_id, context)
+            await process_audio_file_silent(audio_path, chat_id, message_id, context, user_username=update.effective_user.username, user_id=update.effective_user.id)
+            return
         else:
-            # В личном чате - как раньше
-            status = await update.message.reply_text("Скачиваю аудио…")
+            # В личном чате - как в продакшн-версии
+            status_message = await update.message.reply_text(
+                "Мяу! Вижу аудио! Скачиваю его... *возбужденно виляет хвостом*"
+            )
             audio_file = await context.bot.get_file(update.message.voice.file_id if update.message.voice else update.message.audio.file_id)
-            audio_path = AUDIO_DIR / f"telegram_audio_{message_id}{Path(audio_file.file_path).suffix or '.ogg'}"
+            audio_path = AUDIO_DIR / f"telegram_audio_{message_id}_chat_{chat_id}{Path(audio_file.file_path).suffix or '.ogg'}"
             await audio_file.download_to_drive(custom_path=audio_path)
-            await process_audio_file(audio_path, chat_id, message_id, context, status_message=status)
-        return
+            await status_message.edit_text(
+                "Аудио успешно загружено! Начинаю обработку... *радостно мурчит*"
+            )
+            from transkribator_modules.utils.processor import process_audio_file
+            await process_audio_file(audio_path, chat_id, message_id, context, status_message=status_message)
+            return
 
     elif update.message.document and update.message.document.mime_type:
         mime = update.message.document.mime_type
         if mime.startswith('video/') or mime.startswith('audio/'):
             if chat_type in ['group', 'supergroup']:
-                # В группах - без статусных сообщений
+                # В группах - без статусных сообщений и меню
                 doc_file = await context.bot.get_file(update.message.document.file_id)
                 ext = Path(doc_file.file_path).suffix or ''.join(['.', mime.split('/')[-1]])
                 if mime.startswith('audio/'):
-                    local_path = AUDIO_DIR / f"telegram_audio_{message_id}{ext}"
+                    local_path = AUDIO_DIR / f"telegram_audio_{message_id}_chat_{chat_id}{ext}"
                     await doc_file.download_to_drive(custom_path=local_path)
-                    await process_audio_file_silent(local_path, chat_id, message_id, context)
+                    await process_audio_file_silent(local_path, chat_id, message_id, context, user_username=update.effective_user.username, user_id=update.effective_user.id)
                 else:
-                    local_path = VIDEOS_DIR / f"telegram_video_{message_id}{ext}"
+                    local_path = VIDEOS_DIR / f"telegram_video_{message_id}_chat_{chat_id}{ext}"
                     await doc_file.download_to_drive(custom_path=local_path)
-                    await process_video_file_silent(local_path, chat_id, message_id, context)
+                    await process_video_file_silent(local_path, chat_id, message_id, context, user_username=update.effective_user.username, user_id=update.effective_user.id)
+                return
             else:
-                # В личном чате - как раньше
-                status = await update.message.reply_text("Скачиваю файл…")
+                # В личном чате - как в продакшн-версии
+                status_message = await update.message.reply_text(
+                    "Мяу! Вижу файл! Скачиваю его... *возбужденно виляет хвостом*"
+                )
                 doc_file = await context.bot.get_file(update.message.document.file_id)
                 ext = Path(doc_file.file_path).suffix or ''.join(['.', mime.split('/')[-1]])
                 if mime.startswith('audio/'):
-                    local_path = AUDIO_DIR / f"telegram_audio_{message_id}{ext}"
+                    local_path = AUDIO_DIR / f"telegram_audio_{message_id}_chat_{chat_id}{ext}"
                     await doc_file.download_to_drive(custom_path=local_path)
-                    await process_audio_file(local_path, chat_id, message_id, context, status_message=status)
+                    await status_message.edit_text(
+                        "Аудио файл успешно загружен! Начинаю обработку... *радостно мурчит*"
+                    )
+                    from transkribator_modules.utils.processor import process_audio_file
+                    await process_audio_file(local_path, chat_id, message_id, context, status_message=status_message)
                 else:
-                    local_path = VIDEOS_DIR / f"telegram_video_{message_id}{ext}"
+                    local_path = VIDEOS_DIR / f"telegram_video_{message_id}_chat_{chat_id}{ext}"
                     await doc_file.download_to_drive(custom_path=local_path)
-                    await process_video_file(local_path, chat_id, message_id, context, status_message=status)
+                    await status_message.edit_text(
+                        "Видео файл успешно загружен! Начинаю обработку... *радостно мурчит*"
+                    )
+                    from transkribator_modules.utils.processor import process_video_file
+                    await process_video_file(local_path, chat_id, message_id, context, status_message=status_message)
             return
 
     if update.message.video:
-        logger.info(f"Получено видео от пользователя {user_id}")
-        
         if chat_type in ['group', 'supergroup']:
-            # В группах - без статусных сообщений
-            video = update.message.video
-            try:
-                video_file = await context.bot.get_file(video.file_id)
-                video_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
-                video_path.parent.mkdir(exist_ok=True)
-                
-                try:
-                    await video_file.download_to_drive(custom_path=video_path)
-                except Exception as download_err:
-                    api_file_path = getattr(video_file, "file_path", None)
-                    if api_file_path and str(api_file_path).startswith("/var/lib/telegram-bot-api"):
-                        try:
-                            import shutil, os
-                            os.makedirs(video_path.parent, exist_ok=True)
-                            shutil.copy(api_file_path, video_path)
-                            logger.info(f"Скопировал файл напрямую из {api_file_path} в {video_path}")
-                        except Exception as copy_err:
-                            logger.error(f"Ошибка при копировании файла из локального Bot API: {copy_err}")
-                            raise download_err
-                    else:
-                        raise download_err
-                
-                if video_path.exists() and video_path.stat().st_size > 0:
-                    logger.info(f"Видео успешно загружено: {video_path} (размер: {video_path.stat().st_size} байт)")
-                    await process_video_file_silent(video_path, chat_id, message_id, context)
-                else:
-                    logger.error(f"Ошибка при скачивании видео: файл не существует или пустой")
-                    
-            except Exception as e:
-                logger.error(f"Ошибка при скачивании видео: {e}")
-                if "File is too big" in str(e):
-                    await update.message.reply_text(
-                        "Мяу! Вижу видео! Начинаю обработку... *возбужденно виляет хвостом*"
-                    )
-                    # Сохраняем информацию о файле для локального бота
-                    await save_file_info_for_local_bot(update, context, "video")
-                else:
-                    await update.message.reply_text(
-                        f"Произошла ошибка при скачивании видео: {str(e)}"
-                    )
+            # В группах - сразу обработка видео без меню и статусных сообщений
+            await process_video_file_silent(update.message.video, chat_id, message_id, context, user_username=update.effective_user.username, user_id=update.effective_user.id)
+            return
         else:
-            # В личном чате - как раньше
-            status_message = await update.message.reply_text(
-                "Мяу! Вижу видео! Скачиваю его... *возбужденно виляет хвостом*"
-            )
-            
-            video = update.message.video
-            
-            try:
-                video_file = await context.bot.get_file(video.file_id)
-                video_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
-                video_path.parent.mkdir(exist_ok=True)
-                
-                try:
-                    await video_file.download_to_drive(custom_path=video_path)
-                except Exception as download_err:
-                    api_file_path = getattr(video_file, "file_path", None)
-                    if api_file_path and str(api_file_path).startswith("/var/lib/telegram-bot-api"):
-                        try:
-                            import shutil, os
-                            os.makedirs(video_path.parent, exist_ok=True)
-                            shutil.copy(api_file_path, video_path)
-                            logger.info(f"Скопировал файл напрямую из {api_file_path} в {video_path}")
-                        except Exception as copy_err:
-                            logger.error(f"Ошибка при копировании файла из локального Bot API: {copy_err}")
-                            raise download_err
-                    else:
-                        raise download_err
-                
-                if video_path.exists() and video_path.stat().st_size > 0:
-                    logger.info(f"Видео успешно загружено: {video_path} (размер: {video_path.stat().st_size} байт)")
-                    await status_message.edit_text(
-                        "Видео успешно загружено! Начинаю обработку... *радостно мурчит*"
-                    )
-                    await process_video(chat_id, message_id, update, context)
-                else:
-                    logger.error(f"Ошибка при скачивании видео: файл не существует или пустой")
-                    await status_message.edit_text(
-                        "Не удалось скачать видео. Пожалуйста, попробуйте снова. *печально опускает ушки*"
-                    )
-                    
-            except Exception as e:
-                logger.error(f"Ошибка при скачивании видео: {e}")
-                if "File is too big" in str(e):
-                    await status_message.edit_text(
-                        "Мяу! Вижу видео! Начинаю обработку... *возбужденно виляет хвостом*"
-                    )
-                    # Сохраняем информацию о файле для локального бота
-                    await save_file_info_for_local_bot(update, context, "video")
-                else:
-                    await status_message.edit_text(
-                        f"Произошла ошибка при скачивании видео: {str(e)} *испуганно прячется*"
-                    )
-    
-    # В минимальном режиме просто отвечаем текстом
-    else:
+            logger.info(f"Получено видео от пользователя {user_id}")
+            await process_video_file_direct(update, context, update.message.video)
+            return
+
+    # В минимальном режиме просто отвечаем текстом (только в личных чатах)
+    if chat_type not in ['group', 'supergroup']:
         await update.message.reply_text(
             "Мяу! *игриво смотрит* Отправь мне видео, и я создам текстовую расшифровку! *виляет хвостиком*"
         ) 
+
+async def save_file_info_for_local_bot(update: Update, context: ContextTypes.DEFAULT_TYPE, file_type: str) -> None:
+    """Сохраняет информацию о файле для обработки локальным ботом."""
+    try:
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        message_id = update.message.message_id
+        
+        # Создаем файл с информацией о том, что нужно обработать
+        if file_type == "video":
+            info_file = VIDEOS_DIR / f"pending_{file_type}_{message_id}.txt"
+        else:
+            info_file = AUDIO_DIR / f"pending_{file_type}_{message_id}.txt"
+        with open(info_file, "w", encoding="utf-8") as f:
+            f.write(f"user_id={user_id}\n")
+            f.write(f"chat_id={chat_id}\n")
+            f.write(f"message_id={message_id}\n")
+            f.write(f"file_type={file_type}\n")
+            f.write(f"timestamp={update.message.date.isoformat()}\n")
+        
+        logger.info(f"Сохранена информация о файле {file_type} для локального бота: {info_file}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении информации о файле для локального бота: {e}")
 
 async def process_video(chat_id: int, message_id: int, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает видео и отправляет результат."""
     video_path = VIDEOS_DIR / f"telegram_video_{message_id}.mp4"
     await process_video_file(video_path, chat_id, message_id, context)
+
+async def process_video_file_direct(update: Update, context: ContextTypes.DEFAULT_TYPE, video_file) -> None:
+    """Обрабатывает видео файл напрямую (рабочая версия)"""
+    try:
+        file_size_mb = video_file.file_size / (1024 * 1024) if video_file.file_size else 0
+        filename = getattr(video_file, 'file_name', f"video_{video_file.file_id}")
+        
+        # Отправляем уведомление о начале обработки
+        status_msg = await update.message.reply_text(
+            f"🎬 **Обрабатываю видео:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"⏳ Скачиваю файл...",
+            parse_mode='Markdown'
+        )
+        
+        # Создаем временные пути
+        video_path = VIDEOS_DIR / f"telegram_video_{video_file.file_id}.mp4"
+        audio_path = AUDIO_DIR / f"telegram_audio_{video_file.file_id}.wav"
+        
+        # Обновляем статус с информацией о скачивании
+        await status_msg.edit_text(
+            f"🎬 **Обрабатываю видео:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"⬇️ Скачиваю файл... (это может занять несколько минут)",
+            parse_mode='Markdown'
+        )
+        
+        # Скачиваем файл через нашу утилиту для больших файлов
+        logger.info(f"📥 Начинаю скачивание файла {filename} размером {file_size_mb:.1f} МБ")
+        
+        success = await download_large_file(
+            bot_token=BOT_TOKEN,
+            file_id=video_file.file_id,
+            destination=video_path
+        )
+        
+        if not success:
+            await status_msg.edit_text("❌ Не удалось скачать файл")
+            return
+            
+        logger.info(f"✅ Файл {filename} успешно скачан")
+        
+        # Обновляем статус
+        await status_msg.edit_text(
+            f"🎬 **Обрабатываю видео:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"🎵 Извлекаю аудио...",
+            parse_mode='Markdown'
+        )
+        
+        # Извлекаем аудио
+        from transkribator_modules.audio.extractor import extract_audio_from_video
+        if not await extract_audio_from_video(video_path, audio_path):
+            await status_msg.edit_text("❌ Не удалось извлечь аудио из видео")
+            return
+        
+        # Сжимаем аудио
+        await status_msg.edit_text(
+            f"🎬 **Обрабатываю видео:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"🗜️ Сжимаю аудио...",
+            parse_mode='Markdown'
+        )
+        
+        from transkribator_modules.audio.extractor import compress_audio_for_api
+        compressed_audio = await compress_audio_for_api(audio_path)
+        
+        # Транскрибируем
+        await status_msg.edit_text(
+            f"🎬 **Обрабатываю видео:** {filename}\n"
+            f"📊 **Размер:** {file_size_mb:.1f} МБ\n\n"
+            f"🤖 Создаю транскрипцию...",
+            parse_mode='Markdown'
+        )
+        
+        from transkribator_modules.transcribe.transcriber import transcribe_audio
+        transcript = await transcribe_audio(compressed_audio)
+        
+        if transcript:
+            # Форматируем транскрипцию
+            from transkribator_modules.transcribe.transcriber import format_transcript_with_llm
+            formatted_transcript = await format_transcript_with_llm(transcript)
+            
+            # Используем унифицированную функцию с кнопками
+            from transkribator_modules.utils.processor import send_transcription_result
+            
+            await send_transcription_result(
+                chat_id=update.effective_chat.id,
+                message_id=update.message.message_id,
+                formatted_transcript=formatted_transcript,
+                raw_transcript=transcript,
+                media_prefix="telegram_video",
+                context=context,
+                status_message=status_msg,
+            )
+        else:
+            await status_msg.edit_text("❌ Не удалось создать транскрипцию")
+            
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Ошибка при обработке видео: {e}")
+        
+        # Более информативные сообщения об ошибках
+        if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
+            await update.message.reply_text(
+                f"⏰ **Таймаут при скачивании файла**\n\n"
+                f"Файл размером {file_size_mb:.1f} МБ слишком долго скачивается.\n"
+                f"Это может происходить из-за медленного интернета или больших размеров файла.\n\n"
+                f"💡 **Рекомендации:**\n"
+                f"• Попробуйте файл поменьше (до 100 МБ)\n"
+                f"• Проверьте скорость интернета\n"
+                f"• Повторите попытку через несколько минут",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ **Ошибка при обработке видео**\n\n"
+                f"Произошла непредвиденная ошибка: {error_msg}\n\n"
+                f"Пожалуйста, попробуйте еще раз или обратитесь к администратору.",
+                parse_mode='Markdown'
+            )
 
 async def handle_summary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик коллбэков для кнопок саммари."""
@@ -435,26 +597,3 @@ async def handle_summary_callback(update: Update, context: ContextTypes.DEFAULT_
             f"Ой-ой! Произошла киберошибка при генерации {summary_type} саммари! 🤖💥 *смущенно прячет мордочку* \n\nРасскажите @Like\\_a\\_duck что случилось - он разберётся с моими схемами! 🔧\n\nДетали: {str(e)}"
         ) 
 
-async def save_file_info_for_local_bot(update: Update, context: ContextTypes.DEFAULT_TYPE, file_type: str) -> None:
-    """Сохраняет информацию о файле для обработки локальным ботом."""
-    try:
-        user_id = update.effective_user.id
-        chat_id = update.effective_chat.id
-        message_id = update.message.message_id
-        
-        # Создаем файл с информацией о том, что нужно обработать
-        if file_type == "video":
-            info_file = VIDEOS_DIR / f"pending_{file_type}_{message_id}.txt"
-        else:
-            info_file = AUDIO_DIR / f"pending_{file_type}_{message_id}.txt"
-        with open(info_file, "w", encoding="utf-8") as f:
-            f.write(f"user_id={user_id}\n")
-            f.write(f"chat_id={chat_id}\n")
-            f.write(f"message_id={message_id}\n")
-            f.write(f"file_type={file_type}\n")
-            f.write(f"timestamp={update.message.date.isoformat()}\n")
-        
-        logger.info(f"Сохранена информация о файле {file_type} для локального бота: {info_file}")
-        
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении информации о файле для локального бота: {e}")
