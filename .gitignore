@@ -62,4 +62,24 @@ logs/
 .vscode/
 *.swp
 *.swo
-.DS_Store 
+.DS_Store
+
+# Optional VPN/WireGuard configs
+wg0.conf
+wireguard.conf
+
+# Transkribator runtime
+.env
+*.log
+__pycache__/
+*.pyc
+
+# Large data directories
+videos/
+audio/
+transcriptions/
+telegram-bot-api-data/
+data/
+
+# Docker artifacts
+*.tar

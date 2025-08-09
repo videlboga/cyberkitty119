@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  # Telegram бот для разработки
+  bot-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: transkribator-bot-dev
+    volumes:
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+      - ./.env:/app/.env
+      - ./transkribator_modules:/app/transkribator_modules
+      - .:/app  # Монтируем весь проект для разработки
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    networks:
+      - transkribator-dev-network
+    # Не запускаем автоматически, только для интерактивной работы
+    command: /bin/bash
+
+  # Pyrogram воркер для разработки
+  pyro-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.pyro
+    container_name: transkribator-pyro-dev
+    volumes:
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+      - ./.env:/app/.env
+      - ./transkribator_modules:/app/transkribator_modules
+      - .:/app  # Монтируем весь проект для разработки
+      - ./transkribator_modules/workers/pyro_worker.session:/app/transkribator_modules/workers/pyro_worker.session  # Монтируем сессию из правильного места
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+      - PYROGRAM_WORKER_ENABLED=true
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    networks:
+      - transkribator-dev-network
+    # Не запускаем автоматически, только для интерактивной работы
+    command: /bin/bash
+
+  # API сервер для разработки
+  api-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: transkribator-api-dev
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+      - ./.env:/app/.env
+      - ./transkribator_modules:/app/transkribator_modules
+      - .:/app  # Монтируем весь проект для разработки
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    networks:
+      - transkribator-dev-network
+    # Не запускаем автоматически, только для интерактивной работы
+    command: /bin/bash
+
+networks:
+  transkribator-dev-network:
+    driver: bridge
+
+volumes:
+  videos:
+  audio:
+  transcriptions: 
