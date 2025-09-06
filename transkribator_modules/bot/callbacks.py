@@ -122,7 +122,8 @@ async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TY
                 usage_text = f"""📊 **Использование в этом месяце:**
 • Использовано: {usage_info['generations_used_this_month']} из {usage_info['generations_limit']} генераций
 • Осталось: {remaining} генераций
-• Всего генераций: {usage_info['total_generations']}"""
+• Всего генераций: {usage_info['total_generations']}
+• Минут транскрибировано: {usage_info['minutes_used_this_month']:.1f} мин"""
             elif usage_info['minutes_limit']:
                 remaining = usage_info['minutes_remaining']
                 percentage = usage_info['usage_percentage']

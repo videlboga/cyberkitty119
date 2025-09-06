@@ -278,10 +278,13 @@ class UserService:
         """Добавить использование (минуты или генерацию)"""
         self._reset_monthly_usage_if_needed(user)
 
-        # Для бесплатного тарифа считаем генерации
+        # Для бесплатного тарифа считаем и генерации, и минуты
         if user.current_plan == "free":
             user.generations_used_this_month += 1
             user.total_generations += 1
+            # Также считаем минуты для статистики
+            user.minutes_used_this_month += minutes_used
+            user.total_minutes_transcribed += minutes_used
         else:
             # Для платных тарифов считаем минуты
             user.minutes_used_this_month += minutes_used
