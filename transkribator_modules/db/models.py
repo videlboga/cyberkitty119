@@ -213,7 +213,7 @@ DEFAULT_PLANS = [
     },
     {
         "name": PlanType.PRO,
-        "display_name": "💎 Профессиональный", 
+        "display_name": "💎 Профессиональный",
         "minutes_per_month": 600.0,  # 10 часов
         "max_file_size_mb": 500.0,
         "price_rub": 2990.0,

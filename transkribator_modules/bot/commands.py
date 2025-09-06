@@ -17,7 +17,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 🎬 **Что я умею:**
 • Транскрибирую видео любого формата в текст
-• Форматирую текст с помощью ИИ 
+• Форматирую текст с помощью ИИ
 • Создаю краткие и подробные саммари
 • Работаю с большими файлами через API
 
@@ -103,7 +103,7 @@ async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_T
     """Обработчик команды /rawtranscript"""
     help_text = """📝 **Получение сырой транскрипции**
 
-После обработки файла вы можете получить необработанную транскрипцию, 
+После обработки файла вы можете получить необработанную транскрипцию,
 нажав кнопку "Сырая транскрипция" в сообщении с результатом.
 
 **Что это дает:**
@@ -132,7 +132,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         from transkribator_modules.db.database import get_user_stats
         user_id = update.effective_user.id
         stats = get_user_stats(user_id)
-        
+
         stats_text = f"""📊 **Ваша статистика**
 
 🎯 **Основные показатели:**
@@ -152,7 +152,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 Спасибо за использование CyberKitty Transkribator! 🐱"""
 
         await update.message.reply_text(stats_text, parse_mode='Markdown')
-        
+
     except Exception as e:
         logger.error(f"Ошибка при получении статистики: {e}")
         await update.message.reply_text(
@@ -202,14 +202,14 @@ async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         await update.message.reply_text(promo_text, parse_mode='Markdown')
         return
-    
+
     promo_code = context.args[0].upper()
-    
+
     try:
         from transkribator_modules.db.database import activate_promo_code
         user_id = update.effective_user.id
         result = activate_promo_code(user_id, promo_code)
-        
+
         if result['success']:
             await update.message.reply_text(
                 f"🎉 **Промокод активирован!**\n\n"
@@ -225,7 +225,7 @@ async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"Проверьте правильность ввода кода.",
                 parse_mode='Markdown'
             )
-            
+
     except Exception as e:
         logger.error(f"Ошибка при активации промокода: {e}")
         await update.message.reply_text(
@@ -235,16 +235,16 @@ async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Личный кабинет пользователя"""
     user = update.effective_user
-    
+
     db = SessionLocal()
     try:
         user_service = UserService(db)
         promo_service = PromoCodeService(db)
-        
+
         db_user = user_service.get_or_create_user(telegram_id=user.id)
         usage_info = user_service.get_usage_info(db_user)
         active_promos = promo_service.get_user_active_promos(db_user)
-        
+
         # Определяем статус тарифа
         plan_status = ""
         if db_user.plan_expires_at:
@@ -269,7 +269,7 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
             remaining = usage_info['generations_remaining']
             percentage = usage_info['usage_percentage']
             progress_bar = "🟩" * int(percentage // 10) + "⬜" * (10 - int(percentage // 10))
-            
+
             cabinet_text += f"""
 • Использовано: {usage_info['generations_used_this_month']} из {usage_info['generations_limit']} генераций
 • Осталось: {remaining} генераций
@@ -278,7 +278,7 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
             remaining = usage_info['minutes_remaining']
             percentage = usage_info['usage_percentage']
             progress_bar = "🟩" * int(percentage // 10) + "⬜" * (10 - int(percentage // 10))
-            
+
             cabinet_text += f"""
 • Использовано: {usage_info['minutes_used_this_month']:.1f} из {usage_info['minutes_limit']:.0f} мин
 • Осталось: {remaining:.1f} мин
@@ -287,7 +287,7 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
             cabinet_text += f"""
 • Использовано: {usage_info['minutes_used_this_month']:.1f} мин
 • Лимит: Безлимитно ♾️"""
-        
+
         cabinet_text += f"""
 
 📈 **Всего транскрибировано:** {usage_info['total_minutes_transcribed']:.1f} мин"""
@@ -310,15 +310,15 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
             [InlineKeyboardButton("🎁 Промокоды", callback_data="show_promo_codes")],
             [InlineKeyboardButton("⭐ Купить план", callback_data="show_payment_plans")],
         ]
-        
+
         # API ключи только для Pro+ планов
         if db_user.current_plan in ["pro", "unlimited"]:
             keyboard.append([InlineKeyboardButton("🔑 API ключи", callback_data="show_api_keys")])
-        
+
         keyboard.append([InlineKeyboardButton("💡 Помощь", callback_data="show_help")])
-        
+
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         if update.callback_query:
             await update.callback_query.edit_message_text(
                 cabinet_text, reply_markup=reply_markup, parse_mode='Markdown'
@@ -327,14 +327,14 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
             await update.message.reply_text(
                 cabinet_text, reply_markup=reply_markup, parse_mode='Markdown'
             )
-            
+
     except Exception as e:
         logger.error(f"Ошибка в личном кабинете: {e}")
         error_text = "😿 Произошла ошибка при загрузке кабинета. *грустно мяукает*"
-        
+
         if update.callback_query:
             await update.callback_query.edit_message_text(error_text)
         else:
             await update.message.reply_text(error_text)
     finally:
-        db.close() 
+        db.close()

@@ -59,11 +59,16 @@ def init_database():
                 CREATE TABLE IF NOT EXISTS transcriptions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER,
-                    file_name TEXT,
-                    file_size INTEGER,
-                    duration INTEGER,
-                    transcript TEXT,
+                    filename TEXT,
+                    file_size_mb FLOAT,
+                    audio_duration_minutes FLOAT,
+                    raw_transcript TEXT,
+                    formatted_transcript TEXT,
+                    transcript_length INTEGER DEFAULT 0,
+                    transcription_service TEXT DEFAULT 'deepinfra',
+                    formatting_service TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    processing_time_seconds FLOAT,
                     FOREIGN KEY (user_id) REFERENCES users (id)
                 )
             """)
@@ -450,6 +455,12 @@ class TranscriptionService:
             Transcription.user_id == user.id
         ).order_by(desc(Transcription.created_at)).limit(limit).all()
 
+    def get_user_transcriptions_count(self, user: User) -> int:
+        """Получить количество транскрибаций пользователя"""
+        return self.db.query(Transcription).filter(
+            Transcription.user_id == user.id
+        ).count()
+
 class TransactionService:
     def __init__(self, db: Session):
         self.db = db
@@ -671,6 +682,55 @@ def migrate_database_schema(conn):
         if 'minutes_transcribed' in columns and 'total_minutes_transcribed' in columns:
             cursor.execute("UPDATE users SET total_minutes_transcribed = minutes_transcribed WHERE total_minutes_transcribed = 0.0")
             print("Мигрированы данные из minutes_transcribed в total_minutes_transcribed")
+
+        # Мигрируем таблицу transcriptions к новой структуре
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='transcriptions'")
+        if cursor.fetchone():
+            cursor.execute("PRAGMA table_info(transcriptions)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            # Проверяем, нужно ли обновить структуру
+            if 'filename' not in columns:
+                print("Обновляем структуру таблицы transcriptions...")
+                
+                # Создаем новую таблицу с правильной структурой
+                cursor.execute("""
+                    CREATE TABLE transcriptions_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER,
+                        filename TEXT,
+                        file_size_mb FLOAT,
+                        audio_duration_minutes FLOAT,
+                        raw_transcript TEXT,
+                        formatted_transcript TEXT,
+                        transcript_length INTEGER DEFAULT 0,
+                        transcription_service TEXT DEFAULT 'deepinfra',
+                        formatting_service TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        processing_time_seconds FLOAT,
+                        FOREIGN KEY (user_id) REFERENCES users (id)
+                    )
+                """)
+                
+                # Копируем данные из старой таблицы
+                cursor.execute("""
+                    INSERT INTO transcriptions_new (
+                        id, user_id, filename, file_size_mb, audio_duration_minutes,
+                        raw_transcript, formatted_transcript, transcript_length,
+                        created_at
+                    )
+                    SELECT 
+                        id, user_id, file_name, file_size, duration,
+                        transcript, transcript, LENGTH(transcript),
+                        created_at
+                    FROM transcriptions
+                """)
+                
+                # Удаляем старую таблицу и переименовываем новую
+                cursor.execute("DROP TABLE transcriptions")
+                cursor.execute("ALTER TABLE transcriptions_new RENAME TO transcriptions")
+                
+                print("Таблица transcriptions обновлена")
 
         # Проверяем и создаем недостающие таблицы
         tables_to_create = {

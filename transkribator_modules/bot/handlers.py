@@ -113,24 +113,24 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик документов (файлов)"""
     document = update.message.document
-    
+
     if not document:
         await update.message.reply_text("❌ Не удалось получить информацию о файле.")
         return
-    
+
     # Проверяем размер файла
     file_size_mb = document.file_size / (1024 * 1024) if document.file_size else 0
-    
+
     if file_size_mb > MAX_FILE_SIZE_MB:
         await update.message.reply_text(
             f"❌ Файл слишком большой: {file_size_mb:.1f} МБ\n"
             f"Максимальный размер: {MAX_FILE_SIZE_MB} МБ"
         )
         return
-    
+
     # Определяем тип файла по расширению
     file_extension = Path(document.file_name).suffix.lower() if document.file_name else ''
-    
+
     if file_extension in VIDEO_FORMATS:
         await process_video_file(update, context, document)
     elif file_extension in AUDIO_FORMATS:
@@ -146,41 +146,41 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик видео файлов"""
     video = update.message.video
-    
+
     if not video:
         await update.message.reply_text("❌ Не удалось получить информацию о видео.")
         return
-    
+
     # Проверяем размер файла
     file_size_mb = video.file_size / (1024 * 1024) if video.file_size else 0
-    
+
     if file_size_mb > MAX_FILE_SIZE_MB:
         await update.message.reply_text(
             f"❌ Видео слишком большое: {file_size_mb:.1f} МБ\n"
             f"Максимальный размер: {MAX_FILE_SIZE_MB} МБ"
         )
         return
-    
+
     await process_video_file(update, context, video)
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик аудио файлов"""
     audio = update.message.audio or update.message.voice
-    
+
     if not audio:
         await update.message.reply_text("❌ Не удалось получить информацию об аудио.")
         return
-    
+
     # Проверяем размер файла
     file_size_mb = audio.file_size / (1024 * 1024) if audio.file_size else 0
-    
+
     if file_size_mb > MAX_FILE_SIZE_MB:
         await update.message.reply_text(
             f"❌ Аудио слишком большое: {file_size_mb:.1f} МБ\n"
             f"Максимальный размер: {MAX_FILE_SIZE_MB} МБ"
         )
         return
-    
+
     await process_audio_file(update, context, audio)
 
 async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE, video_file) -> None:
@@ -198,11 +198,11 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"📊 Размер: {file_size_mb:.1f} МБ\n\n"
                 f"⏳ Скачиваю файл..."
             )
-        
+
         # Создаем временные пути
         video_path = VIDEOS_DIR / f"telegram_video_{video_file.file_id}.mp4"
         audio_path = AUDIO_DIR / f"telegram_audio_{video_file.file_id}.wav"
-        
+
         # Обновляем статус с информацией о скачивании
         if status_msg:
             await status_msg.edit_text(
@@ -210,25 +210,25 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"📊 Размер: {file_size_mb:.1f} МБ\n\n"
                 f"⬇️ Скачиваю файл... (это может занять несколько минут)"
             )
-        
+
         # Скачиваем файл через нашу утилиту для больших файлов
         logger.info(f"📥 Начинаю скачивание файла {filename} размером {file_size_mb:.1f} МБ")
-        
+
         success = await download_large_file(
             bot_token=BOT_TOKEN,
             file_id=video_file.file_id,
             destination=video_path
         )
-        
+
         if not success:
             if status_msg:
                 await status_msg.edit_text("❌ Не удалось скачать файл")
             else:
                 await update.message.reply_text("❌ Не удалось скачать файл")
             return
-            
+
         logger.info(f"✅ Файл {filename} успешно скачан")
-        
+
         # Обновляем статус
         if status_msg:
             await status_msg.edit_text(
@@ -236,12 +236,12 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"📊 Размер: {file_size_mb:.1f} МБ\n\n"
                 f"🎵 Извлекаю аудио..."
             )
-        
+
         # Извлекаем аудио
         if not await extract_audio_from_video(video_path, audio_path):
             await status_msg.edit_text("❌ Не удалось извлечь аудио из видео")
             return
-        
+
         # Сжимаем аудио
         if status_msg:
             await status_msg.edit_text(
@@ -249,9 +249,9 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"📊 Размер: {file_size_mb:.1f} МБ\n\n"
                 f"🗜️ Сжимаю аудио..."
             )
-        
+
         compressed_audio = await compress_audio_for_api(audio_path)
-        
+
         # Транскрибируем
         if status_msg:
             await status_msg.edit_text(
@@ -259,7 +259,7 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"📊 Размер: {file_size_mb:.1f} МБ\n\n"
                 f"🤖 Создаю транскрипцию..."
             )
-        
+
         transcript = await transcribe_audio(compressed_audio)
         # Форматируем транскрипт для читаемости (OpenRouter/DeepSeek) с локальным fallback
         logger.info("Запускаю LLM-форматирование транскрипта (video)")
@@ -271,17 +271,61 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
         if not formatted_transcript:
             logger.info("LLM недоступен/неверный ключ — применяю локальное форматирование")
             formatted_transcript = _basic_local_format(transcript)
-        
+
         # Проверяем результат до сохранения и отправки
         if formatted_transcript and formatted_transcript.strip():
             # Сохраняем транскрипцию (уже отформатированную)
             transcript_path = TRANSCRIPTIONS_DIR / f"telegram_transcript_{video_file.file_id}.txt"
             transcript_path.write_text(formatted_transcript or "", encoding='utf-8')
-            
+
+            # Сохраняем в базу данных и обновляем счетчики
+            try:
+                from transkribator_modules.db.database import SessionLocal, UserService, TranscriptionService
+                from transkribator_modules.db.database import calculate_audio_duration
+
+                db = SessionLocal()
+                try:
+                    user_service = UserService(db)
+                    transcription_service = TranscriptionService(db)
+
+                    # Получаем пользователя
+                    user = user_service.get_or_create_user(
+                        telegram_id=update.effective_user.id,
+                        username=update.effective_user.username,
+                        first_name=update.effective_user.first_name,
+                        last_name=update.effective_user.last_name
+                    )
+
+                    # Получаем длительность аудио
+                    duration_minutes = calculate_audio_duration(file_size_mb)
+
+                    # Сохраняем транскрипцию в базу
+                    transcription_service.save_transcription(
+                        user=user,
+                        filename=filename,
+                        file_size_mb=file_size_mb,
+                        audio_duration_minutes=duration_minutes,
+                        raw_transcript=transcript,
+                        formatted_transcript=formatted_transcript,
+                        processing_time=None,
+                        transcription_service="deepinfra",
+                        formatting_service="llm" if formatted_transcript != transcript else None
+                    )
+
+                    # Обновляем счетчики использования
+                    user_service.add_usage(user, duration_minutes)
+
+                    logger.info(f"✅ Транскрипция сохранена для пользователя {user.telegram_id}")
+
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"Ошибка при сохранении транскрипции: {e}")
+
             # Отправляем результат
             if status_msg:
                 await status_msg.edit_text("✅ Транскрипция готова!")
-            
+
             # Если текст короткий, отправляем в сообщении
             if len(formatted_transcript or "") <= 4000:
                 # Очищаем текст от HTML-сущностей для безопасной отправки
@@ -308,7 +352,7 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await status_msg.edit_text("❌ Не удалось создать транскрипцию")
             else:
                 await update.message.reply_text("❌ Не удалось создать транскрипцию")
-        
+
         # Очищаем временные файлы
         try:
             video_path.unlink(missing_ok=True)
@@ -317,11 +361,11 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 compressed_audio.unlink(missing_ok=True)
         except Exception as e:
             logger.warning(f"Не удалось удалить временные файлы: {e}")
-            
+
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Ошибка при обработке видео: {e}")
-        
+
         # Более информативные сообщения об ошибках
         if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
             await update.message.reply_text(
@@ -341,7 +385,7 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
     try:
         file_size_mb = audio_file.file_size / (1024 * 1024) if audio_file.file_size else 0
         filename = getattr(audio_file, 'file_name', f"audio_{audio_file.file_id}")
-        
+
         # В группах не показываем статусные сообщения
         is_group = update.effective_chat and update.effective_chat.type in ("group", "supergroup")
         status_msg = None
@@ -351,10 +395,10 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"📊 Размер: {file_size_mb:.1f} МБ\n\n"
                 f"⏳ Скачиваю файл..."
             )
-        
+
         # Создаем временный путь
         audio_path = AUDIO_DIR / f"telegram_audio_{audio_file.file_id}.mp3"
-        
+
         # Обновляем статус с информацией о скачивании
         if status_msg:
             await status_msg.edit_text(
@@ -362,25 +406,25 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"📊 Размер: {file_size_mb:.1f} МБ\n\n"
                 f"⬇️ Скачиваю файл... (это может занять несколько минут)"
             )
-        
+
         # Скачиваем файл через нашу утилиту для больших файлов
         logger.info(f"📥 Начинаю скачивание файла {filename} размером {file_size_mb:.1f} МБ")
-        
+
         success = await download_large_file(
             bot_token=BOT_TOKEN,
             file_id=audio_file.file_id,
             destination=audio_path
         )
-        
+
         if not success:
             if status_msg:
                 await status_msg.edit_text("❌ Не удалось скачать файл")
             else:
                 await update.message.reply_text("❌ Не удалось скачать файл")
             return
-            
+
         logger.info(f"✅ Файл {filename} успешно скачан")
-        
+
         # Сжимаем если нужно
         if status_msg:
             await status_msg.edit_text(
@@ -388,9 +432,9 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"📊 Размер: {file_size_mb:.1f} МБ\n\n"
                 f"🗜️ Подготавливаю аудио..."
             )
-        
+
         processed_audio = await compress_audio_for_api(audio_path)
-        
+
         # Транскрибируем
         if status_msg:
             await status_msg.edit_text(
@@ -398,7 +442,7 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"📊 Размер: {file_size_mb:.1f} МБ\n\n"
                 f"🤖 Создаю транскрипцию..."
             )
-        
+
         transcript = await transcribe_audio(processed_audio)
         # Форматируем транскрипт для читаемости (OpenRouter/DeepSeek) с локальным fallback
         logger.info("Запускаю LLM-форматирование транскрипта (audio)")
@@ -410,16 +454,60 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
         if not formatted_transcript:
             logger.info("LLM недоступен/неверный ключ — применяю локальное форматирование")
             formatted_transcript = _basic_local_format(transcript)
-        
+
         if formatted_transcript and formatted_transcript.strip():
             # Сохраняем транскрипцию (уже отформатированную)
             transcript_path = TRANSCRIPTIONS_DIR / f"telegram_transcript_{audio_file.file_id}.txt"
             transcript_path.write_text(formatted_transcript or "", encoding='utf-8')
-            
+
+            # Сохраняем в базу данных и обновляем счетчики
+            try:
+                from transkribator_modules.db.database import SessionLocal, UserService, TranscriptionService
+                from transkribator_modules.db.database import calculate_audio_duration
+
+                db = SessionLocal()
+                try:
+                    user_service = UserService(db)
+                    transcription_service = TranscriptionService(db)
+
+                    # Получаем пользователя
+                    user = user_service.get_or_create_user(
+                        telegram_id=update.effective_user.id,
+                        username=update.effective_user.username,
+                        first_name=update.effective_user.first_name,
+                        last_name=update.effective_user.last_name
+                    )
+
+                    # Получаем длительность аудио
+                    duration_minutes = calculate_audio_duration(file_size_mb)
+
+                    # Сохраняем транскрипцию в базу
+                    transcription_service.save_transcription(
+                        user=user,
+                        filename=filename,
+                        file_size_mb=file_size_mb,
+                        audio_duration_minutes=duration_minutes,
+                        raw_transcript=transcript,
+                        formatted_transcript=formatted_transcript,
+                        processing_time=None,
+                        transcription_service="deepinfra",
+                        formatting_service="llm" if formatted_transcript != transcript else None
+                    )
+
+                    # Обновляем счетчики использования
+                    user_service.add_usage(user, duration_minutes)
+
+                    logger.info(f"✅ Транскрипция сохранена для пользователя {user.telegram_id}")
+
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"Ошибка при сохранении транскрипции: {e}")
+
             # Отправляем результат
             if status_msg:
                 await status_msg.edit_text("✅ Транскрипция готова!")
-            
+
             # Если текст короткий, отправляем в сообщении
             if len(formatted_transcript or "") <= 4000:
                 # Очищаем текст от HTML-сущностей для безопасной отправки
@@ -446,7 +534,7 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await status_msg.edit_text("❌ Не удалось создать транскрипцию")
             else:
                 await update.message.reply_text("❌ Не удалось создать транскрипцию")
-        
+
         # Очищаем временные файлы
         try:
             audio_path.unlink(missing_ok=True)
@@ -454,11 +542,11 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 processed_audio.unlink(missing_ok=True)
         except Exception as e:
             logger.warning(f"Не удалось удалить временные файлы: {e}")
-            
+
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Ошибка при обработке аудио: {e}")
-        
+
         # Более информативные сообщения об ошибках
         if "timed out" in error_msg.lower() or "timeout" in error_msg.lower():
             await update.message.reply_text(
@@ -479,34 +567,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Интегрированный обработчик для всех типов сообщений с поддержкой Bot API Server."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    
+
     # Логируем сообщение
     logger.info(f"Получено сообщение от пользователя {user_id} в чате {chat_id}")
-    
+
     # Обработка видео
     if update.message.video:
         logger.info(f"Получено видео от пользователя {user_id}")
         # Запускаем локальный обработчик видео (скачивание и обработка)
         await process_video_file(update, context, update.message.video)
         return
-    
+
     # Обработка аудио
     if update.message.audio:
         logger.info(f"Получено аудио от пользователя {user_id}")
         await process_audio_file(update, context, update.message.audio)
         return
-    
+
     # Обработка голосовых сообщений
     if update.message.voice:
         logger.info(f"Получено голосовое сообщение от пользователя {user_id}")
         await process_audio_file(update, context, update.message.voice)
         return
-    
+
     # Обработка документов (видео/аудио файлы)
     if update.message.document:
         document = update.message.document
         filename = document.file_name.lower() if document.file_name else ""
-        
+
         # Проверяем, является ли документ видео или аудио
         if any(ext in filename for ext in VIDEO_FORMATS):
             logger.info(f"Получен видео-документ от пользователя {user_id}: {filename}")
@@ -516,19 +604,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.info(f"Получен аудио-документ от пользователя {user_id}: {filename}")
             await process_audio_file(update, context, document)
             return
-    
+
     # Если это обычное текстовое сообщение, отвечаем дружелюбно только в личных чатах
     if update.message.text:
         # Проверяем, что это не группа или что бот упомянут в сообщении
         is_group = update.effective_chat and update.effective_chat.type in ("group", "supergroup")
         bot_mentioned = False
-        
+
         if is_group:
             # В группах проверяем, упомянут ли бот
             bot_username = context.bot.username
             if bot_username and f"@{bot_username}" in update.message.text:
                 bot_mentioned = True
-        
+
         # Отвечаем только в личных чатах или если бот упомянут в группе
         if not is_group or bot_mentioned:
             await update.message.reply_text(
