@@ -239,7 +239,10 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         # Извлекаем аудио
         if not await extract_audio_from_video(video_path, audio_path):
-            await status_msg.edit_text("❌ Не удалось извлечь аудио из видео")
+            if status_msg:
+                await status_msg.edit_text("❌ Не удалось извлечь аудио из видео")
+            else:
+                await update.message.reply_text("❌ Не удалось извлечь аудио из видео")
             return
 
         # Сжимаем аудио
@@ -265,10 +268,11 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
         logger.info("Запускаю LLM-форматирование транскрипта (video)")
         formatted_transcript = None
         try:
-            formatted_transcript = await format_transcript_with_llm(transcript)
+            if transcript:
+                formatted_transcript = await format_transcript_with_llm(transcript)
         except Exception as e:
             logger.warning(f"LLM-форматирование (video) исключение: {e}")
-        if not formatted_transcript:
+        if not formatted_transcript and transcript:
             logger.info("LLM недоступен/неверный ключ — применяю локальное форматирование")
             formatted_transcript = _basic_local_format(transcript)
 
@@ -305,11 +309,11 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         filename=filename,
                         file_size_mb=file_size_mb,
                         audio_duration_minutes=duration_minutes,
-                        raw_transcript=transcript,
-                        formatted_transcript=formatted_transcript,
-                        processing_time=None,
+                        raw_transcript=transcript or "",
+                        formatted_transcript=formatted_transcript or "",
+                        processing_time=0.0,
                         transcription_service="deepinfra",
-                        formatting_service="llm" if formatted_transcript != transcript else None
+                        formatting_service="llm" if formatted_transcript != transcript else "none"
                     )
 
                     # Обновляем счетчики использования
@@ -331,11 +335,13 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 # Очищаем текст от HTML-сущностей для безопасной отправки
                 clean_transcript = clean_html_entities((formatted_transcript or ""))
                 await update.message.reply_text(
-                    f"📝 Транскрипция:\n\n{clean_transcript}"
+                    f"📝 Транскрипция:\n\n{clean_transcript}\n\n@CyberKitty19_bot"
                 )
             else:
                 # Если длинный, отправляем .docx
                 from docx import Document
+                # Убеждаемся, что директория существует
+                TRANSCRIPTIONS_DIR.mkdir(parents=True, exist_ok=True)
                 docx_path = TRANSCRIPTIONS_DIR / f"transcript_{Path(filename).stem}.docx"
                 document = Document()
                 for line in (formatted_transcript or "").split('\n'):
@@ -345,8 +351,27 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     await update.message.reply_document(
                         document=f,
                         filename=docx_path.name,
-                        caption="📝 Транскрипция готова!"
+                        caption="📝 Транскрипция готова!\n\n@CyberKitty19_bot"
                     )
+
+            # Создаем кнопки для дальнейших действий
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔧 Обработать", callback_data=f"process_transcript_{update.effective_user.id}"),
+                    InlineKeyboardButton("📤 Прислать ещё", callback_data=f"send_more_{update.effective_user.id}")
+                ],
+                [
+                    InlineKeyboardButton("🏠 Главное меню", callback_data=f"main_menu_{update.effective_user.id}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            # Отправляем сообщение с кнопками
+            await update.message.reply_text(
+                "Что дальше будем с этим делать? 🤔",
+                reply_markup=reply_markup
+            )
         else:
             if status_msg:
                 await status_msg.edit_text("❌ Не удалось создать транскрипцию")
@@ -448,10 +473,11 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
         logger.info("Запускаю LLM-форматирование транскрипта (audio)")
         formatted_transcript = None
         try:
-            formatted_transcript = await format_transcript_with_llm(transcript)
+            if transcript:
+                formatted_transcript = await format_transcript_with_llm(transcript)
         except Exception as e:
             logger.warning(f"LLM-форматирование (audio) исключение: {e}")
-        if not formatted_transcript:
+        if not formatted_transcript and transcript:
             logger.info("LLM недоступен/неверный ключ — применяю локальное форматирование")
             formatted_transcript = _basic_local_format(transcript)
 
@@ -487,11 +513,11 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         filename=filename,
                         file_size_mb=file_size_mb,
                         audio_duration_minutes=duration_minutes,
-                        raw_transcript=transcript,
-                        formatted_transcript=formatted_transcript,
-                        processing_time=None,
+                        raw_transcript=transcript or "",
+                        formatted_transcript=formatted_transcript or "",
+                        processing_time=0.0,
                         transcription_service="deepinfra",
-                        formatting_service="llm" if formatted_transcript != transcript else None
+                        formatting_service="llm" if formatted_transcript != transcript else "none"
                     )
 
                     # Обновляем счетчики использования
@@ -513,11 +539,13 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 # Очищаем текст от HTML-сущностей для безопасной отправки
                 clean_transcript = clean_html_entities(formatted_transcript or "")
                 await update.message.reply_text(
-                    f"📝 Транскрипция:\н\n{clean_transcript}"
+                    f"📝 Транскрипция:\n\n{clean_transcript}\n\n@CyberKitty19_bot"
                 )
             else:
                 # Если длинный, отправляем .docx
                 from docx import Document
+                # Убеждаемся, что директория существует
+                TRANSCRIPTIONS_DIR.mkdir(parents=True, exist_ok=True)
                 docx_path = TRANSCRIPTIONS_DIR / f"transcript_{Path(filename).stem}.docx"
                 document = Document()
                 for line in (formatted_transcript or "").split('\n'):
@@ -527,8 +555,27 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     await update.message.reply_document(
                         document=f,
                         filename=docx_path.name,
-                        caption="📝 Транскрипция готова!"
+                        caption="📝 Транскрипция готова!\n\n@CyberKitty19_bot"
                     )
+
+            # Создаем кнопки для дальнейших действий
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔧 Обработать", callback_data=f"process_transcript_{update.effective_user.id}"),
+                    InlineKeyboardButton("📤 Прислать ещё", callback_data=f"send_more_{update.effective_user.id}")
+                ],
+                [
+                    InlineKeyboardButton("🏠 Главное меню", callback_data=f"main_menu_{update.effective_user.id}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            # Отправляем сообщение с кнопками
+            await update.message.reply_text(
+                "Что дальше будем с этим делать? 🤔",
+                reply_markup=reply_markup
+            )
         else:
             if status_msg:
                 await status_msg.edit_text("❌ Не удалось создать транскрипцию")
@@ -605,7 +652,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await process_audio_file(update, context, document)
             return
 
-    # Если это обычное текстовое сообщение, отвечаем дружелюбно только в личных чатах
+    # Если это обычное текстовое сообщение
     if update.message.text:
         # Проверяем, что это не группа или что бот упомянут в сообщении
         is_group = update.effective_chat and update.effective_chat.type in ("group", "supergroup")
@@ -619,13 +666,144 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         # Отвечаем только в личных чатах или если бот упомянут в группе
         if not is_group or bot_mentioned:
-            await update.message.reply_text(
-                "Привет! 🐱 Отправь мне видео или аудио файл, и я создам для тебя транскрипцию!\n\n"
-                "Поддерживаемые форматы:\n"
-                "📹 Видео: MP4, AVI, MOV, MKV и другие\n"
-                "🎵 Аудио: MP3, WAV, M4A, OGG и другие\n"
-                "🎤 Голосовые сообщения\n\n"
-                "Максимальный размер файла: 2 ГБ\n"
-                "Максимальная длительность: 4 часа\n\n"
+            # Проверяем, ожидаем ли мы задачу для обработки транскрипции
+            if context.user_data.get('waiting_for_task', False):
+                await handle_transcript_processing_task(update, context)
+            else:
+                await update.message.reply_text(
+                    "Привет! 🐱 Отправь мне видео или аудио файл, и я создам для тебя транскрипцию!\n\n"
+                    "Поддерживаемые форматы:\n"
+                    "📹 Видео: MP4, AVI, MOV, MKV и другие\n"
+                    "🎵 Аудио: MP3, WAV, M4A, OGG и другие\n"
+                    "🎤 Голосовые сообщения\n\n"
+                    "Максимальный размер файла: 2 ГБ\n"
+                    "Максимальная длительность: 4 часа\n\n"
                 "Используй /help для получения дополнительной информации!"
             )
+
+async def handle_transcript_processing_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает текстовые сообщения с задачами для обработки транскрипции."""
+    try:
+        user_id = update.effective_user.id
+        task_description = update.message.text
+        
+        # Сбрасываем флаг ожидания задачи
+        context.user_data['waiting_for_task'] = False
+        
+        # Отправляем сообщение о начале обработки
+        processing_msg = await update.message.reply_text(
+            "🤖 Обрабатываю транскрипцию согласно твоей задаче...\n\n"
+            "*сосредоточенно работает*\n"
+            "Это может занять некоторое время...",
+            parse_mode='Markdown'
+        )
+        
+        # Получаем последнюю транскрипцию пользователя из базы данных
+        from transkribator_modules.db.database import SessionLocal, UserService, TranscriptionService
+        
+        db = SessionLocal()
+        try:
+            user_service = UserService(db)
+            transcription_service = TranscriptionService(db)
+            
+            # Получаем пользователя
+            user = user_service.get_or_create_user(telegram_id=user_id)
+            
+            # Получаем последнюю транскрипцию пользователя
+            transcriptions = transcription_service.get_user_transcriptions(user, limit=1)
+            
+            if not transcriptions:
+                await processing_msg.edit_text(
+                    "❌ Не найдено транскрипций для обработки.\n\n"
+                    "Сначала отправьте файл для транскрипции!"
+                )
+                return
+            
+            latest_transcription = transcriptions[0]
+            transcript_text = latest_transcription.formatted_transcript or latest_transcription.raw_transcript
+            
+            if not transcript_text:
+                await processing_msg.edit_text("❌ Транскрипция пуста")
+                return
+            
+            # Обрабатываем транскрипцию согласно задаче
+            processed_text = await process_transcript_with_task(transcript_text, task_description)
+            
+            if not processed_text:
+                await processing_msg.edit_text(
+                    "❌ Не удалось обработать транскрипцию.\n\n"
+                    "Возможно, сервис временно недоступен. Попробуйте позже."
+                )
+                return
+            
+            # Отправляем результат
+            result_text = f"✅ **Результат обработки:**\n\n{processed_text}\n\n@CyberKitty19_bot"
+            
+            # Если результат длинный, отправляем файлом
+            if len(result_text) > 4000:
+                from docx import Document
+                from pathlib import Path
+                
+                # Убеждаемся, что директория существует
+                TRANSCRIPTIONS_DIR.mkdir(parents=True, exist_ok=True)
+                docx_path = TRANSCRIPTIONS_DIR / f"processed_transcript_{user_id}.docx"
+                
+                document = Document()
+                document.add_heading("Обработанная транскрипция", 0)
+                document.add_paragraph(f"Задача: {task_description}")
+                document.add_paragraph("Результат:")
+                document.add_paragraph(processed_text)
+                document.save(docx_path)
+                
+                with open(docx_path, 'rb') as f:
+                    await update.message.reply_document(
+                        document=f,
+                        filename=f"processed_transcript.docx",
+                        caption="✅ Результат обработки готов!\n\n@CyberKitty19_bot"
+                    )
+                
+                # Удаляем временный файл
+                docx_path.unlink(missing_ok=True)
+            else:
+                await update.message.reply_text(result_text, parse_mode='Markdown')
+            
+            # Обновляем сообщение о завершении
+            await processing_msg.edit_text("✅ Обработка завершена!")
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        logger.error(f"Ошибка при обработке задачи транскрипции: {e}")
+        await update.message.reply_text(
+            "❌ Произошла ошибка при обработке транскрипции.\n\n"
+            "Попробуйте позже или обратитесь в поддержку."
+        )
+
+async def process_transcript_with_task(transcript_text: str, task_description: str) -> str:
+    """Обрабатывает транскрипцию согласно задаче пользователя."""
+    try:
+        from transkribator_modules.transcribe.transcriber import format_transcript_with_llm
+        
+        # Создаем промпт для обработки транскрипции
+        prompt = f"""Ты эксперт по обработке транскрипций. Пользователь просит обработать транскрипцию согласно следующей задаче:
+
+ЗАДАЧА: {task_description}
+
+ТРАНСКРИПЦИЯ:
+{transcript_text}
+
+Обработай транскрипцию согласно задаче пользователя. Если в задаче указан конкретный формат или пример, следуй ему точно. Сохрани важную информацию и структурируй результат так, чтобы он соответствовал запросу пользователя."""
+
+        # Используем LLM для обработки
+        processed_text = await format_transcript_with_llm(prompt)
+        
+        if processed_text and not processed_text.startswith("Произошла ошибка"):
+            return processed_text
+        else:
+            # Fallback - возвращаем исходную транскрипцию с комментарием
+            return f"Не удалось обработать транскрипцию через ИИ. Вот исходная транскрипция:\n\n{transcript_text}"
+            
+    except Exception as e:
+        logger.error(f"Ошибка при обработке транскрипции с задачей: {e}")
+        return f"Произошла ошибка при обработке: {str(e)}"

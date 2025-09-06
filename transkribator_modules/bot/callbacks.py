@@ -71,6 +71,18 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "back_to_start":
         await back_to_start_callback(query, update.effective_user)
 
+    elif data.startswith("brief_summary_") or data.startswith("detailed_summary_"):
+        await handle_summary_callback(update, context)
+
+    elif data.startswith("process_transcript_"):
+        await handle_process_transcript_callback(update, context)
+
+    elif data.startswith("send_more_"):
+        await handle_send_more_callback(update, context)
+
+    elif data.startswith("main_menu_"):
+        await handle_main_menu_callback(update, context)
+
     else:
         await query.edit_message_text("Неизвестная команда")
 
@@ -594,3 +606,182 @@ async def enter_promo_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     except Exception as e:
         logger.error(f"Ошибка при вводе промокода: {e}")
         await update.callback_query.edit_message_text("❌ Ошибка при обработке промокода")
+
+async def handle_summary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает запросы на создание саммари."""
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        data = query.data
+        user_id = update.effective_user.id
+
+        # Определяем тип саммари
+        if data.startswith("brief_summary_"):
+            summary_type = "brief"
+            summary_type_ru = "краткое"
+        elif data.startswith("detailed_summary_"):
+            summary_type = "detailed"
+            summary_type_ru = "подробное"
+        else:
+            await query.edit_message_text("❌ Неизвестный тип саммари")
+            return
+
+        # Обновляем сообщение
+        await query.edit_message_text(
+            f"🤖 Создаю {summary_type_ru} саммари...\n\n"
+            f"*сосредоточенно работает*\n"
+            f"Это может занять некоторое время...",
+            parse_mode='Markdown'
+        )
+
+        # Получаем последнюю транскрипцию пользователя из базы данных
+        db = SessionLocal()
+        try:
+            from transkribator_modules.db.database import TranscriptionService
+            transcription_service = TranscriptionService(db)
+
+            # Получаем пользователя
+            user_service = UserService(db)
+            user = user_service.get_or_create_user(telegram_id=user_id)
+
+            # Получаем последнюю транскрипцию пользователя
+            transcriptions = transcription_service.get_user_transcriptions(user, limit=1)
+
+            if not transcriptions:
+                await query.edit_message_text(
+                    "❌ Не найдено транскрипций для создания саммари.\n\n"
+                    "Сначала отправьте файл для транскрипции!"
+                )
+                return
+
+            latest_transcription = transcriptions[0]
+            transcript_text = latest_transcription.formatted_transcript or latest_transcription.raw_transcript
+
+            if not transcript_text:
+                await query.edit_message_text("❌ Транскрипция пуста")
+                return
+
+            # Импортируем функции генерации саммари
+            from transkribator_modules.transcribe.transcriber import generate_detailed_summary, generate_brief_summary
+
+            # Генерируем саммари
+            if summary_type == "brief":
+                summary = await generate_brief_summary(transcript_text)
+            else:
+                summary = await generate_detailed_summary(transcript_text)
+
+            if not summary:
+                await query.edit_message_text(
+                    "❌ Не удалось создать саммари.\n\n"
+                    "Возможно, сервис временно недоступен. Попробуйте позже."
+                )
+                return
+
+            # Отправляем саммари
+            summary_text = f"📋 **{summary_type_ru.title()} саммари:**\n\n{summary}\n\n@CyberKitty19_bot"
+
+            # Если саммари длинное, отправляем файлом
+            if len(summary_text) > 4000:
+                from docx import Document
+                from pathlib import Path
+
+                docx_path = Path("/tmp") / f"summary_{user_id}_{summary_type}.docx"
+                document = Document()
+                document.add_heading(f"{summary_type_ru.title()} саммари", 0)
+                document.add_paragraph(summary)
+                document.save(docx_path)
+
+                with open(docx_path, 'rb') as f:
+                    await query.message.reply_document(
+                        document=f,
+                        filename=f"summary_{summary_type}.docx",
+                        caption=f"📋 {summary_type_ru.title()} саммари готово!\n\n@CyberKitty19_bot"
+                    )
+
+                # Удаляем временный файл
+                docx_path.unlink(missing_ok=True)
+            else:
+                await query.message.reply_text(summary_text, parse_mode='Markdown')
+
+            # Обновляем сообщение с кнопками
+            await query.edit_message_text(
+                f"✅ {summary_type_ru.title()} саммари готово!\n\n"
+                f"Что дальше будем с этим делать? 🤔"
+            )
+
+        finally:
+            db.close()
+
+    except Exception as e:
+        logger.error(f"Ошибка при создании саммари: {e}")
+        await query.edit_message_text(
+            "❌ Произошла ошибка при создании саммари.\n\n"
+            "Попробуйте позже или обратитесь в поддержку."
+        )
+
+async def handle_process_transcript_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает кнопку 'Обработать транскрипцию'."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        # Отправляем сообщение с инструкцией
+        instruction_text = """🔧 **Обработка транскрипции**
+
+Опиши, что ты хочешь получить. Например: краткое изложение, пост в канал, ТЗ обсуждаемого в транскрипции проекта — что угодно.
+
+Если нужен конкретный формат, пришли пример: "Хочу вот так:
+<пример>".
+
+Просто отправь мне текстовое сообщение с описанием задачи! 📝"""
+
+        await query.edit_message_text(instruction_text, parse_mode='Markdown')
+        
+        # Сохраняем состояние ожидания задачи в контексте
+        context.user_data['waiting_for_task'] = True
+        context.user_data['user_id'] = update.effective_user.id
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке кнопки 'Обработать': {e}")
+        await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")
+
+async def handle_send_more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает кнопку 'Прислать ещё'."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        # Отправляем сообщение с приглашением загрузить новый файл
+        send_more_text = """📤 **Прислать ещё файл**
+
+Отлично! Отправь мне новый видео или аудио файл для транскрипции.
+
+Поддерживаемые форматы:
+🎥 Видео: MP4, AVI, MOV, MKV, WebM и другие
+🎵 Аудио: MP3, WAV, FLAC, AAC, OGG и другие
+🎤 Голосовые сообщения
+
+Максимальный размер файла: 2 ГБ
+Максимальная длительность: 4 часа
+
+Жду твой файл! 🐱"""
+
+        await query.edit_message_text(send_more_text, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке кнопки 'Прислать ещё': {e}")
+        await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")
+
+async def handle_main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает кнопку 'Главное меню'."""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        # Возвращаемся в главное меню
+        await back_to_start_callback(query, update.effective_user)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при обработке кнопки 'Главное меню': {e}")
+        await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")
