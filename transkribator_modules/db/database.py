@@ -46,6 +46,8 @@ def init_database():
                     total_minutes_transcribed FLOAT DEFAULT 0.0,
                     minutes_used_this_month FLOAT DEFAULT 0.0,
                     last_reset_date DATE,
+                    total_generations INTEGER DEFAULT 0,
+                    generations_used_this_month INTEGER DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     is_active BOOLEAN DEFAULT 1
@@ -235,33 +237,57 @@ class UserService:
 
         return user
 
-    def check_minutes_limit(self, user: User, minutes_needed: float) -> tuple[bool, str]:
-        """Проверить, может ли пользователь использовать указанное количество минут"""
-        # Сбрасываем счетчик, если прошел месяц
+    def check_usage_limit(self, user: User, minutes_needed: float = 0.0) -> tuple[bool, str]:
+        """Проверить, может ли пользователь использовать сервис"""
+        # Сбрасываем счетчики, если прошел месяц
         self._reset_monthly_usage_if_needed(user)
 
         plan = self.get_user_plan(user)
         if not plan:
             return False, "План пользователя не найден"
 
+        # Для бесплатного тарифа проверяем количество генераций
+        if user.current_plan == "free":
+            if user.generations_used_this_month >= 3:
+                remaining = max(0, 3 - user.generations_used_this_month)
+                return False, f"Превышен лимит бесплатного тарифа. Осталось генераций: {remaining}"
+            return True, "Лимит не превышен"
+
+        # Для платных тарифов проверяем минуты
         # Безлимитный план
         if plan.minutes_per_month is None:
             return True, "Безлимитный план"
 
-        # Проверяем лимит
+        # Проверяем лимит минут
         if user.minutes_used_this_month + minutes_needed > plan.minutes_per_month:
             remaining = max(0, plan.minutes_per_month - user.minutes_used_this_month)
             return False, f"Превышен лимит плана. Осталось: {remaining:.1f} мин"
 
         return True, "Лимит не превышен"
 
-    def add_minutes_usage(self, user: User, minutes_used: float) -> None:
-        """Добавить использованные минуты"""
+    def check_minutes_limit(self, user: User, minutes_needed: float) -> tuple[bool, str]:
+        """Проверить, может ли пользователь использовать указанное количество минут (устаревший метод)"""
+        return self.check_usage_limit(user, minutes_needed)
+
+    def add_usage(self, user: User, minutes_used: float = 0.0) -> None:
+        """Добавить использование (минуты или генерацию)"""
         self._reset_monthly_usage_if_needed(user)
-        user.minutes_used_this_month += minutes_used
-        user.total_minutes_transcribed += minutes_used
+
+        # Для бесплатного тарифа считаем генерации
+        if user.current_plan == "free":
+            user.generations_used_this_month += 1
+            user.total_generations += 1
+        else:
+            # Для платных тарифов считаем минуты
+            user.minutes_used_this_month += minutes_used
+            user.total_minutes_transcribed += minutes_used
+
         user.updated_at = datetime.utcnow()
         self.db.commit()
+
+    def add_minutes_usage(self, user: User, minutes_used: float) -> None:
+        """Добавить использованные минуты (устаревший метод)"""
+        self.add_usage(user, minutes_used)
 
     def get_user_plan(self, user: User) -> Optional[Plan]:
         """Получить текущий план пользователя"""
@@ -277,17 +303,32 @@ class UserService:
             "plan_display_name": plan.display_name if plan else "Неизвестный",
             "minutes_used_this_month": user.minutes_used_this_month,
             "total_minutes_transcribed": user.total_minutes_transcribed,
+            "generations_used_this_month": user.generations_used_this_month,
+            "total_generations": user.total_generations,
             "plan_expires_at": user.plan_expires_at
         }
 
-        if plan and plan.minutes_per_month is not None:
+        # Для бесплатного тарифа показываем информацию о генерациях
+        if user.current_plan == "free":
+            info["generations_limit"] = 3
+            info["generations_remaining"] = max(0, 3 - user.generations_used_this_month)
+            info["usage_percentage"] = (user.generations_used_this_month / 3) * 100
+            info["minutes_limit"] = None
+            info["minutes_remaining"] = None
+        elif plan and plan.minutes_per_month is not None:
+            # Для платных тарифов показываем информацию о минутах
             info["minutes_limit"] = plan.minutes_per_month
             info["minutes_remaining"] = max(0, plan.minutes_per_month - user.minutes_used_this_month)
             info["usage_percentage"] = (user.minutes_used_this_month / plan.minutes_per_month) * 100
+            info["generations_limit"] = None
+            info["generations_remaining"] = None
         else:
+            # Безлимитный план
             info["minutes_limit"] = None
             info["minutes_remaining"] = float('inf')
             info["usage_percentage"] = 0
+            info["generations_limit"] = None
+            info["generations_remaining"] = None
 
         return info
 
@@ -304,6 +345,7 @@ class UserService:
         # Если переходим на новый план, сбрасываем месячное использование
         if new_plan != PlanType.FREE:
             user.minutes_used_this_month = 0.0
+            user.generations_used_this_month = 0
             user.last_reset_date = datetime.utcnow()
 
         self.db.commit()
@@ -315,6 +357,7 @@ class UserService:
             days_since_reset = (datetime.utcnow() - user.last_reset_date).days
             if days_since_reset >= 30:
                 user.minutes_used_this_month = 0.0
+                user.generations_used_this_month = 0  # Сбрасываем и счетчик генераций
                 user.last_reset_date = datetime.utcnow()
                 self.db.commit()
 
@@ -610,6 +653,15 @@ def migrate_database_schema(conn):
         if 'is_active' not in columns:
             cursor.execute("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1")
             print("Добавлена колонка is_active")
+
+        # Добавляем новые колонки для генераций
+        if 'total_generations' not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN total_generations INTEGER DEFAULT 0")
+            print("Добавлена колонка total_generations")
+
+        if 'generations_used_this_month' not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN generations_used_this_month INTEGER DEFAULT 0")
+            print("Добавлена колонка generations_used_this_month")
 
         # Мигрируем данные из старых колонок
         if 'subscription_type' in columns and 'current_plan' in columns:

@@ -270,7 +270,7 @@ async def transcribe_video(
         estimated_duration = calculate_audio_duration(file_size_mb)
         
         # Проверяем лимиты пользователя
-        can_use, limit_message = user_service.check_minutes_limit(user, estimated_duration)
+        can_use, limit_message = user_service.check_usage_limit(user, estimated_duration)
         if not can_use:
             raise HTTPException(
                 status_code=429,
@@ -348,8 +348,8 @@ async def transcribe_video(
             formatting_service=formatting_service
         )
         
-        # Обновляем использованные минуты
-        user_service.add_minutes_usage(user, actual_duration)
+        # Обновляем использование (минуты или генерации)
+        user_service.add_usage(user, actual_duration)
         
         # Обновляем использованные минуты для API ключа
         if api_key:

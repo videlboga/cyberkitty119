@@ -175,15 +175,24 @@ async def show_stats_callback(query, user):
 • План: {usage_info['plan_display_name']}
 • Зарегистрирован: {db_user.created_at.strftime('%d.%m.%Y')}
 
-📈 **Использование:**
-• В этом месяце: {usage_info['minutes_used_this_month']:.1f} мин"""
+📈 **Использование:**"""
 
-        if usage_info['minutes_limit']:
+        # Для бесплатного тарифа показываем генерации
+        if usage_info['current_plan'] == 'free':
+            remaining = usage_info['generations_remaining']
+            percentage = usage_info['usage_percentage']
+            stats_text += f"\n• В этом месяце: {usage_info['generations_used_this_month']} генераций"
+            stats_text += f"\n• Лимит: {usage_info['generations_limit']} генераций"
+            stats_text += f"\n• Осталось: {remaining} генераций ({100-percentage:.1f}%)"
+            stats_text += f"\n• Всего генераций: {usage_info['total_generations']}"
+        elif usage_info['minutes_limit']:
             remaining = usage_info['minutes_remaining']
             percentage = usage_info['usage_percentage']
+            stats_text += f"\n• В этом месяце: {usage_info['minutes_used_this_month']:.1f} мин"
             stats_text += f"\n• Лимит: {usage_info['minutes_limit']:.0f} мин"
             stats_text += f"\n• Осталось: {remaining:.1f} мин ({100-percentage:.1f}%)"
         else:
+            stats_text += f"\n• В этом месяце: {usage_info['minutes_used_this_month']:.1f} мин"
             stats_text += f"\n• Лимит: Безлимитно ♾️"
         
         stats_text += f"\n• Всего транскрибировано: {usage_info['total_minutes_transcribed']:.1f} мин"

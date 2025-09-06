@@ -264,7 +264,17 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
 
 📊 **Использование в этом месяце:**"""
 
-        if usage_info['minutes_limit']:
+        # Для бесплатного тарифа показываем генерации
+        if usage_info['current_plan'] == 'free':
+            remaining = usage_info['generations_remaining']
+            percentage = usage_info['usage_percentage']
+            progress_bar = "🟩" * int(percentage // 10) + "⬜" * (10 - int(percentage // 10))
+            
+            cabinet_text += f"""
+• Использовано: {usage_info['generations_used_this_month']} из {usage_info['generations_limit']} генераций
+• Осталось: {remaining} генераций
+{progress_bar} {percentage:.1f}%"""
+        elif usage_info['minutes_limit']:
             remaining = usage_info['minutes_remaining']
             percentage = usage_info['usage_percentage']
             progress_bar = "🟩" * int(percentage // 10) + "⬜" * (10 - int(percentage // 10))
