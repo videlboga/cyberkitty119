@@ -331,14 +331,20 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await status_msg.edit_text("✅ Транскрипция готова!")
 
             # Если текст короткий, отправляем в сообщении
-            if len(formatted_transcript or "") <= 4000:
-                # Очищаем текст от HTML-сущностей для безопасной отправки
-                clean_transcript = clean_html_entities((formatted_transcript or ""))
-                await update.message.reply_text(
-                    f"📝 Транскрипция:\n\n{clean_transcript}\n\n@CyberKitty19_bot"
-                )
+            clean_transcript = clean_html_entities((formatted_transcript or ""))
+            full_message = f"📝 Транскрипция:\n\n{clean_transcript}\n\n@CyberKitty19_bot"
+
+            logger.info(f"Длина исходной транскрипции: {len(transcript or '')} символов")
+            logger.info(f"Длина отформатированной транскрипции: {len(formatted_transcript or '')} символов")
+            logger.info(f"Длина полного сообщения: {len(full_message)} символов")
+
+            # Проверяем длину исходной транскрипции для решения о формате отправки
+            if len(transcript or "") <= 4000:
+                logger.info("Отправляем транскрипцию как текстовое сообщение")
+                await update.message.reply_text(full_message)
             else:
                 # Если длинный, отправляем .docx
+                logger.info("Отправляем транскрипцию как .docx файл")
                 from docx import Document
                 # Убеждаемся, что директория существует
                 TRANSCRIPTIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -347,6 +353,7 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 for line in (formatted_transcript or "").split('\n'):
                     document.add_paragraph(line)
                 document.save(docx_path)
+                logger.info(f"Создан .docx файл: {docx_path}")
                 with open(docx_path, 'rb') as f:
                     await update.message.reply_document(
                         document=f,
@@ -535,14 +542,20 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 await status_msg.edit_text("✅ Транскрипция готова!")
 
             # Если текст короткий, отправляем в сообщении
-            if len(formatted_transcript or "") <= 4000:
-                # Очищаем текст от HTML-сущностей для безопасной отправки
-                clean_transcript = clean_html_entities(formatted_transcript or "")
-                await update.message.reply_text(
-                    f"📝 Транскрипция:\n\n{clean_transcript}\n\n@CyberKitty19_bot"
-                )
+            clean_transcript = clean_html_entities(formatted_transcript or "")
+            full_message = f"📝 Транскрипция:\n\n{clean_transcript}\n\n@CyberKitty19_bot"
+
+            logger.info(f"Длина исходной транскрипции (аудио): {len(transcript or '')} символов")
+            logger.info(f"Длина отформатированной транскрипции (аудио): {len(formatted_transcript or '')} символов")
+            logger.info(f"Длина полного сообщения (аудио): {len(full_message)} символов")
+
+            # Проверяем длину исходной транскрипции для решения о формате отправки
+            if len(transcript or "") <= 4000:
+                logger.info("Отправляем транскрипцию как текстовое сообщение (аудио)")
+                await update.message.reply_text(full_message)
             else:
                 # Если длинный, отправляем .docx
+                logger.info("Отправляем транскрипцию как .docx файл (аудио)")
                 from docx import Document
                 # Убеждаемся, что директория существует
                 TRANSCRIPTIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -551,6 +564,7 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 for line in (formatted_transcript or "").split('\n'):
                     document.add_paragraph(line)
                 document.save(docx_path)
+                logger.info(f"Создан .docx файл (аудио): {docx_path}")
                 with open(docx_path, 'rb') as f:
                     await update.message.reply_document(
                         document=f,
@@ -686,10 +700,10 @@ async def handle_transcript_processing_task(update: Update, context: ContextType
     try:
         user_id = update.effective_user.id
         task_description = update.message.text
-        
+
         # Сбрасываем флаг ожидания задачи
         context.user_data['waiting_for_task'] = False
-        
+
         # Отправляем сообщение о начале обработки
         processing_msg = await update.message.reply_text(
             "🤖 Обрабатываю транскрипцию согласно твоей задаче...\n\n"
@@ -697,82 +711,83 @@ async def handle_transcript_processing_task(update: Update, context: ContextType
             "Это может занять некоторое время...",
             parse_mode='Markdown'
         )
-        
+
         # Получаем последнюю транскрипцию пользователя из базы данных
         from transkribator_modules.db.database import SessionLocal, UserService, TranscriptionService
-        
+
         db = SessionLocal()
         try:
             user_service = UserService(db)
             transcription_service = TranscriptionService(db)
-            
+
             # Получаем пользователя
             user = user_service.get_or_create_user(telegram_id=user_id)
-            
+
             # Получаем последнюю транскрипцию пользователя
             transcriptions = transcription_service.get_user_transcriptions(user, limit=1)
-            
+
             if not transcriptions:
                 await processing_msg.edit_text(
                     "❌ Не найдено транскрипций для обработки.\n\n"
                     "Сначала отправьте файл для транскрипции!"
                 )
                 return
-            
+
             latest_transcription = transcriptions[0]
             transcript_text = latest_transcription.formatted_transcript or latest_transcription.raw_transcript
-            
+
             if not transcript_text:
                 await processing_msg.edit_text("❌ Транскрипция пуста")
                 return
-            
+
             # Обрабатываем транскрипцию согласно задаче
             processed_text = await process_transcript_with_task(transcript_text, task_description)
-            
+
             if not processed_text:
                 await processing_msg.edit_text(
                     "❌ Не удалось обработать транскрипцию.\n\n"
                     "Возможно, сервис временно недоступен. Попробуйте позже."
                 )
                 return
-            
+
             # Отправляем результат
             result_text = f"✅ **Результат обработки:**\n\n{processed_text}\n\n@CyberKitty19_bot"
-            
+
             # Если результат длинный, отправляем файлом
             if len(result_text) > 4000:
                 from docx import Document
                 from pathlib import Path
-                
+
                 # Убеждаемся, что директория существует
                 TRANSCRIPTIONS_DIR.mkdir(parents=True, exist_ok=True)
                 docx_path = TRANSCRIPTIONS_DIR / f"processed_transcript_{user_id}.docx"
-                
+
                 document = Document()
                 document.add_heading("Обработанная транскрипция", 0)
                 document.add_paragraph(f"Задача: {task_description}")
                 document.add_paragraph("Результат:")
                 document.add_paragraph(processed_text)
                 document.save(docx_path)
-                
+
                 with open(docx_path, 'rb') as f:
                     await update.message.reply_document(
                         document=f,
                         filename=f"processed_transcript.docx",
                         caption="✅ Результат обработки готов!\n\n@CyberKitty19_bot"
                     )
-                
+
                 # Удаляем временный файл
                 docx_path.unlink(missing_ok=True)
             else:
-                await update.message.reply_text(result_text, parse_mode='Markdown')
-            
+                # Отправляем без parse_mode чтобы избежать ошибок с markdown entities
+                await update.message.reply_text(result_text)
+
             # Обновляем сообщение о завершении
             await processing_msg.edit_text("✅ Обработка завершена!")
-            
+
         finally:
             db.close()
-            
+
     except Exception as e:
         logger.error(f"Ошибка при обработке задачи транскрипции: {e}")
         await update.message.reply_text(
@@ -784,7 +799,7 @@ async def process_transcript_with_task(transcript_text: str, task_description: s
     """Обрабатывает транскрипцию согласно задаче пользователя."""
     try:
         from transkribator_modules.transcribe.transcriber import format_transcript_with_llm
-        
+
         # Создаем промпт для обработки транскрипции
         prompt = f"""Ты эксперт по обработке транскрипций. Пользователь просит обработать транскрипцию согласно следующей задаче:
 
@@ -797,13 +812,15 @@ async def process_transcript_with_task(transcript_text: str, task_description: s
 
         # Используем LLM для обработки
         processed_text = await format_transcript_with_llm(prompt)
-        
+
         if processed_text and not processed_text.startswith("Произошла ошибка"):
-            return processed_text
+            # Очищаем текст от потенциальных markdown сущностей
+            cleaned_text = processed_text.replace("*", "").replace("_", "").replace("`", "")
+            return cleaned_text
         else:
             # Fallback - возвращаем исходную транскрипцию с комментарием
             return f"Не удалось обработать транскрипцию через ИИ. Вот исходная транскрипция:\n\n{transcript_text}"
-            
+
     except Exception as e:
         logger.error(f"Ошибка при обработке транскрипции с задачей: {e}")
         return f"Произошла ошибка при обработке: {str(e)}"

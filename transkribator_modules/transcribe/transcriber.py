@@ -10,9 +10,9 @@ async def compress_audio_for_api(audio_path):
     try:
         audio_path = Path(audio_path)
         compressed_path = audio_path.parent / f"{audio_path.stem}_compressed.mp3"
-        
+
         logger.info(f"Сжимаю аудиофайл: {audio_path} -> {compressed_path}")
-        
+
         # Команда для сжатия в MP3 с низким битрейтом
         cmd = [
             'ffmpeg',
@@ -24,19 +24,19 @@ async def compress_audio_for_api(audio_path):
             '-y',
             str(compressed_path)
         ]
-        
+
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        
+
         stdout, stderr = await process.communicate()
-        
+
         if process.returncode != 0:
             logger.error(f"Ошибка при сжатии аудио: {stderr.decode()}")
             return str(audio_path)  # Возвращаем оригинальный файл при ошибке
-        
+
         if compressed_path.exists() and compressed_path.stat().st_size > 0:
             original_size = audio_path.stat().st_size
             compressed_size = compressed_path.stat().st_size
@@ -46,14 +46,14 @@ async def compress_audio_for_api(audio_path):
         else:
             logger.warning("Сжатый файл не создался, используем оригинал")
             return str(audio_path)
-            
+
     except Exception as e:
         logger.error(f"Ошибка при сжатии аудио: {e}")
         return str(audio_path)  # Возвращаем оригинальный файл при ошибке
 
 async def transcribe_audio(audio_path, model_name="base"):
     """Транскрибирует аудио с помощью DeepInfra API через разбивку на сегменты."""
-    
+
     # Используем DeepInfra API для транскрибации с разбивкой на сегменты
     if DEEPINFRA_API_KEY:
         logger.info("Использую DeepInfra API для транскрибации с разбивкой на сегменты...")
@@ -99,17 +99,17 @@ async def format_transcript_with_llm(raw_transcript: str) -> str | None:
         if not raw_transcript or len(raw_transcript.strip()) < 10:
             logger.warning("Транскрипция слишком короткая для форматирования")
             return None
-            
+
         # Используем OpenRouter API для форматирования
         if OPENROUTER_API_KEY:
             logger.info("Пробую форматировать через OpenRouter/DeepSeek")
             formatted = await format_transcript_with_openrouter(raw_transcript)
             if formatted:
                 return formatted
-        
+
         # Не удалось отформатировать через LLM
         return None
-            
+
     except Exception as e:
         logger.error(f"Ошибка при форматировании транскрипции: {e}")
         return None
@@ -119,30 +119,31 @@ async def format_transcript_with_openrouter(raw_transcript: str) -> str:
     if not OPENROUTER_API_KEY or not OPENROUTER_MODEL:
         logger.warning("OpenRouter API ключ или модель не настроены")
         return None
-        
+
     try:
         logger.info(f"Форматирование транскрипции с помощью OpenRouter API, модель: {OPENROUTER_MODEL}")
-        
+
         # Создаем промпт для модели с более строгими инструкциями
-        system_prompt = """Ты профессиональный редактор сырых транскрипций. 
-        Твоя задача - полностью преобразовать сырую необработанную транскрипцию аудио в идеально читабельный текст.
-        Ты должен быть очень внимательным к исправлению ошибок, очистке текста от лишних слов и созданию
-        правильной структуры текста. Не должно оставаться заполнителей речи и повторений.
-        Не добавляй собственные мысли или содержание, которого нет в исходном тексте."""
-        
-        user_prompt = f"""Вот сырая транскрипция аудио. Пожалуйста, отформатируй ее в идеально читабельный текст:
+        system_prompt = """Ты профессиональный редактор сырых транскрипций.
+        Твоя задача - преобразовать сырую необработанную транскрипцию аудио в читабельный текст.
+        ТЫ НЕ ДОЛЖЕН СОКРАЩАТЬ ИЛИ УБИРАТЬ ЛЮБУЮ ИНФОРМАЦИЮ ИЗ ИСХОДНОГО ТЕКСТА!
+        ТЫ ДОЛЖЕН СОХРАНИТЬ ВЕСЬ СОДЕРЖИМЫЙ ТЕКСТ, НО СДЕЛАТЬ ЕГО ЧИТАБЕЛЬНЫМ.
+        Исправляй ошибки распознавания, добавляй пунктуацию, структурируй текст, но НЕ УБИРАЙ НИЧЕГО ВАЖНОГО."""
+
+        user_prompt = f"""Вот сырая транскрипция аудио. Пожалуйста, отформатируй ее в читабельный текст:
 
 {raw_transcript}
 
-Правила форматирования:
-1. Тщательно исправь все ошибки распознавания, где они очевидны
-2. Добавь правильную пунктуацию (точки, запятые, вопросительные и восклицательные знаки)
-3. Разбей текст на логические предложения и абзацы
-4. Полностью удали все повторы, заполнители речи (эээ, ммм, и т.д.) и слова-паразиты
-5. Исправь грамматические ошибки и неправильные обороты речи
-6. Сделай текст идеально читаемым, как будто это расшифровка профессионального интервью
-7. Возвращай только отформатированный текст без дополнительных комментариев"""
-        
+ВАЖНЫЕ ПРАВИЛА:
+1. НЕ СОКРАЩАЙ ТЕКСТ! Сохрани всю информацию из исходного текста
+2. Исправь ошибки распознавания речи
+3. Добавь правильную пунктуацию
+4. Разбей на логические абзацы и предложения
+5. Удали только явные повторы и заполнители речи (эээ, ммм)
+6. Исправь грамматические ошибки
+7. Сделай текст читаемым, но сохрани ВЕСЬ контент
+8. Возвращай только отформатированный текст без дополнительных комментариев"""
+
         # Формируем запрос к API
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -150,7 +151,7 @@ async def format_transcript_with_openrouter(raw_transcript: str) -> str:
             "HTTP-Referer": os.getenv("OPENROUTER_REFERER", "https://transkribator.local"),
             "X-Title": os.getenv("OPENROUTER_APP_NAME", "Transkribator"),
         }
-        
+
         payload = {
             "model": OPENROUTER_MODEL,
             "messages": [
@@ -160,7 +161,7 @@ async def format_transcript_with_openrouter(raw_transcript: str) -> str:
             "temperature": 0.1,  # Низкая температура для более детерминированных результатов
             "max_tokens": 4096
         }
-        
+
         # Отправляем запрос
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -177,12 +178,12 @@ async def format_transcript_with_openrouter(raw_transcript: str) -> str:
                     error_text = await response.text()
                     logger.error(f"Ошибка от OpenRouter API: {response.status}, {error_text}")
                     return None
-        
+
     except Exception as e:
         logger.error(f"Ошибка при форматировании транскрипции через OpenRouter API: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return None 
+        return None
 
 async def generate_detailed_summary(transcript: str) -> str:
     """Генерирует подробное саммари транскрипции с использованием языковой модели."""
@@ -191,13 +192,13 @@ async def generate_detailed_summary(transcript: str) -> str:
         if not transcript or len(transcript.strip()) < 10:
             logger.warning("Транскрипция слишком короткая для создания подробного саммари")
             return "Транскрипция слишком короткая для создания подробного саммари."
-            
+
         # Используем OpenRouter API для генерации саммари
         if OPENROUTER_API_KEY:
             system_prompt = """Ты профессиональный аналитик, который создает подробные саммари на основе транскрипций разговоров, интервью и встреч.
-            Твоя задача - внимательно проанализировать содержание текста и составить структурированное подробное резюме, 
+            Твоя задача - внимательно проанализировать содержание текста и составить структурированное подробное резюме,
             которое включает в себя основные темы обсуждения, ключевые точки зрения, принятые решения и план дальнейших действий."""
-            
+
             user_prompt = f"""Вот транскрипция встречи/разговора. Пожалуйста, создай подробное саммари:
 
 {transcript}
@@ -209,11 +210,11 @@ async def generate_detailed_summary(transcript: str) -> str:
 4. Дальнейшие шаги и задачи (если таковые обсуждались)
 
 Саммари должно быть содержательным, информативным, но при этом структурированным и понятным."""
-            
+
             return await request_llm_response(system_prompt, user_prompt)
-        
+
         return "Не удалось создать подробное саммари. Проверьте настройки API для языковой модели."
-            
+
     except Exception as e:
         logger.error(f"Ошибка при создании подробного саммари: {e}")
         return f"Произошла ошибка при создании подробного саммари: {str(e)}"
@@ -225,13 +226,13 @@ async def generate_brief_summary(transcript: str) -> str:
         if not transcript or len(transcript.strip()) < 10:
             logger.warning("Транскрипция слишком короткая для создания краткого саммари")
             return "Транскрипция слишком короткая для создания краткого саммари."
-            
+
         # Используем OpenRouter API для генерации саммари
         if OPENROUTER_API_KEY:
             system_prompt = """Ты профессиональный аналитик, который создает краткие, лаконичные саммари на основе транскрипций разговоров.
-            Твоя задача - вычленить самую важную информацию и представить ее в максимально сжатом виде, сохраняя все 
+            Твоя задача - вычленить самую важную информацию и представить ее в максимально сжатом виде, сохраняя все
             ключевые моменты, решения и дальнейшие шаги."""
-            
+
             user_prompt = f"""Вот транскрипция встречи/разговора. Пожалуйста, создай очень краткое саммари (не более 300 слов):
 
 {transcript}
@@ -242,11 +243,11 @@ async def generate_brief_summary(transcript: str) -> str:
 3. Дальнейшие шаги (если таковые обсуждались)
 
 Саммари должно быть максимально коротким, но при этом информативным."""
-            
+
             return await request_llm_response(system_prompt, user_prompt)
-        
+
         return "Не удалось создать краткое саммари. Проверьте настройки API для языковой модели."
-            
+
     except Exception as e:
         logger.error(f"Ошибка при создании краткого саммари: {e}")
         return f"Произошла ошибка при создании краткого саммари: {str(e)}"
@@ -256,7 +257,7 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str:
     if not OPENROUTER_API_KEY or not OPENROUTER_MODEL:
         logger.warning("OpenRouter API ключ или модель не настроены")
         return None
-        
+
     try:
         # Формируем запрос к API
         headers = {
@@ -265,7 +266,7 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str:
             "HTTP-Referer": os.getenv("OPENROUTER_REFERER", "https://transkribator.local"),
             "X-Title": os.getenv("OPENROUTER_APP_NAME", "Transkribator"),
         }
-        
+
         payload = {
             "model": OPENROUTER_MODEL,
             "messages": [
@@ -275,7 +276,7 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str:
             "temperature": 0.3,
             "max_tokens": 4096
         }
-        
+
         # Отправляем запрос
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -292,12 +293,12 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str:
                     error_text = await response.text()
                     logger.error(f"Ошибка от OpenRouter API: {response.status}, {error_text}")
                     return None
-        
+
     except Exception as e:
         logger.error(f"Ошибка при запросе к OpenRouter API: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return None 
+        return None
 
 async def split_and_transcribe_audio(audio_path):
     """Разбивает длинное аудио на сегменты и транскрибирует каждый через DeepInfra API.
@@ -309,23 +310,23 @@ async def split_and_transcribe_audio(audio_path):
     if not DEEPINFRA_API_KEY:
         logger.warning("DeepInfra API ключ не настроен")
         return None
-        
+
     try:
         audio_path = Path(audio_path)
         logger.info(f"Разбиваю аудио на сегменты для обработки: {audio_path}")
-        
+
         # Сначала сжимаем аудио
         compressed_audio_path = await compress_audio_for_api(audio_path)
-        
+
         # Создаём папку для сегментов
         segments_dir = audio_path.parent / f"{audio_path.stem}_segments"
         segments_dir.mkdir(exist_ok=True)
-        
+
         # Длительность сегмента (можно настроить через env)
         # По умолчанию 9 минут (540 секунд), как в прежней рабочей конфигурации
         segment_duration = int(os.getenv('DEEPINFRA_SEGMENT_SEC', '540'))
         segment_files = []
-        
+
         # Получаем длительность аудио
         cmd = [
             'ffprobe',
@@ -334,26 +335,26 @@ async def split_and_transcribe_audio(audio_path):
             '-of', 'csv=p=0',
             str(compressed_audio_path)
         ]
-        
+
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        
+
         stdout, stderr = await process.communicate()
-        
+
         if process.returncode != 0:
             logger.error(f"Ошибка при получении длительности: {stderr.decode()}")
             return None
-            
+
         total_duration = float(stdout.decode().strip())
         logger.info(f"Общая длительность аудио: {total_duration:.2f} секунд")
-        
+
         # Создаём сегменты
         for start_time in range(0, int(total_duration), segment_duration):
             segment_path = segments_dir / f"segment_{start_time:04d}.mp3"
-            
+
             cmd = [
                 'ffmpeg',
                 '-i', str(compressed_audio_path),
@@ -363,28 +364,28 @@ async def split_and_transcribe_audio(audio_path):
                 '-y',
                 str(segment_path)
             ]
-            
+
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-            
+
             stdout, stderr = await process.communicate()
-            
+
             if process.returncode == 0 and segment_path.exists() and segment_path.stat().st_size > 1000:
                 segment_files.append(segment_path)
                 logger.info(f"Создан сегмент: {segment_path.name}")
-            
+
         logger.info(f"Создано {len(segment_files)} сегментов")
-        
+
         # Транскрибируем сегменты параллельно с ограничением по числу одновременных запросов
         # Параллелизм умеренный по умолчанию
         concurrency = max(1, int(os.getenv('DEEPINFRA_CONCURRENCY', '2')))
         logger.info(f"Начинаю параллельную транскрибацию {len(segment_files)} сегментов, параллелизм: {concurrency}")
 
         semaphore = asyncio.Semaphore(concurrency)
-        
+
         async def transcribe_one(index: int, path: Path):
             async with semaphore:
                 logger.info(f"Транскрибирую сегмент {index+1}/{len(segment_files)}: {path.name}")
@@ -402,25 +403,25 @@ async def split_and_transcribe_audio(audio_path):
         # Собираем в правильном порядке
         results.sort(key=lambda x: x[0])
         all_transcripts = [t for _, t in results]
-        
+
         # Объединяем все транскрипции
         full_transcript = " ".join(all_transcripts)
-        
+
         # Очищаем временные файлы
         try:
             for segment_path in segment_files:
                 segment_path.unlink()
             segments_dir.rmdir()
-            
+
             # Удаляем сжатый файл, если он отличается от оригинала
             if compressed_audio_path != str(audio_path):
                 Path(compressed_audio_path).unlink()
         except:
             pass
-        
+
         logger.info(f"Транскрибация завершена, получено {len(full_transcript)} символов")
         return full_transcript
-        
+
     except Exception as e:
         logger.error(f"Ошибка при разбивке и транскрибации аудио: {e}")
         import traceback
@@ -431,15 +432,15 @@ async def transcribe_segment_with_deepinfra(segment_path):
     """Транскрибирует один сегмент аудио через DeepInfra API."""
     if not DEEPINFRA_API_KEY:
         return None
-        
+
     try:
         # DeepInfra API для Whisper
         url = "https://api.deepinfra.com/v1/inference/openai/whisper-large-v3-turbo"
-        
+
         headers = {
             "Authorization": f"Bearer {DEEPINFRA_API_KEY}",
         }
-        
+
         # Читаем аудио файл
         with open(segment_path, 'rb') as audio_file:
             # Короткий таймаут для небольших сегментов
@@ -449,7 +450,7 @@ async def transcribe_segment_with_deepinfra(segment_path):
                 form_data = aiohttp.FormData()
                 file_name = Path(segment_path).name
                 form_data.add_field('audio', audio_file, filename=file_name)
-                
+
                 async with session.post(url, headers=headers, data=form_data) as response:
                     if response.status == 200:
                         result = await response.json()
@@ -473,7 +474,7 @@ async def transcribe_segment_with_deepinfra(segment_path):
                         error_text = await response.text()
                         logger.error(f"Ошибка от DeepInfra API для сегмента {file_name}: {response.status}, {error_text}")
                         return None
-        
+
     except Exception as e:
         logger.error(f"Ошибка при транскрибации сегмента {segment_path}: {e}")
-        return None 
+        return None
