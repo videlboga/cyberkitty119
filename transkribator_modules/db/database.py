@@ -623,6 +623,45 @@ def calculate_audio_duration(file_size_mb: float) -> float:
     # В реальности нужно использовать ffprobe или аналогичный инструмент
     return file_size_mb * 0.8  # Консервативная оценка
 
+def get_media_duration(file_path: str) -> float:
+    """Получает реальную длительность аудио/видео файла в минутах с помощью ffprobe"""
+    import subprocess
+    import json
+    
+    try:
+        # Используем ffprobe для получения длительности
+        cmd = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            str(file_path)
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            duration_seconds = float(data['format']['duration'])
+            duration_minutes = duration_seconds / 60.0
+            logger.info(f"Реальная длительность файла {file_path}: {duration_minutes:.2f} минут")
+            return duration_minutes
+        else:
+            logger.warning(f"ffprobe не смог получить длительность файла {file_path}: {result.stderr}")
+            # Fallback к приблизительному расчету
+            file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            return calculate_audio_duration(file_size_mb)
+            
+    except subprocess.TimeoutExpired:
+        logger.warning(f"ffprobe timeout для файла {file_path}")
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        return calculate_audio_duration(file_size_mb)
+    except Exception as e:
+        logger.error(f"Ошибка при получении длительности файла {file_path}: {e}")
+        # Fallback к приблизительному расчету
+        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        return calculate_audio_duration(file_size_mb)
+
 def migrate_database_schema(conn):
     """Мигрирует схему базы данных для совместимости с новыми моделями"""
     cursor = conn.cursor()

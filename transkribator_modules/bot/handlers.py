@@ -285,7 +285,7 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             # Сохраняем в базу данных и обновляем счетчики
             try:
                 from transkribator_modules.db.database import SessionLocal, UserService, TranscriptionService
-                from transkribator_modules.db.database import calculate_audio_duration
+                from transkribator_modules.db.database import get_media_duration
 
                 db = SessionLocal()
                 try:
@@ -300,8 +300,8 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         last_name=update.effective_user.last_name
                     )
 
-                    # Получаем длительность аудио
-                    duration_minutes = calculate_audio_duration(file_size_mb)
+                    # Получаем реальную длительность аудио из видео
+                    duration_minutes = get_media_duration(str(audio_path))
 
                     # Сохраняем транскрипцию в базу
                     transcription_service.save_transcription(
@@ -496,7 +496,7 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             # Сохраняем в базу данных и обновляем счетчики
             try:
                 from transkribator_modules.db.database import SessionLocal, UserService, TranscriptionService
-                from transkribator_modules.db.database import calculate_audio_duration
+                from transkribator_modules.db.database import get_media_duration
 
                 db = SessionLocal()
                 try:
@@ -511,8 +511,8 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         last_name=update.effective_user.last_name
                     )
 
-                    # Получаем длительность аудио
-                    duration_minutes = calculate_audio_duration(file_size_mb)
+                    # Получаем реальную длительность аудио
+                    duration_minutes = get_media_duration(str(audio_path))
 
                     # Сохраняем транскрипцию в базу
                     transcription_service.save_transcription(
