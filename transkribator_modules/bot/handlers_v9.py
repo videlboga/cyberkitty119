@@ -300,15 +300,6 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         last_name=update.effective_user.last_name
                     )
 
-                    # Проверяем лимиты использования
-                    can_use, limit_message = user_service.check_usage_limit(user)
-                    if not can_use:
-                        if status_msg:
-                            await status_msg.edit_text(f"❌ {limit_message}")
-                        else:
-                            await update.message.reply_text(f"❌ {limit_message}")
-                        return
-
                     # Получаем реальную длительность аудио из видео
                     duration_minutes = get_media_duration(str(audio_path))
 
@@ -523,15 +514,6 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         first_name=update.effective_user.first_name,
                         last_name=update.effective_user.last_name
                     )
-
-                    # Проверяем лимиты использования
-                    can_use, limit_message = user_service.check_usage_limit(user)
-                    if not can_use:
-                        if status_msg:
-                            await status_msg.edit_text(f"❌ {limit_message}")
-                        else:
-                            await update.message.reply_text(f"❌ {limit_message}")
-                        return
 
                     # Получаем реальную длительность аудио
                     duration_minutes = get_media_duration(str(audio_path))

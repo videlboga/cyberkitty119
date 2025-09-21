@@ -19,7 +19,7 @@ current_dir = Path(__file__).parent.resolve()
 sys.path.append(str(current_dir))
 
 try:
-    from transkribator_modules.transcribe.transcriber import transcribe_audio, format_transcript_with_llm
+    from transkribator_modules.transcribe.transcriber_v4 import transcribe_audio, format_transcript_with_llm
     from transkribator_modules.audio.extractor import extract_audio_from_video
     from transkribator_modules.config import logger
     from transkribator_modules.db.database import (
@@ -48,6 +48,10 @@ app.add_middleware(
 
 # Инициализируем базу данных при запуске
 init_database()
+
+# Настраиваем webhook для ЮКассы
+from transkribator_modules.bot.yukassa_webhook import setup_yukassa_webhook
+setup_yukassa_webhook(app)
 
 # Создаем временные директории
 TEMP_DIR = Path("/tmp/transkribator")
@@ -150,6 +154,7 @@ async def root():
             "/plans": "GET - Список доступных тарифных планов",
             "/user/info": "GET - Информация о пользователе и использовании",
             "/user/api-keys": "GET - Список API ключей пользователя",
+            "/webhook/yukassa": "POST - Webhook для обработки платежей ЮКассы",
             "/health": "GET - Проверка состояния сервиса"
         }
     }
@@ -345,7 +350,7 @@ async def transcribe_video(
             formatted_transcript=formatted_transcript,
             processing_time=processing_time,
             transcription_service="deepinfra",
-            formatting_service=formatting_service
+            formatting_service=formatting_service or "none"
         )
 
         # Обновляем использование (минуты или генерации)

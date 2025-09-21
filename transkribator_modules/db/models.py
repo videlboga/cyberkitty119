@@ -73,28 +73,20 @@ class Transaction(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
-    # Данные транзакции
-    plan_purchased = Column(String, nullable=False)  # Название купленного плана
+    # Данные транзакции (соответствует существующей БД)
+    plan_type = Column(String, nullable=False)  # Название купленного плана
 
     # Суммы в разных валютах
     amount_rub = Column(Float, nullable=True)
     amount_usd = Column(Float, nullable=True)
     amount_stars = Column(Integer, nullable=True)  # Telegram Stars
-    currency = Column(String, default="RUB")  # RUB, USD, XTR (Telegram Stars)
 
     # Статус оплаты
     status = Column(String, default="pending")  # pending, completed, failed, refunded
-    payment_provider = Column(String, nullable=True)  # telegram_stars, stripe, yookassa, etc.
+    payment_method = Column(String, nullable=True)  # telegram_stars, stripe, yookassa, etc.
 
-    # ID платежей от провайдеров
-    provider_payment_charge_id = Column(String, nullable=True)  # ID от платежного провайдера
-    telegram_payment_charge_id = Column(String, nullable=True)  # ID от Telegram
-    external_payment_id = Column(String, nullable=True)  # Дополнительный внешний ID
-
-    # Метаданные
-    transaction_metadata = Column(Text, nullable=True)  # JSON с дополнительными данными
+    # Временные метки
     created_at = Column(DateTime, default=datetime.utcnow)
-    completed_at = Column(DateTime, nullable=True)
 
     # Связи
     user = relationship("User", back_populates="transactions")
@@ -196,7 +188,7 @@ DEFAULT_PLANS = [
         "max_file_size_mb": 50.0,
         "price_rub": 0.0,
         "price_usd": 0.0,
-        "price_stars": 0,
+        "price_stars": 760,
         "description": "Попробуйте наш сервис бесплатно",
         "features": '["3 генерации в месяц", "Файлы до 50 МБ", "Базовое качество"]'
     },
@@ -207,7 +199,7 @@ DEFAULT_PLANS = [
         "max_file_size_mb": 200.0,
         "price_rub": 990.0,
         "price_usd": 10.0,
-        "price_stars": 0,
+        "price_stars": 760,
         "description": "Для регулярного использования",
         "features": '["3 часа в месяц", "Файлы до 200 МБ", "ИИ-форматирование"]'
     },
@@ -216,9 +208,9 @@ DEFAULT_PLANS = [
         "display_name": "💎 Профессиональный",
         "minutes_per_month": 600.0,  # 10 часов
         "max_file_size_mb": 500.0,
-        "price_rub": 2990.0,
-        "price_usd": 30.0,
-        "price_stars": 0,
+        "price_rub": 470.0,
+        "price_usd": 5.0,
+        "price_stars": 362,
         "description": "Для бизнеса и работы",
         "features": '["10 часов в месяц", "Файлы до 500 МБ", "API доступ", "Приоритет"]'
     },
@@ -227,9 +219,9 @@ DEFAULT_PLANS = [
         "display_name": "🚀 Безлимитный",
         "minutes_per_month": None,  # Безлимитный
         "max_file_size_mb": 2000.0,
-        "price_rub": 9990.0,
-        "price_usd": 100.0,
-        "price_stars": 0,
+        "price_rub": 790.0,
+        "price_usd": 8.0,
+        "price_stars": 608,
         "description": "Максимальные возможности",
         "features": '["Безлимитные минуты", "Файлы до 2 ГБ", "VIP поддержка", "Все функции"]'
     }

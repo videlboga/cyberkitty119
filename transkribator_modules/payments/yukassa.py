@@ -8,7 +8,7 @@ import uuid
 from typing import Optional, Dict, Any
 from yookassa import Payment, Configuration
 
-from transkribator_modules.config import logger
+from transkribator_modules.config import logger, YUKASSA_SHOP_ID, YUKASSA_SECRET_KEY, YUKASSA_DEFAULT_EMAIL, YUKASSA_VAT_CODE, YUKASSA_TAX_SYSTEM_CODE
 from transkribator_modules.db.models import PlanType
 
 
@@ -17,11 +17,12 @@ class YukassaPaymentService:
 
     def __init__(self):
         """Инициализация сервиса ЮKassa"""
-        shop_id = os.getenv('YUKASSA_SHOP_ID')
-        secret_key = os.getenv('YUKASSA_SECRET_KEY')
-        self.default_customer_email = os.getenv('YUKASSA_DEFAULT_EMAIL', 'billing@transkribator.local')
-        self.vat_code = int(os.getenv('YUKASSA_VAT_CODE', '1'))  # 1 = без НДС
-        self.tax_system_code = os.getenv('YUKASSA_TAX_SYSTEM_CODE')  # опционально: 1..6
+        # Используем конфигурацию из config.py
+        shop_id = YUKASSA_SHOP_ID
+        secret_key = YUKASSA_SECRET_KEY
+        self.default_customer_email = YUKASSA_DEFAULT_EMAIL
+        self.vat_code = YUKASSA_VAT_CODE
+        self.tax_system_code = YUKASSA_TAX_SYSTEM_CODE
 
         if not shop_id or not secret_key:
             logger.error("ЮKassa не настроен: отсутствуют YUKASSA_SHOP_ID или YUKASSA_SECRET_KEY")
@@ -34,7 +35,7 @@ class YukassaPaymentService:
         logger.info(f"ЮKassa инициализирован для магазина {shop_id}")
 
     def create_payment(self, user_id: int, plan_type: str, amount: float,
-                       description: str = None, receipt: dict | None = None) -> Dict[str, Any]:
+                       description: str = "", receipt: dict | None = None) -> Dict[str, Any]:
         """
         Создает платеж в ЮKassa
         """
@@ -139,17 +140,17 @@ class YukassaPaymentService:
 
     def get_plan_price(self, plan_type: str) -> float:
         prices = {
-            PlanType.BASIC.value: 599.0,
-            PlanType.PRO.value: 2990.0,
-            PlanType.UNLIMITED.value: 9990.0,
+            PlanType.BASIC.value: 299.0,    # PRO план
+            PlanType.PRO.value: 299.0,      # PRO план
+            PlanType.UNLIMITED.value: 699.0, # UNLIMITED план
         }
         return prices.get(plan_type, 0.0)
 
     def get_plan_description(self, plan_type: str) -> str:
         descriptions = {
-            PlanType.BASIC.value: "Базовый план - 180 минут в месяц",
-            PlanType.PRO.value: "Профессиональный план - 600 минут в месяц + API",
-            PlanType.UNLIMITED.value: "Безлимитный план - без ограничений + VIP",
+            PlanType.BASIC.value: "Базовый план - 30 минут в месяц",
+            PlanType.PRO.value: "PRO план - 10 часов в месяц + API доступ",
+            PlanType.UNLIMITED.value: "UNLIMITED план - безлимитно + VIP функции",
         }
         return descriptions.get(plan_type, "Неизвестный план")
 
@@ -174,5 +175,3 @@ class YukassaPaymentService:
         except Exception as e:
             logger.error(f"Ошибка обработки webhook ЮKassa: {e}")
             return None
-
-

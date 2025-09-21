@@ -197,6 +197,9 @@ def init_database():
         # Инициализируем промокоды
         init_promo_codes()
 
+        # Инициализируем планы
+        init_plans()
+
     except Exception as e:
         logger.error(f"Ошибка при инициализации базы данных: {e}")
         raise
@@ -468,27 +471,19 @@ class TransactionService:
     def __init__(self, db: Session):
         self.db = db
 
-    def create_transaction(self, user: User, plan_purchased: str,
+    def create_transaction(self, user: User, plan_type: str,
                           amount_rub: float = None, amount_usd: float = None,
-                          amount_stars: int = None, currency: str = "RUB",
-                          payment_provider: str = None,
-                          provider_payment_charge_id: str = None,
-                          telegram_payment_charge_id: str = None,
-                          metadata: str = None) -> Transaction:
+                          amount_stars: int = None,
+                          payment_method: str = None) -> Transaction:
         """Создать новую транзакцию"""
         transaction = Transaction(
             user_id=user.id,
-            plan_purchased=plan_purchased,
+            plan_type=plan_type,
             amount_rub=amount_rub,
             amount_usd=amount_usd,
             amount_stars=amount_stars,
-            currency=currency,
-            payment_provider=payment_provider,
-            provider_payment_charge_id=provider_payment_charge_id,
-            telegram_payment_charge_id=telegram_payment_charge_id,
-            transaction_metadata=metadata,
-            status="completed",  # Для Telegram Stars сразу completed
-            completed_at=datetime.utcnow()
+            payment_method=payment_method,
+            status="completed"  # Для Telegram Stars сразу completed
         )
 
         self.db.add(transaction)
@@ -630,7 +625,7 @@ def get_media_duration(file_path: str) -> float:
     """Получает реальную длительность аудио/видео файла в минутах с помощью ffprobe"""
     import subprocess
     import json
-    
+
     try:
         # Используем ffprobe для получения длительности
         cmd = [
@@ -640,9 +635,9 @@ def get_media_duration(file_path: str) -> float:
             '-show_format',
             str(file_path)
         ]
-        
+
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        
+
         if result.returncode == 0:
             data = json.loads(result.stdout)
             duration_seconds = float(data['format']['duration'])
@@ -654,7 +649,7 @@ def get_media_duration(file_path: str) -> float:
             # Fallback к приблизительному расчету
             file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
             return calculate_audio_duration(file_size_mb)
-            
+
     except subprocess.TimeoutExpired:
         logger.warning(f"ffprobe timeout для файла {file_path}")
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
@@ -730,11 +725,11 @@ def migrate_database_schema(conn):
         if cursor.fetchone():
             cursor.execute("PRAGMA table_info(transcriptions)")
             columns = [col[1] for col in cursor.fetchall()]
-            
+
             # Проверяем, нужно ли обновить структуру
             if 'filename' not in columns:
                 print("Обновляем структуру таблицы transcriptions...")
-                
+
                 # Создаем новую таблицу с правильной структурой
                 cursor.execute("""
                     CREATE TABLE transcriptions_new (
@@ -753,7 +748,7 @@ def migrate_database_schema(conn):
                         FOREIGN KEY (user_id) REFERENCES users (id)
                     )
                 """)
-                
+
                 # Копируем данные из старой таблицы
                 cursor.execute("""
                     INSERT INTO transcriptions_new (
@@ -761,17 +756,17 @@ def migrate_database_schema(conn):
                         raw_transcript, formatted_transcript, transcript_length,
                         created_at
                     )
-                    SELECT 
+                    SELECT
                         id, user_id, file_name, file_size, duration,
                         transcript, transcript, LENGTH(transcript),
                         created_at
                     FROM transcriptions
                 """)
-                
+
                 # Удаляем старую таблицу и переименовываем новую
                 cursor.execute("DROP TABLE transcriptions")
                 cursor.execute("ALTER TABLE transcriptions_new RENAME TO transcriptions")
-                
+
                 print("Таблица transcriptions обновлена")
 
         # Проверяем и создаем недостающие таблицы
@@ -1067,6 +1062,12 @@ def activate_promo_code_sqlite(telegram_id: int, promo_code: str) -> dict:
                 UPDATE promo_codes SET current_uses = current_uses + 1
                 WHERE id = ?
             """, (promo_id,))
+
+            # Обновляем план пользователя
+            cursor.execute("""
+                UPDATE users SET current_plan = ?, plan_expires_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (plan_type, expires_date, user['id']))
 
             conn.commit()
 

@@ -61,7 +61,14 @@ else:
 # ===== API КЛЮЧИ ДЛЯ AI СЕРВИСОВ =====
 DEEPINFRA_API_KEY = os.getenv('DEEPINFRA_API_KEY', '')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
-OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'anthropic/claude-3.5-sonnet')
+OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'deepseek/deepseek-chat')  # Вернули DeepSeek как просил пользователь
+
+# ===== НАСТРОЙКИ ЮКАССЫ =====
+YUKASSA_SHOP_ID = os.getenv('YUKASSA_SHOP_ID', '1146505')
+YUKASSA_SECRET_KEY = os.getenv('YUKASSA_SECRET_KEY', 'live_HS1FeHDwDeAesa0mp0MmY01NmL9s-UJioHK5DOXt2Z8')
+YUKASSA_DEFAULT_EMAIL = os.getenv('YUKASSA_DEFAULT_EMAIL', 'billing@transkribator.local')
+YUKASSA_VAT_CODE = int(os.getenv('YUKASSA_VAT_CODE', '1'))  # 1 = без НДС
+YUKASSA_TAX_SYSTEM_CODE = os.getenv('YUKASSA_TAX_SYSTEM_CODE')  # опционально: 1..6
 
 # ===== НАСТРОЙКИ БАЗЫ ДАННЫХ =====
 if IN_CONTAINER:
@@ -97,4 +104,4 @@ logger.info(f"📁 Директория видео: {VIDEOS_DIR}")
 logger.info(f"📁 Директория аудио: {AUDIO_DIR}")
 logger.info(f"📁 Директория транскрипций: {TRANSCRIPTIONS_DIR}")
 logger.info(f"🔧 Максимальный размер файла: {MAX_FILE_SIZE_MB} МБ")
-logger.info(f"⏱️ Максимальная длительность: {MAX_AUDIO_DURATION_MINUTES} минут") 
+logger.info(f"⏱️ Максимальная длительность: {MAX_AUDIO_DURATION_MINUTES} минут")

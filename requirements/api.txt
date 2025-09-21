@@ -11,4 +11,7 @@ sqlalchemy==2.0.25
 pydantic==2.5.3
 
 # AI и транскрибация
-openai==1.14.0 
+openai==1.14.0
+
+# Платежи
+yookassa==3.0.0

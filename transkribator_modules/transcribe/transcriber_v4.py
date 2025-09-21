@@ -52,12 +52,12 @@ async def compress_audio_for_api(audio_path):
         return str(audio_path)  # Возвращаем оригинальный файл при ошибке
 
 async def transcribe_audio(audio_path, model_name="base"):
-    """Транскрибирует аудио с помощью DeepInfra API через разбивку на сегменты."""
+    """Транскрибирует аудио с помощью DeepInfra API целиком без разбивки на сегменты."""
 
-    # Используем DeepInfra API для транскрибации с разбивкой на сегменты
+    # Используем DeepInfra API для транскрибации целиком
     if DEEPINFRA_API_KEY:
-        logger.info("Использую DeepInfra API для транскрибации с разбивкой на сегменты...")
-        result = await split_and_transcribe_audio(audio_path)
+        logger.info("Использую DeepInfra API для транскрибации целиком...")
+        result = await transcribe_whole_audio_with_deepinfra(audio_path)
         if result:
             return result
         else:
@@ -68,18 +68,26 @@ async def transcribe_audio(audio_path, model_name="base"):
         return None
 
 def _basic_local_format(raw_transcript: str) -> str:
-    """Простое локальное форматирование: чистка пробелов, разбиение на предложения и абзацы."""
+    """Улучшенное локальное форматирование: сохраняет весь текст, добавляет структуру."""
     text = (raw_transcript or "").strip()
     if not text:
         return text
-    # Нормализуем пробелы и переводы строк
+
+    # Нормализуем пробелы, но сохраняем весь текст
     import re
     text = re.sub(r"[ \t\u00A0]+", " ", text)
     text = re.sub(r"\s*\n\s*", "\n", text)
+
     # Разбиваем на предложения по пунктуации
     sentences = re.split(r"(?<=[\.!?])\s+", text)
     sentences = [s.strip() for s in sentences if s.strip()]
-    # Собираем абзацы по 3-4 предложения
+
+    # Если предложения не найдены, разбиваем по длинным паузам
+    if len(sentences) <= 1:
+        sentences = re.split(r"(?<=[.!?])\s+(?=[А-ЯЁ])", text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+    # Собираем абзацы по 3-4 предложения для лучшей читаемости
     paragraphs = []
     paragraph = []
     for s in sentences:
@@ -89,6 +97,11 @@ def _basic_local_format(raw_transcript: str) -> str:
             paragraph = []
     if paragraph:
         paragraphs.append(" ".join(paragraph))
+
+    # Если абзацы не получились, возвращаем исходный текст с базовой очисткой
+    if not paragraphs:
+        return text
+
     return "\n\n".join(paragraphs)
 
 async def format_transcript_with_llm(raw_transcript: str) -> str | None:
@@ -104,23 +117,23 @@ async def format_transcript_with_llm(raw_transcript: str) -> str | None:
         if OPENROUTER_API_KEY:
             logger.info("Пробую форматировать через OpenRouter/DeepSeek")
 
-            # Если транскрипция длинная (>25k символов), разбиваем на части
-            if len(raw_transcript) > 25000:
-                logger.info(f"Транскрипция длинная ({len(raw_transcript)} символов), разбиваю на части для форматирования")
-                formatted = await format_long_transcript_in_chunks(raw_transcript)
-                if formatted:
-                    return formatted
+            # Отправляем всю транскрипцию целиком без разбиения на чанки
+            logger.info(f"Отправляю транскрипцию целиком ({len(raw_transcript)} символов) для форматирования")
+            formatted = await format_transcript_with_openrouter(raw_transcript)
+            if formatted:
+                return formatted
             else:
-                formatted = await format_transcript_with_openrouter(raw_transcript)
-                if formatted:
-                    return formatted
+                logger.warning("API не смог обработать транскрипцию, использую локальное форматирование")
+                return _basic_local_format(raw_transcript)
 
-        # Не удалось отформатировать через LLM
-        return None
+        # Не удалось отформатировать через LLM, используем локальное форматирование
+        logger.warning("Не удалось отформатировать через LLM, использую локальное форматирование")
+        return _basic_local_format(raw_transcript)
 
     except Exception as e:
         logger.error(f"Ошибка при форматировании транскрипции: {e}")
-        return None
+        logger.warning("Использую локальное форматирование как fallback")
+        return _basic_local_format(raw_transcript)
 
 async def format_transcript_with_openrouter(raw_transcript: str) -> str | None:
     """Форматирует сырую транскрипцию с помощью OpenRouter API."""
@@ -131,20 +144,29 @@ async def format_transcript_with_openrouter(raw_transcript: str) -> str | None:
     try:
         logger.info(f"Форматирование транскрипции с помощью OpenRouter API, модель: {OPENROUTER_MODEL}")
 
-        # Мягкий промт: бережное форматирование без изменения смысла
+        # Улучшенный промт: акцент на сохранении всего содержания
         system_prompt = (
-            "Ты помощник-редактор транскрипций. Форматируй аккуратно: добавляй пунктуацию, исправляй явные опечатки, "
-            "сохраняй лексику, порядок фраз и смысл. Ничего не выдумывай и не сокращай содержание. "
-            "Запрещено добавлять факты/мысли от себя. Отвечай только чистым текстом без пояснений."
+            "Ты редактор транскрипций. ТВОЯ ГЛАВНАЯ ЗАДАЧА - СОХРАНИТЬ ВЕСЬ ТЕКСТ БЕЗ ПОТЕРИ ИНФОРМАЦИИ. "
+            "КРИТИЧЕСКИ ВАЖНО: НЕ УБИРАЙ НИ ОДНОГО СЛОВА из оригинального текста. "
+            "Только добавляй пунктуацию, исправляй очевидные опечатки и делай переносы строк. "
+            "НЕ СОКРАЩАЙ, НЕ ПЕРЕФРАЗИРУЙ, НЕ УПРОЩАЙ текст. "
+            "Если исходный текст длинный - верни его полностью, только с улучшенным форматированием. "
+            "Отвечай ТОЛЬКО отформатированным текстом без дополнительных комментариев."
         )
 
-        user_prompt = f"""Отформатируй следующую сырую транскрипцию: проставь пунктуацию,
-сделай переносы строк/абзацев, исправь только очевидные ошибки. Не перефразируй,
-не меняй порядок фраз и не убирай важное содержание. Верни только очищенный текст.
+        user_prompt = f"""Пожалуйста, отформатируй эту транскрипцию, сохранив ВЕСЬ текст:
 
-Транскрипция:
+ВАЖНО:
+- Сохрани каждое слово из оригинала
+- Добавь только пунктуацию и переносы строк
+- Исправь только явные опечатки
+- НЕ сокращай и НЕ убирай никакую информацию
+- Верни текст той же длины или длиннее
+
+Транскрипция для форматирования:
 {raw_transcript}
-"""
+
+Отформатированный текст:"""
 
         # Формируем запрос к API
         headers = {
@@ -161,7 +183,7 @@ async def format_transcript_with_openrouter(raw_transcript: str) -> str | None:
                 {"role": "user", "content": user_prompt}
             ],
             "temperature": 0.15,  # чуть мягче, но детерминированно
-            "max_tokens": 8192  # Увеличиваем лимит токенов для длинных транскрипций
+            "max_tokens": 32768  # Увеличиваем лимит токенов для длинных транскрипций
         }
 
         # Отправляем запрос
@@ -174,8 +196,24 @@ async def format_transcript_with_openrouter(raw_transcript: str) -> str | None:
                 if response.status == 200:
                     data = await response.json()
                     formatted_text = data["choices"][0]["message"]["content"]
-                    logger.info("Транскрипция успешно отформатирована с помощью OpenRouter API")
-                    return formatted_text
+
+                    # Проверяем качество форматирования
+                    original_length = len(raw_transcript)
+                    formatted_length = len(formatted_text)
+                    length_ratio = formatted_length / original_length if original_length > 0 else 1
+
+                    if length_ratio > 1.2:  # Если текст увеличился более чем на 20%
+                        logger.warning(f"⚠️ Модель добавила много лишнего: {length_ratio:.1f}x от оригинала")
+                        return formatted_text  # Принимаем результат
+                    elif length_ratio < 0.7:  # Если текст сократился более чем на 30%
+                        logger.error(f"❌ Модель КРИТИЧЕСКИ сократила текст: {length_ratio:.1f}x от оригинала - ОТКЛОНЯЕМ")
+                        return None  # Отклоняем результат и используем локальное форматирование
+                    elif length_ratio < 0.8:  # Если текст сократился более чем на 20%
+                        logger.warning(f"⚠️ Модель сократила текст: {length_ratio:.1f}x от оригинала - принимаем с предупреждением")
+                        return formatted_text  # Принимаем, но с предупреждением
+                    else:
+                        logger.info(f"✅ Форматирование прошло успешно: {length_ratio:.1f}x от оригинала")
+                        return formatted_text
                 else:
                     error_text = await response.text()
                     logger.error(f"Ошибка от OpenRouter API: {response.status}, {error_text}")
@@ -187,46 +225,7 @@ async def format_transcript_with_openrouter(raw_transcript: str) -> str | None:
         logger.error(traceback.format_exc())
         return None
 
-async def format_long_transcript_in_chunks(raw_transcript: str) -> str | None:
-    """Форматирует длинную транскрипцию, разбивая её на части."""
-    try:
-        # Разбиваем транскрипцию на части по ~20k символов
-        chunk_size = 20000
-        chunks = []
-
-        for i in range(0, len(raw_transcript), chunk_size):
-            chunk = raw_transcript[i:i + chunk_size]
-            # Стараемся разбивать по предложениям
-            if i + chunk_size < len(raw_transcript):
-                last_period = chunk.rfind('.')
-                last_exclamation = chunk.rfind('!')
-                last_question = chunk.rfind('?')
-                last_break = max(last_period, last_exclamation, last_question)
-                if last_break > chunk_size * 0.8:  # Если нашли разрыв в последних 20%
-                    chunk = chunk[:last_break + 1]
-            chunks.append(chunk.strip())
-
-        logger.info(f"Разбил транскрипцию на {len(chunks)} частей для форматирования")
-
-        # Форматируем каждую часть отдельно
-        formatted_chunks = []
-        for i, chunk in enumerate(chunks):
-            logger.info(f"Форматирую часть {i+1}/{len(chunks)} ({len(chunk)} символов)")
-            formatted_chunk = await format_transcript_with_openrouter(chunk)
-            if formatted_chunk:
-                formatted_chunks.append(formatted_chunk)
-            else:
-                logger.warning(f"Не удалось отформатировать часть {i+1}, использую локальное форматирование")
-                formatted_chunks.append(_basic_local_format(chunk))
-
-        # Объединяем отформатированные части
-        result = "\n\n".join(formatted_chunks)
-        logger.info(f"Успешно отформатировал длинную транскрипцию: {len(result)} символов")
-        return result
-
-    except Exception as e:
-        logger.error(f"Ошибка при форматировании длинной транскрипции по частям: {e}")
-        return None
+# Функция разбиения на чанки для форматирования удалена - теперь форматируем целиком
 
 async def generate_detailed_summary(transcript: str) -> str:
     """Генерирует подробное саммари транскрипции с использованием языковой модели."""
@@ -254,7 +253,8 @@ async def generate_detailed_summary(transcript: str) -> str:
 
 Саммари должно быть содержательным, информативным, но при этом структурированным и понятным."""
 
-            return await request_llm_response(system_prompt, user_prompt)
+            result = await request_llm_response(system_prompt, user_prompt)
+            return result if result else "Не удалось создать подробное саммари. Проверьте настройки API для языковой модели."
 
         return "Не удалось создать подробное саммари. Проверьте настройки API для языковой модели."
 
@@ -287,7 +287,8 @@ async def generate_brief_summary(transcript: str) -> str:
 
 Саммари должно быть максимально коротким, но при этом информативным."""
 
-            return await request_llm_response(system_prompt, user_prompt)
+            result = await request_llm_response(system_prompt, user_prompt)
+            return result if result else "Не удалось создать краткое саммари. Проверьте настройки API для языковой модели."
 
         return "Не удалось создать краткое саммари. Проверьте настройки API для языковой модели."
 
@@ -317,7 +318,7 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str | No
                 {"role": "user", "content": user_prompt}
             ],
             "temperature": 0.3,
-            "max_tokens": 8192  # Увеличиваем лимит токенов для длинных саммари
+            "max_tokens": 32768  # Увеличиваем лимит токенов для длинных саммари
         }
 
         # Отправляем запрос
@@ -343,176 +344,44 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str | No
         logger.error(traceback.format_exc())
         return None
 
-async def split_and_transcribe_audio(audio_path):
-    """Разбивает длинное аудио на сегменты и транскрибирует каждый через DeepInfra API.
-    Делает транскрибацию параллельно с ограничением по количеству одновременных запросов.
-    Параметры управляются переменными окружения:
-    - DEEPINFRA_SEGMENT_SEC (int, по умолчанию 45)
-    - DEEPINFRA_CONCURRENCY (int, по умолчанию 4)
-    """
+async def transcribe_whole_audio_with_deepinfra(audio_path):
+    """Транскрибирует целое аудио через DeepInfra API без разбивки на сегменты."""
     if not DEEPINFRA_API_KEY:
         logger.warning("DeepInfra API ключ не настроен")
         return None
 
     try:
         audio_path = Path(audio_path)
-        logger.info(f"Разбиваю аудио на сегменты для обработки: {audio_path}")
+        logger.info(f"Транскрибирую целое аудио: {audio_path}")
 
         # Сначала сжимаем аудио
         compressed_audio_path = await compress_audio_for_api(audio_path)
 
-        # Создаём папку для сегментов
-        segments_dir = audio_path.parent / f"{audio_path.stem}_segments"
-        segments_dir.mkdir(exist_ok=True)
+        # Транскрибируем целое аудио
+        transcript_text = await transcribe_segment_with_deepinfra(compressed_audio_path)
 
-        # Длительность сегмента (можно настроить через env)
-        # По умолчанию 6 минут (360 секунд) для снижения вероятности сбоев сети
-        segment_duration = int(os.getenv('DEEPINFRA_SEGMENT_SEC', '360'))
-        segment_files = []
+        if transcript_text:
+            logger.info(f"Транскрибация завершена, получено {len(transcript_text)} символов")
 
-        # Получаем длительность аудио
-        cmd = [
-            'ffprobe',
-            '-v', 'quiet',
-            '-show_entries', 'format=duration',
-            '-of', 'csv=p=0',
-            str(compressed_audio_path)
-        ]
+            # Очищаем временные файлы
+            try:
+                if compressed_audio_path != str(audio_path):
+                    Path(compressed_audio_path).unlink()
+            except:
+                pass
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-
-        stdout, stderr = await process.communicate()
-
-        if process.returncode != 0:
-            logger.error(f"Ошибка при получении длительности: {stderr.decode()}")
+            return transcript_text
+        else:
+            logger.error("Не удалось транскрибировать аудио")
             return None
 
-        total_duration = float(stdout.decode().strip())
-        logger.info(f"Общая длительность аудио: {total_duration:.2f} секунд")
-
-        # Создаём сегменты
-        for start_time in range(0, int(total_duration), segment_duration):
-            segment_path = segments_dir / f"segment_{start_time:04d}.mp3"
-
-            cmd = [
-                'ffmpeg',
-                '-i', str(compressed_audio_path),
-                '-ss', str(start_time),
-                '-t', str(segment_duration),
-                '-c', 'copy',
-                '-y',
-                str(segment_path)
-            ]
-
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-
-            stdout, stderr = await process.communicate()
-
-            if process.returncode == 0 and segment_path.exists() and segment_path.stat().st_size > 1000:
-                segment_files.append(segment_path)
-                logger.info(f"Создан сегмент: {segment_path.name}")
-
-        logger.info(f"Создано {len(segment_files)} сегментов")
-
-        # Транскрибируем сегменты параллельно с ограничением по числу одновременных запросов
-        # По умолчанию бережно: 1
-        concurrency = max(1, int(os.getenv('DEEPINFRA_CONCURRENCY', '1')))
-        logger.info(f"Начинаю параллельную транскрибацию {len(segment_files)} сегментов, параллелизм: {concurrency}")
-
-        semaphore = asyncio.Semaphore(concurrency)
-
-        async def transcribe_one(index: int, path: Path):
-            async with semaphore:
-                logger.info(f"Транскрибирую сегмент {index+1}/{len(segment_files)}: {path.name}")
-                try:
-                    text = await transcribe_segment_with_deepinfra(path)
-                    if not text:
-                        logger.warning(f"Не удалось транскрибировать сегмент {path.name}")
-                    return index, text or ""
-                except Exception as e:
-                    logger.error(f"Ошибка при транскрибации сегмента {path.name}: {e}")
-                    return index, ""
-
-        tasks = [transcribe_one(i, p) for i, p in enumerate(segment_files)]
-        results = await asyncio.gather(*tasks)
-        # Собираем в словарь результатов: индекс -> текст
-        index_to_text: dict[int, str] = {idx: text for idx, text in results}
-
-        # Внешние ретраи: если какие-то сегменты вернулись пустыми — пробуем ещё раз
-        max_segment_retries = max(0, int(os.getenv('DEEPINFRA_MAX_SEGMENT_RETRIES', '3')))  # Увеличиваем количество ретраев
-        if max_segment_retries > 0:
-            for attempt in range(1, max_segment_retries + 1):
-                failed_indices = [i for i, t in index_to_text.items() if not t or len(t.strip()) < 10]
-                if not failed_indices:
-                    break
-
-                # Экспоненциальная пауза перед повтором (2, 4, 8 ... сек), ограничим 15 сек
-                backoff_seconds = min(15, 2 ** attempt)
-                logger.info(
-                    f"Повторная транскрибация {len(failed_indices)} сегментов (попытка {attempt}/{max_segment_retries}), "
-                    f"ожидание перед стартом {backoff_seconds}с"
-                )
-                await asyncio.sleep(backoff_seconds)
-
-                # Запускаем ретрай только для проваленных сегментов, соблюдая тот же параллелизм
-                retry_tasks = [
-                    transcribe_one(i, segment_files[i])
-                    for i in failed_indices
-                ]
-                retry_results = await asyncio.gather(*retry_tasks)
-                recovered_count = 0
-                for idx, text in retry_results:
-                    if text and len(text.strip()) >= 10:  # Проверяем, что текст не пустой и не слишком короткий
-                        recovered_count += 1
-                        index_to_text[idx] = text
-                logger.info(
-                    f"Результат попытки {attempt}: восстановлено {recovered_count} из {len(failed_indices)} сегментов"
-                )
-
-        # Собираем тексты в правильном порядке
-        all_transcripts = [index_to_text[i] for i in sorted(index_to_text.keys())]
-
-        # Проверяем, что все сегменты обработаны
-        missing_segments = [i for i in range(len(segment_files)) if i not in index_to_text or not index_to_text[i] or len(index_to_text[i].strip()) < 10]
-        if missing_segments:
-            logger.warning(f"ВНИМАНИЕ: {len(missing_segments)} сегментов не были обработаны: {missing_segments}")
-            logger.warning("Транскрипция может быть неполной!")
-
-        # Объединяем все транскрипции
-        full_transcript = " ".join(all_transcripts)
-
-        # Дополнительная проверка на обрыв в конце
-        if full_transcript and not full_transcript.rstrip().endswith(('.', '!', '?', '...')):
-            logger.warning("ВНИМАНИЕ: Транскрипция может быть обрезана - не заканчивается знаками препинания")
-
-        # Очищаем временные файлы
-        try:
-            for segment_path in segment_files:
-                segment_path.unlink()
-            segments_dir.rmdir()
-
-            # Удаляем сжатый файл, если он отличается от оригинала
-            if compressed_audio_path != str(audio_path):
-                Path(compressed_audio_path).unlink()
-        except:
-            pass
-
-        logger.info(f"Транскрибация завершена, получено {len(full_transcript)} символов")
-        return full_transcript
-
     except Exception as e:
-        logger.error(f"Ошибка при разбивке и транскрибации аудио: {e}")
+        logger.error(f"Ошибка при транскрибации аудио: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return None
+
+# Старая функция разбиения на сегменты удалена - теперь транскрибируем целиком
 
 async def transcribe_segment_with_deepinfra(segment_path):
     """Транскрибирует один сегмент аудио через DeepInfra API (как было ранее)."""

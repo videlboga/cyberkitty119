@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 from transkribator_modules.config import logger
 from transkribator_modules.db.database import SessionLocal, UserService, ApiKeyService, PromoCodeService
 from transkribator_modules.db.models import ApiKey, PlanType
-from transkribator_modules.bot.payments import handle_payment_callback, show_payment_plans, initiate_payment
+from transkribator_modules.bot.payments import handle_payment_callback, show_payment_plans, initiate_payment, initiate_yukassa_payment
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает колбек запросы от кнопок."""
@@ -19,9 +19,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     data = query.data
     logger.info(f"Получен колбек: {data}")
+    logger.info(f"Полный update: {update.to_dict() if hasattr(update, 'to_dict') else str(update)}")
 
     # Обработка различных типов колбеков
     if data == "show_payment_plans":
+        logger.info("Получен колбек show_payment_plans")
         await show_payment_plans(update, context)
 
     elif data == "personal_cabinet":
@@ -32,8 +34,22 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await help_command(update, context)
 
     elif data.startswith("buy_plan_"):
-        plan_id = data.replace("buy_plan_", "")
-        await initiate_payment(update, context, plan_id)
+        if data.endswith("_stars"):
+            # Платеж через Telegram Stars
+            plan_id = data.replace("buy_plan_", "").replace("_stars", "")
+            logger.info(f"Обнаружен колбек оплаты плана через Stars: {data}, извлеченный plan_id: {plan_id}")
+            await initiate_payment(update, context, plan_id)
+        elif data.endswith("_yukassa"):
+            # Платеж через ЮКассу
+            plan_id = data.replace("buy_plan_", "").replace("_yukassa", "")
+            logger.info(f"Обнаружен колбек оплаты плана через ЮКассу: {data}, извлеченный plan_id: {plan_id}")
+            await initiate_yukassa_payment(update, context, plan_id)
+        else:
+            # Старый формат для обратной совместимости
+            plan_id = data.replace("buy_plan_", "")
+            logger.info(f"Обнаружен колбек оплаты плана (старый формат): {data}, извлеченный plan_id: {plan_id}")
+            await initiate_payment(update, context, plan_id)
+
 
     elif data == "show_stats":
         from transkribator_modules.bot.commands import stats_command
@@ -51,12 +67,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data == "show_plans":
         await show_plans_callback(query, update.effective_user)
-
-    elif data == "show_stats":
-        await show_stats_callback(query, update.effective_user)
-
-    elif data == "show_api_keys":
-        await show_api_keys_callback(query, update.effective_user)
 
     elif data == "create_api_key":
         await create_api_key_callback(query, update.effective_user)
@@ -664,7 +674,7 @@ async def handle_summary_callback(update: Update, context: ContextTypes.DEFAULT_
                 return
 
             # Импортируем функции генерации саммари
-            from transkribator_modules.transcribe.transcriber import generate_detailed_summary, generate_brief_summary
+            from transkribator_modules.transcribe.transcriber_v4 import generate_detailed_summary, generate_brief_summary
 
             # Генерируем саммари
             if summary_type == "brief":
@@ -725,7 +735,7 @@ async def handle_process_transcript_callback(update: Update, context: ContextTyp
     """Обрабатывает кнопку 'Обработать транскрипцию'."""
     query = update.callback_query
     await query.answer()
-    
+
     try:
         # Отправляем сообщение с инструкцией
         instruction_text = """🔧 **Обработка транскрипции**
@@ -738,11 +748,11 @@ async def handle_process_transcript_callback(update: Update, context: ContextTyp
 Просто отправь мне текстовое сообщение с описанием задачи! 📝"""
 
         await query.edit_message_text(instruction_text, parse_mode='Markdown')
-        
+
         # Сохраняем состояние ожидания задачи в контексте
         context.user_data['waiting_for_task'] = True
         context.user_data['user_id'] = update.effective_user.id
-        
+
     except Exception as e:
         logger.error(f"Ошибка при обработке кнопки 'Обработать': {e}")
         await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")
@@ -751,7 +761,7 @@ async def handle_send_more_callback(update: Update, context: ContextTypes.DEFAUL
     """Обрабатывает кнопку 'Прислать ещё'."""
     query = update.callback_query
     await query.answer()
-    
+
     try:
         # Отправляем сообщение с приглашением загрузить новый файл
         send_more_text = """📤 **Прислать ещё файл**
@@ -769,7 +779,7 @@ async def handle_send_more_callback(update: Update, context: ContextTypes.DEFAUL
 Жду твой файл! 🐱"""
 
         await query.edit_message_text(send_more_text, parse_mode='Markdown')
-        
+
     except Exception as e:
         logger.error(f"Ошибка при обработке кнопки 'Прислать ещё': {e}")
         await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")
@@ -778,11 +788,11 @@ async def handle_main_menu_callback(update: Update, context: ContextTypes.DEFAUL
     """Обрабатывает кнопку 'Главное меню'."""
     query = update.callback_query
     await query.answer()
-    
+
     try:
         # Возвращаемся в главное меню
         await back_to_start_callback(query, update.effective_user)
-        
+
     except Exception as e:
         logger.error(f"Ошибка при обработке кнопки 'Главное меню': {e}")
         await query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")

@@ -14,7 +14,7 @@ from transkribator_modules.config import (
     logger, MAX_FILE_SIZE_MB, VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR, BOT_TOKEN
 )
 from transkribator_modules.audio.extractor import extract_audio_from_video, compress_audio_for_api
-from transkribator_modules.transcribe.transcriber_v4 import transcribe_audio, format_transcript_with_llm, _basic_local_format
+from transkribator_modules.transcribe.transcriber import transcribe_audio, format_transcript_with_llm, _basic_local_format
 from transkribator_modules.utils.large_file_downloader import download_large_file, get_file_info
 
 def clean_html_entities(text: str) -> str:
@@ -300,15 +300,6 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         last_name=update.effective_user.last_name
                     )
 
-                    # Проверяем лимиты использования
-                    can_use, limit_message = user_service.check_usage_limit(user)
-                    if not can_use:
-                        if status_msg:
-                            await status_msg.edit_text(f"❌ {limit_message}")
-                        else:
-                            await update.message.reply_text(f"❌ {limit_message}")
-                        return
-
                     # Получаем реальную длительность аудио из видео
                     duration_minutes = get_media_duration(str(audio_path))
 
@@ -334,14 +325,6 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     db.close()
             except Exception as e:
                 logger.error(f"Ошибка при сохранении транскрипции: {e}")
-
-        # Проверяем, что транскрипция не пустая
-        if not transcript or not transcript.strip():
-            if status_msg:
-                await status_msg.edit_text("❌ Не удалось создать транскрипцию")
-            else:
-                await update.message.reply_text("❌ Не удалось создать транскрипцию")
-            return
 
         # Отправляем результат
         if status_msg:
@@ -397,6 +380,11 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 "Что дальше будем с этим делать? 🤔",
                 reply_markup=reply_markup
             )
+        else:
+            if status_msg:
+                await status_msg.edit_text("❌ Не удалось создать транскрипцию")
+            else:
+                await update.message.reply_text("❌ Не удалось создать транскрипцию")
 
         # Очищаем временные файлы
         try:
@@ -523,15 +511,6 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         first_name=update.effective_user.first_name,
                         last_name=update.effective_user.last_name
                     )
-
-                    # Проверяем лимиты использования
-                    can_use, limit_message = user_service.check_usage_limit(user)
-                    if not can_use:
-                        if status_msg:
-                            await status_msg.edit_text(f"❌ {limit_message}")
-                        else:
-                            await update.message.reply_text(f"❌ {limit_message}")
-                        return
 
                     # Получаем реальную длительность аудио
                     duration_minutes = get_media_duration(str(audio_path))
@@ -830,7 +809,7 @@ async def handle_transcript_processing_task(update: Update, context: ContextType
 async def process_transcript_with_task(transcript_text: str, task_description: str) -> str:
     """Обрабатывает транскрипцию согласно задаче пользователя."""
     try:
-        from transkribator_modules.transcribe.transcriber_v4 import format_transcript_with_llm
+        from transkribator_modules.transcribe.transcriber import format_transcript_with_llm
 
         # Создаем промпт для обработки транскрипции
         prompt = f"""Ты эксперт по обработке транскрипций. Пользователь просит обработать транскрипцию согласно следующей задаче:
