@@ -33,7 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== ОСНОВНЫЕ НАСТРОЙКИ БОТА =====
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7907324843:AAEJMec9IeP89y0Taka4k7hbvpjd7F1Frl4')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 
 # Проверяем BOT_TOKEN только для модулей бота (не для API сервера)
 REQUIRE_BOT_TOKEN = os.getenv('REQUIRE_BOT_TOKEN', 'true').lower() == 'true'

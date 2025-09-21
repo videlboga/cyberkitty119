@@ -33,7 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ===== ОСНОВНЫЕ НАСТРОЙКИ БОТА =====
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7907324843:AAEJMec9IeP89y0Taka4k7hbvpjd7F1Frl4')
+# Никогда не храните реальные токены в коде/репозитории.
+# Значение должно приходить из переменных окружения или .env (который игнорируется git).
+BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 
 # Проверяем BOT_TOKEN только для модулей бота (не для API сервера)
 REQUIRE_BOT_TOKEN = os.getenv('REQUIRE_BOT_TOKEN', 'true').lower() == 'true'
@@ -64,8 +66,9 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
 OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'deepseek/deepseek-chat')  # Вернули DeepSeek как просил пользователь
 
 # ===== НАСТРОЙКИ ЮКАССЫ =====
-YUKASSA_SHOP_ID = os.getenv('YUKASSA_SHOP_ID', '1146505')
-YUKASSA_SECRET_KEY = os.getenv('YUKASSA_SECRET_KEY', 'live_HS1FeHDwDeAesa0mp0MmY01NmL9s-UJioHK5DOXt2Z8')
+# Установите значения через переменные окружения/.env
+YUKASSA_SHOP_ID = os.getenv('YUKASSA_SHOP_ID', '')
+YUKASSA_SECRET_KEY = os.getenv('YUKASSA_SECRET_KEY', '')
 YUKASSA_DEFAULT_EMAIL = os.getenv('YUKASSA_DEFAULT_EMAIL', 'billing@transkribator.local')
 YUKASSA_VAT_CODE = int(os.getenv('YUKASSA_VAT_CODE', '1'))  # 1 = без НДС
 YUKASSA_TAX_SYSTEM_CODE = os.getenv('YUKASSA_TAX_SYSTEM_CODE')  # опционально: 1..6
