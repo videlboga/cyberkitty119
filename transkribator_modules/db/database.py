@@ -1010,7 +1010,7 @@ def get_user_stats(telegram_id: int) -> dict:
             user = db.query(User).filter(User.telegram_id == telegram_id).first()
             if not user:
                 return {
-                    'subscription_status': 'Базовый',
+                    'subscription_status': 'Бесплатный',
                     'subscription_until': 'Не ограничено',
                     'files_processed': 0,
                     'minutes_transcribed': 0,

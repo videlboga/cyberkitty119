@@ -87,7 +87,7 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
 🎯 **Выберите подходящий план и получите максимум возможностей!**"""
 
         keyboard = [
-            [InlineKeyboardButton("🆓 Остаться на базовом", callback_data="stay_basic")],
+            [InlineKeyboardButton("🆓 Остаться на бесплатном", callback_data="stay_basic")],
             [InlineKeyboardButton("⭐ Купить PRO (Stars)", callback_data="buy_plan_pro_stars")],
             [InlineKeyboardButton("⭐ Купить PRO (ЮКасса)", callback_data="buy_plan_pro_yukassa")],
             [InlineKeyboardButton("🚀 Купить UNLIMITED (Stars)", callback_data="buy_plan_unlimited_stars")],

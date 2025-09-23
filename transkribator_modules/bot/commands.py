@@ -31,6 +31,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     keyboard = [
         [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
+        [InlineKeyboardButton("⭐ Купить подписку", callback_data="show_payment_plans")],
         [InlineKeyboardButton("💡 Помощь", callback_data="show_help")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -126,6 +127,11 @@ async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     from transkribator_modules.bot.payments import show_payment_plans
     await show_payment_plans(update, context)
 
+async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /buy — быстрый переход к покупке."""
+    from transkribator_modules.bot.payments import show_payment_plans
+    await show_payment_plans(update, context)
+
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /stats"""
     try:
@@ -141,7 +147,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 • Последний раз: {stats.get('last_activity', 'Никогда')}
 
 💎 **Подписка:**
-• Статус: {stats.get('subscription_status', 'Базовый')}
+• Статус: {stats.get('subscription_status', 'Бесплатный')}
 • Остаток файлов: {stats.get('files_remaining', 'Безлимит')}
 • Действует до: {stats.get('subscription_until', 'Не ограничено')}
 
