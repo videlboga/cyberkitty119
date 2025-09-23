@@ -76,13 +76,13 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
 • 10 часов (600 минут) в месяц
 • Файлы до 500 МБ
 • Приоритетная очередь
-• API‑доступ и экспорт
+• Расширенные функции
 
 🚀 **UNLIMITED (699₽/месяц)**
 • Безлимитная транскрибация
 • Файлы до 2 ГБ
 • VIP поддержка 24/7
-• Полный API доступ и расширенные функции
+• Полный набор функций
 
 🎯 **Выберите подходящий план и получите максимум возможностей!**"""
 
@@ -327,8 +327,7 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
 Спасибо за использование CyberKitty Transkribator! 🐱✨"""
 
         keyboard = [
-            [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
-            [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")]
+            [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")]
         ]
 
         reply_markup = InlineKeyboardMarkup(keyboard)

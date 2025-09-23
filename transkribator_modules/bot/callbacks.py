@@ -168,9 +168,7 @@ async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TY
             db.close()
 
         keyboard = [
-            [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
             [InlineKeyboardButton("💎 Тарифы", callback_data="show_payment_plans")],
-            [InlineKeyboardButton("🔑 API", callback_data="show_api_keys")],
             [InlineKeyboardButton("🎁 Промокоды", callback_data="enter_promo_code")],
             [InlineKeyboardButton("❓ Помощь", callback_data="show_help")]
         ]
@@ -276,7 +274,6 @@ async def show_stats_callback(query, user):
                 stats_text += f"\n{i}. {trans.filename or 'Видео'} ({trans.audio_duration_minutes:.1f} мин) - {date_str}"
 
         keyboard = [
-            [InlineKeyboardButton("🔑 API ключи", callback_data="show_api_keys")],
             [InlineKeyboardButton("📊 Планы", callback_data="show_plans")],
             [InlineKeyboardButton("🔙 Назад", callback_data="back_to_start")]
         ]
