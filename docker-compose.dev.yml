@@ -25,32 +25,6 @@ services:
     # Не запускаем автоматически, только для интерактивной работы
     command: /bin/bash
 
-  # Pyrogram воркер для разработки
-  pyro-dev:
-    build:
-      context: .
-      dockerfile: Dockerfile.pyro
-    container_name: transkribator-pyro-dev
-    volumes:
-      - ./videos:/app/videos
-      - ./audio:/app/audio
-      - ./transcriptions:/app/transcriptions
-      - ./.env:/app/.env
-      - ./transkribator_modules:/app/transkribator_modules
-      - .:/app  # Монтируем весь проект для разработки
-      - ./transkribator_modules/workers/pyro_worker.session:/app/transkribator_modules/workers/pyro_worker.session  # Монтируем сессию из правильного места
-    environment:
-      - PYTHONUNBUFFERED=1
-      - PYTHONPATH=/app
-      - PYROGRAM_WORKER_ENABLED=true
-    working_dir: /app
-    stdin_open: true
-    tty: true
-    networks:
-      - transkribator-dev-network
-    # Не запускаем автоматически, только для интерактивной работы
-    command: /bin/bash
-
   # API сервер для разработки
   api-dev:
     build:
@@ -69,13 +43,31 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=/app
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./cyberkitty19-transkribator.db}
     working_dir: /app
     stdin_open: true
     tty: true
     networks:
       - transkribator-dev-network
+    depends_on:
+      - postgres-dev
     # Не запускаем автоматически, только для интерактивной работы
     command: /bin/bash
+
+  postgres-dev:
+    image: postgres:16
+    container_name: transkribator-postgres-dev
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-transkribator}
+      - POSTGRES_USER=${POSTGRES_USER:-transkribator}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-transkribator}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - transkribator-dev-network
 
 networks:
   transkribator-dev-network:
@@ -84,4 +76,5 @@ networks:
 volumes:
   videos:
   audio:
-  transcriptions: 
+  transcriptions:
+  postgres-data:

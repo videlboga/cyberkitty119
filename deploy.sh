@@ -130,19 +130,16 @@ else
     warn "API сервер недоступен. Проверьте логи: docker-compose logs cyberkitty19-transkribator-api"
 fi
 
-# Инструкции по настройке Pyrogram
+# Рекомендации по дальнейшим шагам
 echo ""
 info "=== СЛЕДУЮЩИЕ ШАГИ ==="
-info "1. Настройте Pyrogram воркер для больших видео:"
-info "   docker-compose exec cyberkitty19-transkribator-pyro-worker python -m transkribator_modules.workers.pyro_auth"
-info ""
-info "2. Проверьте логи:"
+info "1. Проверьте логи:"
 info "   docker-compose logs -f"
 info ""
-info "3. Проверьте статус:"
+info "2. Проверьте статус:"
 info "   docker-compose ps"
 info ""
-info "4. Протестируйте бота:"
+info "3. Протестируйте бота:"
 info "   Отправьте /start вашему боту в Telegram"
 info ""
 

@@ -139,27 +139,6 @@ log "Создание необходимых директорий..."
 mkdir -p videos audio transcriptions
 info "Директории созданы ✓"
 
-# Инструкции по настройке Pyrogram Worker (опционально)
-echo -e "${BLUE}"
-echo "╔════════════════════════════════════════════════════╗"
-echo "║               ДОПОЛНИТЕЛЬНАЯ НАСТРОЙКА             ║"
-echo "║                                                    ║"
-echo "║  Для работы с большими видео (>20 МБ) вам нужно    ║"
-echo "║  настроить Pyrogram Worker:                        ║"
-echo "║                                                    ║"
-echo "║  1. Укажите в .env:                                ║"
-echo "║     - PYROGRAM_WORKER_ENABLED=true                 ║"
-echo "║     - PYROGRAM_WORKER_CHAT_ID                      ║"
-echo "║     - TELEGRAM_API_ID и TELEGRAM_API_HASH          ║"
-echo "║                                                    ║"
-echo "║  2. Запустите скрипт авторизации (только раз):     ║"
-echo "║     ./pyro_auth_run.sh                             ║"
-echo "║                                                    ║"
-echo "║  3. Запустите Pyrogram Worker:                     ║"
-echo "║     ./pyro_worker_start.sh                         ║"
-echo "╚════════════════════════════════════════════════════╝"
-echo -e "${NC}"
-
 # Инструкции по запуску бота
 echo -e "${GREEN}"
 echo "╔════════════════════════════════════════════════════╗"

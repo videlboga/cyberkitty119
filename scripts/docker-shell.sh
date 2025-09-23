@@ -11,8 +11,7 @@ echo "======================================="
 show_containers() {
     echo "📦 Доступные контейнеры:"
     echo "1) cyberkitty19-transkribator-bot (основной бот)"
-    echo "2) cyberkitty19-transkribator-pyro-worker (Pyrogram воркер)"
-    echo "3) cyberkitty19-transkribator-api (API сервер)"
+    echo "2) cyberkitty19-transkribator-api (API сервер)"
     echo ""
 }
 
@@ -29,10 +28,7 @@ if [ -n "$1" ]; then
         "bot"|"1")
             CONTAINER="cyberkitty19-transkribator-bot"
             ;;
-        "pyro"|"worker"|"2")
-            CONTAINER="cyberkitty19-transkribator-pyro-worker"
-            ;;
-        "api"|"3")
+        "api"|"2")
             CONTAINER="cyberkitty19-transkribator-api"
             ;;
         *)
@@ -44,16 +40,13 @@ if [ -n "$1" ]; then
 else
     # Интерактивный выбор
     show_containers
-    read -p "Выберите контейнер (1-3): " choice
+    read -p "Выберите контейнер (1-2): " choice
     
     case "$choice" in
         1|bot)
             CONTAINER="cyberkitty19-transkribator-bot"
             ;;
-        2|pyro|worker)
-            CONTAINER="cyberkitty19-transkribator-pyro-worker"
-            ;;
-        3|api)
+        2|api)
             CONTAINER="cyberkitty19-transkribator-api"
             ;;
         *)

@@ -81,5 +81,8 @@ transcriptions/
 telegram-bot-api-data/
 data/
 
+# Backups
+backups/
+
 # Docker artifacts
 *.tar

@@ -7,14 +7,29 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List
-from sqlalchemy import create_engine, desc
+from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError
 import sqlite3
 from pathlib import Path
 from transkribator_modules.config import logger
 
-from .models import Base, User, Plan, Transaction, Transcription, ApiKey, PromoCode, PromoActivation, DEFAULT_PLANS, PlanType
+from .models import (
+    Base,
+    User,
+    Plan,
+    Transaction,
+    Transcription,
+    ApiKey,
+    PromoCode,
+    PromoActivation,
+    ReferralLink,
+    ReferralVisit,
+    ReferralAttribution,
+    ReferralPayment,
+    DEFAULT_PLANS,
+    PlanType,
+)
 
 # Настройка базы данных
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./transkribator.db")
@@ -82,6 +97,10 @@ def init_database():
                     amount_rub FLOAT,
                     amount_usd FLOAT,
                     amount_stars INTEGER,
+                    currency TEXT,
+                    provider_payment_charge_id TEXT,
+                    telegram_payment_charge_id TEXT,
+                    external_payment_id TEXT,
                     payment_method TEXT,
                     status TEXT DEFAULT 'pending',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -133,6 +152,8 @@ def init_database():
                     max_uses INTEGER DEFAULT 1,
                     current_uses INTEGER DEFAULT 0,
                     description TEXT,
+                    bonus_type TEXT,
+                    bonus_value TEXT,
                     is_active BOOLEAN DEFAULT 1,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     expires_at DATETIME
@@ -474,7 +495,12 @@ class TransactionService:
     def create_transaction(self, user: User, plan_type: str,
                           amount_rub: float = None, amount_usd: float = None,
                           amount_stars: int = None,
-                          payment_method: str = None) -> Transaction:
+                          payment_method: str = None,
+                          currency: str = None,
+                          provider_payment_charge_id: str = None,
+                          telegram_payment_charge_id: str = None,
+                          external_payment_id: str = None,
+                          status: str = "completed") -> Transaction:
         """Создать новую транзакцию"""
         transaction = Transaction(
             user_id=user.id,
@@ -483,7 +509,11 @@ class TransactionService:
             amount_usd=amount_usd,
             amount_stars=amount_stars,
             payment_method=payment_method,
-            status="completed"  # Для Telegram Stars сразу completed
+            status=status,
+            currency=currency,
+            provider_payment_charge_id=provider_payment_charge_id,
+            telegram_payment_charge_id=telegram_payment_charge_id,
+            external_payment_id=external_payment_id
         )
 
         self.db.add(transaction)
@@ -512,7 +542,8 @@ class PromoCodeService:
 
     def create_promo_code(self, code: str, plan_type: str, duration_days: int = None,
                          max_uses: int = 1, description: str = None,
-                         expires_at: datetime = None) -> PromoCode:
+                         expires_at: datetime = None, bonus_type: str = None,
+                         bonus_value: str = None) -> PromoCode:
         """Создать новый промокод"""
         promo = PromoCode(
             code=code.upper(),
@@ -520,7 +551,9 @@ class PromoCodeService:
             duration_days=duration_days,
             max_uses=max_uses,
             description=description,
-            expires_at=expires_at
+            expires_at=expires_at,
+            bonus_type=bonus_type,
+            bonus_value=bonus_value
         )
 
         self.db.add(promo)
@@ -795,6 +828,10 @@ def migrate_database_schema(conn):
                     amount_rub FLOAT,
                     amount_usd FLOAT,
                     amount_stars INTEGER,
+                    currency TEXT,
+                    provider_payment_charge_id TEXT,
+                    telegram_payment_charge_id TEXT,
+                    external_payment_id TEXT,
                     payment_method TEXT,
                     status TEXT DEFAULT 'pending',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -830,6 +867,33 @@ def migrate_database_schema(conn):
                     if 'price_stars' not in plan_columns:
                         cursor.execute("ALTER TABLE plans ADD COLUMN price_stars INTEGER DEFAULT 0")
                         print("Добавлена колонка price_stars в таблицу plans")
+                elif table_name == 'transactions':
+                    cursor.execute("PRAGMA table_info(transactions)")
+                    transaction_columns = [col[1] for col in cursor.fetchall()]
+                    if 'currency' not in transaction_columns:
+                        cursor.execute("ALTER TABLE transactions ADD COLUMN currency TEXT")
+                        print("Добавлена колонка currency в таблицу transactions")
+                    if 'provider_payment_charge_id' not in transaction_columns:
+                        cursor.execute("ALTER TABLE transactions ADD COLUMN provider_payment_charge_id TEXT")
+                        print("Добавлена колонка provider_payment_charge_id в таблицу transactions")
+                    if 'telegram_payment_charge_id' not in transaction_columns:
+                        cursor.execute("ALTER TABLE transactions ADD COLUMN telegram_payment_charge_id TEXT")
+                        print("Добавлена колонка telegram_payment_charge_id в таблицу transactions")
+                    if 'external_payment_id' not in transaction_columns:
+                        cursor.execute("ALTER TABLE transactions ADD COLUMN external_payment_id TEXT")
+                        print("Добавлена колонка external_payment_id в таблицу transactions")
+
+        # Дополнительная проверка таблицы promo_codes
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='promo_codes'")
+        if cursor.fetchone():
+            cursor.execute("PRAGMA table_info(promo_codes)")
+            promo_columns = [col[1] for col in cursor.fetchall()]
+            if 'bonus_type' not in promo_columns:
+                cursor.execute("ALTER TABLE promo_codes ADD COLUMN bonus_type TEXT")
+                print("Добавлена колонка bonus_type в таблицу promo_codes")
+            if 'bonus_value' not in promo_columns:
+                cursor.execute("ALTER TABLE promo_codes ADD COLUMN bonus_value TEXT")
+                print("Добавлена колонка bonus_value в таблицу promo_codes")
 
         conn.commit()
         print("Миграция схемы базы данных завершена")
@@ -903,49 +967,37 @@ def init_promo_codes():
     finally:
         db.close()
 
-def get_or_create_user(telegram_id: int, username: str = None, first_name: str = None) -> dict:
-    """Получает существующего пользователя или создает нового."""
+def get_or_create_user(telegram_id: int, username: str = None, first_name: str = None) -> dict | None:
+    """Получает существующего пользователя или создает нового, возвращает словарь полей."""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-
-            # Пытаемся найти пользователя
-            cursor.execute(
-                "SELECT id, telegram_id, username, first_name, current_plan, plan_expires_at, total_minutes_transcribed, minutes_used_this_month, last_reset_date, created_at, updated_at, is_active FROM users WHERE telegram_id = ?",
-                (telegram_id,)
+        db = SessionLocal()
+        try:
+            user_service = UserService(db)
+            user = user_service.get_or_create_user(
+                telegram_id=telegram_id,
+                username=username,
+                first_name=first_name,
             )
-            user = cursor.fetchone()
 
-            if user:
-                columns = ['id', 'telegram_id', 'username', 'first_name', 'current_plan',
-                          'plan_expires_at', 'total_minutes_transcribed', 'minutes_used_this_month',
-                          'last_reset_date', 'created_at', 'updated_at', 'is_active']
-                return dict(zip(columns, user))
-            else:
-                # Создаем нового пользователя
-                cursor.execute("""
-                    INSERT INTO users (telegram_id, username, first_name)
-                    VALUES (?, ?, ?)
-                """, (telegram_id, username, first_name))
-
-                user_id = cursor.lastrowid
-                conn.commit()
-
-                return {
-                    'id': user_id,
-                    'telegram_id': telegram_id,
-                    'username': username,
-                    'first_name': first_name,
-                    'current_plan': 'free',
-                    'plan_expires_at': None,
-                    'total_minutes_transcribed': 0.0,
-                    'minutes_used_this_month': 0.0,
-                    'last_reset_date': datetime.now().date(),
-                    'created_at': datetime.now(),
-                    'updated_at': datetime.now(),
-                    'is_active': True
-                }
-
+            return {
+                'id': user.id,
+                'telegram_id': user.telegram_id,
+                'username': user.username,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'current_plan': user.current_plan,
+                'plan_expires_at': user.plan_expires_at,
+                'total_minutes_transcribed': user.total_minutes_transcribed,
+                'minutes_used_this_month': user.minutes_used_this_month,
+                'last_reset_date': user.last_reset_date,
+                'total_generations': user.total_generations,
+                'generations_used_this_month': user.generations_used_this_month,
+                'created_at': user.created_at,
+                'updated_at': user.updated_at,
+                'is_active': user.is_active,
+            }
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка при работе с пользователем {telegram_id}: {e}")
         return None
@@ -953,31 +1005,10 @@ def get_or_create_user(telegram_id: int, username: str = None, first_name: str =
 def get_user_stats(telegram_id: int) -> dict:
     """Получает статистику пользователя."""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-
-            cursor.execute("""
-                SELECT current_plan, plan_expires_at, total_minutes_transcribed,
-                       minutes_used_this_month, updated_at
-                FROM users WHERE telegram_id = ?
-            """, (telegram_id,))
-
-            result = cursor.fetchone()
-
-            if result:
-                current_plan, plan_expires_at, total_minutes, used_this_month, updated_at = result
-
-                return {
-                    'subscription_status': current_plan.capitalize() if current_plan else 'Базовый',
-                    'subscription_until': plan_expires_at or 'Не ограничено',
-                    'files_processed': total_minutes or 0,
-                    'minutes_transcribed': total_minutes or 0,
-                    'total_characters': 0,  # Не используется в новой структуре
-                    'last_activity': updated_at or 'Никогда',
-                    'files_remaining': 'Безлимит' if current_plan != 'free' else f'{30 - used_this_month:.0f} мин',
-                    'avg_duration': 0  # Не используется в новой структуре
-                }
-            else:
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.telegram_id == telegram_id).first()
+            if not user:
                 return {
                     'subscription_status': 'Базовый',
                     'subscription_until': 'Не ограничено',
@@ -986,106 +1017,66 @@ def get_user_stats(telegram_id: int) -> dict:
                     'total_characters': 0,
                     'last_activity': 'Никогда',
                     'files_remaining': '30 минут',
-                    'avg_duration': 0
+                    'avg_duration': 0,
                 }
 
+            current_plan = user.current_plan or PlanType.FREE.value
+            used_this_month = user.minutes_used_this_month or 0.0
+            total_minutes = user.total_minutes_transcribed or 0.0
+
+            files_remaining = 'Безлимит'
+            if current_plan == PlanType.FREE.value:
+                files_remaining = f'{max(0, 30 - used_this_month):.0f} мин'
+
+            return {
+                'subscription_status': current_plan.capitalize(),
+                'subscription_until': user.plan_expires_at or 'Не ограничено',
+                'files_processed': total_minutes,
+                'minutes_transcribed': total_minutes,
+                'total_characters': 0,
+                'last_activity': user.updated_at or 'Никогда',
+                'files_remaining': files_remaining,
+                'avg_duration': 0,
+            }
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка при получении статистики для {telegram_id}: {e}")
         return {}
 
-def activate_promo_code_sqlite(telegram_id: int, promo_code: str) -> dict:
-    """Активирует промокод для пользователя."""
+def activate_promo_code(telegram_id: int, promo_code: str) -> dict:
+    """Активирует промокод для пользователя через сервисы SQLAlchemy."""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
+        db = SessionLocal()
+        try:
+            user_service = UserService(db)
+            promo_service = PromoCodeService(db)
 
-            # Проверяем существование промокода
-            cursor.execute("""
-                SELECT id, description, plan_type, duration_days, max_uses, current_uses, expires_at
-                FROM promo_codes WHERE code = ? AND is_active = 1
-            """, (promo_code,))
+            user = user_service.get_or_create_user(telegram_id=telegram_id)
 
-            promo = cursor.fetchone()
+            is_valid, message, promo = promo_service.validate_promo_code(promo_code, user)
+            if not is_valid or not promo:
+                return {'success': False, 'error': message}
 
-            if not promo:
-                return {'success': False, 'error': 'Промокод не найден'}
+            activation = promo_service.activate_promo_code(promo, user)
+            expires_date = activation.expires_at
 
-            promo_id, description, plan_type, duration_days, max_uses, current_uses, expires_at = promo
-
-            # Проверяем, не истек ли промокод
-            if expires_at and datetime.fromisoformat(expires_at) < datetime.now():
-                return {'success': False, 'error': 'Промокод истек'}
-
-            # Проверяем лимит использований
-            if current_uses >= max_uses:
-                return {'success': False, 'error': 'Промокод исчерпан'}
-
-            # Проверяем, не использовал ли пользователь этот промокод
-            cursor.execute("""
-                SELECT id FROM promo_activations
-                WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
-                AND promo_code_id = ?
-            """, (telegram_id, promo_id))
-
-            if cursor.fetchone():
-                return {'success': False, 'error': 'Промокод уже использован'}
-
-            # Получаем пользователя
-            cursor.execute("SELECT id, current_plan FROM users WHERE telegram_id = ?", (telegram_id,))
-            user_result = cursor.fetchone()
-            if not user_result:
-                # Создаем нового пользователя
-                cursor.execute("""
-                    INSERT INTO users (telegram_id, current_plan, created_at, updated_at, is_active)
-                    VALUES (?, 'free', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
-                """, (telegram_id,))
-                user_id = cursor.lastrowid
-                current_plan = 'free'
+            if promo.plan_type == PlanType.UNLIMITED.value:
+                bonus_desc = (
+                    f"{promo.duration_days} дней безлимитного тарифа"
+                    if promo.duration_days
+                    else "Бессрочный безлимитный тариф"
+                )
             else:
-                user_id, current_plan = user_result
-
-            user = {'id': user_id, 'current_plan': current_plan}
-
-            # Применяем бонус
-            expires_date = None
-            if duration_days:
-                expires_date = datetime.now() + timedelta(days=duration_days)
-
-            # Записываем активацию промокода
-            cursor.execute("""
-                INSERT INTO promo_activations (user_id, promo_code_id, expires_at)
-                VALUES (?, ?, ?)
-            """, (user['id'], promo_id, expires_date))
-
-            # Увеличиваем счетчик использований
-            cursor.execute("""
-                UPDATE promo_codes SET current_uses = current_uses + 1
-                WHERE id = ?
-            """, (promo_id,))
-
-            # Обновляем план пользователя
-            cursor.execute("""
-                UPDATE users SET current_plan = ?, plan_expires_at = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (plan_type, expires_date, user['id']))
-
-            conn.commit()
-
-            # Формируем описание бонуса
-            if plan_type == 'unlimited':
-                if duration_days:
-                    bonus_desc = f"{duration_days} дней безлимитного тарифа"
-                else:
-                    bonus_desc = "Бессрочный безлимитный тариф"
-            else:
-                bonus_desc = description or f"План {plan_type}"
+                bonus_desc = promo.description or f"План {promo.plan_type}"
 
             return {
                 'success': True,
                 'bonus': bonus_desc,
                 'expires': expires_date.strftime('%d.%m.%Y') if expires_date else 'Бессрочно'
             }
-
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка при активации промокода {promo_code} для {telegram_id}: {e}")
         return {'success': False, 'error': 'Внутренняя ошибка'}
@@ -1094,31 +1085,31 @@ def update_user_transcription_stats(telegram_id: int, file_name: str, file_size:
                                   duration: int, transcript: str):
     """Обновляет статистику пользователя после транскрипции."""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
+        db = SessionLocal()
+        try:
+            user_service = UserService(db)
+            transcription_service = TranscriptionService(db)
 
-            # Получаем пользователя
-            user = get_or_create_user(telegram_id)
-            if not user:
-                return
+            user = user_service.get_or_create_user(telegram_id=telegram_id)
 
-            # Добавляем запись о транскрипции
-            cursor.execute("""
-                INSERT INTO transcriptions (user_id, file_name, file_size, duration, transcript)
-                VALUES (?, ?, ?, ?, ?)
-            """, (user['id'], file_name, file_size, duration, transcript))
+            file_size_mb = float(file_size) / (1024 * 1024) if file_size else 0.0
+            duration_minutes = float(duration) / 60 if duration else 0.0
 
-            # Обновляем статистику пользователя
-            cursor.execute("""
-                UPDATE users SET
-                    total_minutes_transcribed = total_minutes_transcribed + ?,
-                    minutes_used_this_month = minutes_used_this_month + ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (duration / 60, duration / 60, user['id']))
+            transcription_service.save_transcription(
+                user=user,
+                filename=file_name,
+                file_size_mb=file_size_mb,
+                audio_duration_minutes=duration_minutes,
+                raw_transcript=transcript,
+                formatted_transcript=transcript,
+                processing_time=None,
+                transcription_service="legacy",
+                formatting_service="legacy",
+            )
 
-            conn.commit()
-
+            user_service.add_usage(user, duration_minutes)
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка при обновлении статистики для {telegram_id}: {e}")
 
@@ -1126,128 +1117,207 @@ def update_user_transcription_stats(telegram_id: int, file_name: str, file_size:
 def seed_promo_codes():
     """Добавляет базовые промокоды в базу данных."""
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
+        db = SessionLocal()
+        try:
+            promo_service = PromoCodeService(db)
 
             promo_codes = [
-                ('WELCOME10', 'Скидка 10% на первую подписку', 'discount', '10%', 100, None),
-                ('PREMIUM30', '30 дней PRO подписки бесплатно', 'subscription', '30 дней PRO', 50, None),
-                ('CYBERKITTY', 'Специальный бонус от CyberKitty', 'bonus', 'Дополнительные функции', 25, None)
+                dict(
+                    code='WELCOME10',
+                    description='Скидка 10% на первую подписку',
+                    plan_type=PlanType.PRO.value,
+                    duration_days=None,
+                    bonus_type='discount',
+                    bonus_value='10%',
+                    max_uses=100,
+                    expires_at=None,
+                ),
+                dict(
+                    code='PREMIUM30',
+                    description='30 дней PRO подписки бесплатно',
+                    plan_type=PlanType.PRO.value,
+                    duration_days=30,
+                    bonus_type='subscription',
+                    bonus_value='30 дней PRO',
+                    max_uses=50,
+                    expires_at=None,
+                ),
+                dict(
+                    code='CYBERKITTY',
+                    description='Специальный бонус от CyberKitty',
+                    plan_type=PlanType.UNLIMITED.value,
+                    duration_days=None,
+                    bonus_type='bonus',
+                    bonus_value='Дополнительные функции',
+                    max_uses=25,
+                    expires_at=None,
+                ),
             ]
 
-            for code, description, bonus_type, bonus_value, max_uses, expires_at in promo_codes:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO promo_codes
-                    (code, description, bonus_type, bonus_value, max_uses, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (code, description, bonus_type, bonus_value, max_uses, expires_at))
-
-            conn.commit()
-
+            for data in promo_codes:
+                if promo_service.get_promo_code(data['code']) is None:
+                    promo_service.create_promo_code(**data)
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка при создании промокодов: {e}")
 
-# ===== Рефералка (SQLite) =====
+# ===== Реферальная программа =====
 def _generate_referral_code() -> str:
     return secrets.token_urlsafe(6).replace('-', '').replace('_', '')
 
-def create_or_get_referral_code(user_telegram_id: int) -> str:
+def create_or_get_referral_code(user_telegram_id: int) -> str | None:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT code FROM referral_links WHERE user_telegram_id = ? ORDER BY id DESC LIMIT 1", (user_telegram_id,))
-            row = cursor.fetchone()
-            if row and row[0]:
-                return row[0]
+        db = SessionLocal()
+        try:
+            existing = (
+                db.query(ReferralLink)
+                .filter(ReferralLink.user_telegram_id == user_telegram_id)
+                .order_by(ReferralLink.id.desc())
+                .first()
+            )
+            if existing:
+                return existing.code
+
             code = _generate_referral_code()
-            cursor.execute("INSERT INTO referral_links (user_telegram_id, code) VALUES (?, ?)", (user_telegram_id, code))
-            conn.commit()
+            link = ReferralLink(user_telegram_id=user_telegram_id, code=code)
+            db.add(link)
+            db.commit()
             return code
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка создания реферальной ссылки для {user_telegram_id}: {e}")
         return None
 
+
 def record_referral_visit(referral_code: str, visitor_telegram_id: int | None) -> None:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO referral_visits (referral_code, visitor_telegram_id) VALUES (?, ?)",
-                (referral_code, visitor_telegram_id),
-            )
-            # Ранний захват атрибуции: если у пользователя ещё нет привязки — создаём
+        db = SessionLocal()
+        try:
+            visit = ReferralVisit(referral_code=referral_code, visitor_telegram_id=visitor_telegram_id)
+            db.add(visit)
+
             if visitor_telegram_id:
-                cursor.execute(
-                    "SELECT id FROM referral_attribution WHERE visitor_telegram_id = ?",
-                    (visitor_telegram_id,),
-                )
-                if not cursor.fetchone():
-                    cursor.execute(
-                        "INSERT INTO referral_attribution (visitor_telegram_id, referral_code) VALUES (?, ?)",
-                        (visitor_telegram_id, referral_code),
+                exists = db.query(ReferralAttribution).filter(
+                    ReferralAttribution.visitor_telegram_id == visitor_telegram_id
+                ).first()
+                if not exists:
+                    db.add(
+                        ReferralAttribution(
+                            visitor_telegram_id=visitor_telegram_id,
+                            referral_code=referral_code,
+                        )
                     )
-            conn.commit()
+
+            db.commit()
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка записи визита по коду {referral_code}: {e}")
 
+
 def attribute_user_referral(visitor_telegram_id: int, referral_code: str) -> None:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            # Если уже атрибутирован — не меняем
-            cursor.execute("SELECT id FROM referral_attribution WHERE visitor_telegram_id = ?", (visitor_telegram_id,))
-            if cursor.fetchone():
+        db = SessionLocal()
+        try:
+            exists = db.query(ReferralAttribution).filter(
+                ReferralAttribution.visitor_telegram_id == visitor_telegram_id
+            ).first()
+            if exists:
                 return
-            cursor.execute("INSERT INTO referral_attribution (visitor_telegram_id, referral_code) VALUES (?, ?)", (visitor_telegram_id, referral_code))
-            conn.commit()
+
+            db.add(
+                ReferralAttribution(
+                    visitor_telegram_id=visitor_telegram_id,
+                    referral_code=referral_code,
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка атрибуции пользователя {visitor_telegram_id} к коду {referral_code}: {e}")
 
+
 def get_attribution_code_for_user(payer_telegram_id: int) -> str | None:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT referral_code FROM referral_attribution WHERE visitor_telegram_id = ?", (payer_telegram_id,))
-            row = cursor.fetchone()
-            return row[0] if row else None
+        db = SessionLocal()
+        try:
+            record = db.query(ReferralAttribution).filter(
+                ReferralAttribution.visitor_telegram_id == payer_telegram_id
+            ).first()
+            return record.referral_code if record else None
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка получения атрибуции для {payer_telegram_id}: {e}")
         return None
+
 
 def record_referral_payment(payer_telegram_id: int, amount_rub: float) -> None:
     try:
         if amount_rub is None:
             return
+
         ref_code = get_attribution_code_for_user(payer_telegram_id)
         if not ref_code:
             return
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO referral_payments (referral_code, payer_telegram_id, amount_rub) VALUES (?, ?, ?)", (ref_code, payer_telegram_id, float(amount_rub)))
-            conn.commit()
+
+        db = SessionLocal()
+        try:
+            payment = ReferralPayment(
+                referral_code=ref_code,
+                payer_telegram_id=payer_telegram_id,
+                amount_rub=float(amount_rub),
+            )
+            db.add(payment)
+            db.commit()
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка записи реферальной выплаты от {payer_telegram_id}: {e}")
 
+
 def get_referral_stats_for_user(user_telegram_id: int) -> dict:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            # Получаем все коды пользователя (на будущее)
-            cursor.execute("SELECT code FROM referral_links WHERE user_telegram_id = ?", (user_telegram_id,))
-            codes = [r[0] for r in cursor.fetchall()] or []
+        db = SessionLocal()
+        try:
+            codes = [
+                code
+                for (code,) in db.query(ReferralLink.code).filter(
+                    ReferralLink.user_telegram_id == user_telegram_id
+                ).all()
+            ]
             if not codes:
                 return {"visits": 0, "paid_count": 0, "total_amount": 0.0, "balance": 0.0}
-            placeholders = ",".join(["?"] * len(codes))
-            # Визиты
-            cursor.execute(f"SELECT COUNT(*) FROM referral_visits WHERE referral_code IN ({placeholders})", codes)
-            visits = cursor.fetchone()[0] or 0
-            # Оплаты
-            cursor.execute(f"SELECT COUNT(*), COALESCE(SUM(amount_rub),0) FROM referral_payments WHERE referral_code IN ({placeholders})", codes)
-            row = cursor.fetchone()
-            paid_count = row[0] or 0
-            total_amount = float(row[1] or 0.0)
+
+            visits = (
+                db.query(func.count(ReferralVisit.id))
+                .filter(ReferralVisit.referral_code.in_(codes))
+                .scalar()
+                or 0
+            )
+            paid_count, total_amount = (
+                db.query(
+                    func.count(ReferralPayment.id),
+                    func.coalesce(func.sum(ReferralPayment.amount_rub), 0.0),
+                )
+                .filter(ReferralPayment.referral_code.in_(codes))
+                .one()
+            )
+
+            total_amount = float(total_amount or 0.0)
             balance = round(total_amount * 0.20, 2)
-            return {"visits": visits, "paid_count": paid_count, "total_amount": total_amount, "balance": balance}
+
+            return {
+                "visits": int(visits),
+                "paid_count": int(paid_count or 0),
+                "total_amount": total_amount,
+                "balance": balance,
+            }
+        finally:
+            db.close()
     except Exception as e:
         logger.error(f"Ошибка получения реферальной статистики для {user_telegram_id}: {e}")
         return {"visits": 0, "paid_count": 0, "total_amount": 0.0, "balance": 0.0}

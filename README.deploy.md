@@ -114,36 +114,6 @@
    sudo systemctl status cyberkitty19-transkribator.service
    ```
 
-## Настройка Pyrogram Worker для больших видео
-
-Если вы хотите обрабатывать большие видео (>20 МБ), вам потребуется настроить Pyrogram Worker:
-
-1. Добавьте следующие параметры в .env файл:
-   ```
-   PYROGRAM_WORKER_ENABLED=true
-   PYROGRAM_WORKER_CHAT_ID=ваш_id_чата
-   TELEGRAM_API_ID=ваш_api_id
-   TELEGRAM_API_HASH=ваш_api_hash
-   ```
-
-   Для получения TELEGRAM_API_ID и TELEGRAM_API_HASH, перейдите на https://my.telegram.org/apps
-
-2. Запустите скрипт авторизации (это нужно сделать только один раз):
-   ```bash
-   ./pyro_auth_run.sh
-   ```
-   Следуйте инструкциям для ввода номера телефона и кода подтверждения.
-
-3. Запустите Pyrogram Worker:
-   ```bash
-   ./pyro_worker_start.sh
-   ```
-
-4. Для проверки статуса воркера:
-   ```bash
-   ./pyro_worker_status.sh
-   ```
-
 ## Мониторинг и управление
 
 ### Просмотр логов
@@ -151,9 +121,6 @@
 ```bash
 # Логи основного бота
 tail -f cyberkitty_modular.log
-
-# Логи Pyrogram Worker
-tail -f pyro_worker.log
 ```
 
 ### Управление tmux сессиями вручную
@@ -161,9 +128,6 @@ tail -f pyro_worker.log
 ```bash
 # Присоединиться к сессии бота
 tmux attach -t cyberkitty
-
-# Присоединиться к сессии Pyrogram Worker
-tmux attach -t pyro_worker
 
 # Выйти из сессии tmux (без остановки)
 # Нажмите Ctrl+B, затем D
@@ -191,26 +155,11 @@ tmux attach -t pyro_worker
    ./cyberkitty_modular_start.sh
    ```
 
-### Проблемы с обработкой больших видео
-
-1. Проверьте, что Pyrogram Worker запущен и работает:
-   ```bash
-   ./pyro_worker_status.sh
-   ```
-
-2. Проверьте логи воркера:
-   ```bash
-   tail -f pyro_worker.log
-   ```
-
-3. Убедитесь, что PYROGRAM_WORKER_CHAT_ID, TELEGRAM_API_ID и TELEGRAM_API_HASH в файле .env указаны правильно.
-
 ## Обновление бота
 
-1. Остановите бота и воркера:
+1. Остановите бота:
    ```bash
    ./cyberkitty_modular_stop.sh
-   ./pyro_worker_stop.sh
    ```
 
 2. Обновите репозиторий:
@@ -224,8 +173,7 @@ tmux attach -t pyro_worker
    pip install -r requirements.txt
    ```
 
-4. Перезапустите бота и воркера:
+4. Перезапустите бота:
    ```bash
    ./cyberkitty_modular_start.sh
-   ./pyro_worker_start.sh
-   ``` 
+   ```

@@ -14,27 +14,26 @@ from transkribator_modules.payments.yukassa import YukassaPaymentService
 
 # Цены в Telegram Stars (1 Star ≈ 1.3 рубля)
 PLAN_PRICES_STARS = {
-    PlanType.BASIC: 760,      # 990 руб ≈ 760 Stars
-    PlanType.PRO: 362,        # 470 руб ≈ 362 Stars
-    PlanType.UNLIMITED: 608   # 790 руб ≈ 608 Stars
+    PlanType.PRO: 230,        # 299 руб ≈ 230 Stars
+    PlanType.UNLIMITED: 538   # 699 руб ≈ 538 Stars
 }
 
 # Цены в рублях для ЮКассы
 PLAN_PRICES_RUB = {
-    PlanType.BASIC: 0.0,      # Базовый план бесплатный
-    PlanType.PRO: 299.0,      # PRO план
-    PlanType.UNLIMITED: 699.0 # UNLIMITED план
+    PlanType.BASIC: 0.0,       # Бесплатный план
+    PlanType.PRO: 299.0,       # PRO план
+    PlanType.UNLIMITED: 699.0  # UNLIMITED план
 }
 
 PLAN_DESCRIPTIONS = {
     PlanType.BASIC: {
-        "title": "Базовый план",
-        "description": "180 минут в месяц, файлы до 200 МБ",
+        "title": "Бесплатный план",
+        "description": "3 генерации в месяц, файлы до 50 МБ",
         "features": [
-            "180 минут транскрибации в месяц",
-            "Файлы до 200 МБ",
-            "Улучшенная транскрибация",
-            "Форматирование текста с ИИ"
+            "3 генерации в месяц",
+            "Файлы до 50 МБ",
+            "Базовое качество",
+            "Без оплаты"
         ]
     },
     PlanType.PRO: {
@@ -67,28 +66,25 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.info("Вызвана функция show_payment_plans")
         plans_text = """💎 **Тарифные планы CyberKitty Transkribator**
 
-🆓 **Базовый (Бесплатно)**
-• 30 минут транскрипции в месяц
-• Файлы до 100 МБ
+🆓 **Бесплатный**
+• 3 генерации в месяц
+• Файлы до 50 МБ
 • Базовая поддержка
-• Стандартное качество
+• Старт для знакомства с сервисом
 
 ⭐ **PRO (299₽/месяц)**
-• 10 часов транскрипции в месяц
-• Файлы до 2 ГБ
-• Приоритетная поддержка
-• Высокое качество
-• API доступ
+• 10 часов (600 минут) в месяц
+• Файлы до 500 МБ
+• Приоритетная очередь
+• API‑доступ и экспорт
 
 🚀 **UNLIMITED (699₽/месяц)**
-• Безлимитная транскрипция
+• Безлимитная транскрибация
 • Файлы до 2 ГБ
 • VIP поддержка 24/7
-• Максимальное качество
-• Полный API доступ
-• Дополнительные функции ИИ
+• Полный API доступ и расширенные функции
 
-🎯 **Выберите подходящий план и начните использовать все возможности!**"""
+🎯 **Выберите подходящий план и получите максимум возможностей!**"""
 
         keyboard = [
             [InlineKeyboardButton("🆓 Остаться на базовом", callback_data="stay_basic")],
@@ -121,32 +117,29 @@ async def initiate_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, p
 
         # Получаем цену в Stars для этого плана
         plan_type = getattr(PlanType, plan_id.upper())
-        stars_price = PLAN_PRICES_STARS.get(plan_type, 0)
+        plan_prices = {
+            "pro": PLAN_PRICES_STARS.get(PlanType.PRO, 0),
+            "unlimited": PLAN_PRICES_STARS.get(PlanType.UNLIMITED, 0)
+        }
 
         plan_info = {
             "pro": {
                 "name": "PRO",
-                "price": f"{stars_price} Stars",
                 "description": "10 часов в месяц + API доступ"
             },
             "unlimited": {
                 "name": "UNLIMITED",
-                "price": f"{stars_price} Stars",
                 "description": "Безлимитно + VIP функции"
-            },
-            "basic": {
-                "name": "BASIC",
-                "price": f"{stars_price} Stars",
-                "description": "180 минут в месяц"
             }
         }
 
-        if plan_id not in plan_info:
+        if plan_id not in plan_info or plan_id not in plan_prices:
             logger.warning(f"Неизвестный план: {plan_id}")
             await update.callback_query.edit_message_text(f"❌ Неизвестный тарифный план: {plan_id}")
             return
 
         plan = plan_info[plan_id]
+        stars_price = plan_prices[plan_id]
 
         # Создаем invoice для оплаты через Telegram Stars
         prices = [LabeledPrice(label=f"План {plan['name']}", amount=stars_price)]
@@ -181,25 +174,31 @@ async def initiate_yukassa_payment(update: Update, context: ContextTypes.DEFAULT
             await update.callback_query.edit_message_text("❌ Этот план недоступен для оплаты через ЮКассу")
             return
 
+        plan_prices = {
+            "pro": PLAN_PRICES_RUB.get(PlanType.PRO, 0),
+            "unlimited": PLAN_PRICES_RUB.get(PlanType.UNLIMITED, 0)
+        }
+
         plan_info = {
             "pro": {
                 "name": "PRO",
-                "price": f"{rub_price} ₽",
                 "description": "10 часов в месяц + API доступ"
             },
             "unlimited": {
                 "name": "UNLIMITED",
-                "price": f"{rub_price} ₽",
                 "description": "Безлимитно + VIP функции"
             }
         }
 
-        if plan_id not in plan_info:
+        if plan_id not in plan_info or plan_id not in plan_prices:
             logger.warning(f"Неизвестный план для ЮКассы: {plan_id}")
             await update.callback_query.edit_message_text(f"❌ Неизвестный тарифный план: {plan_id}")
             return
 
         plan = plan_info[plan_id]
+        rub_price = plan_prices[plan_id]
+
+        plan_display_price = f"{rub_price:.0f} ₽"
 
         # Создаем платеж через ЮКассу
         try:
@@ -215,7 +214,7 @@ async def initiate_yukassa_payment(update: Update, context: ContextTypes.DEFAULT
             payment_text = f"""💳 **Оплата через ЮКассу**
 
 📦 **План:** {plan['name']}
-💰 **Сумма:** {plan['price']}
+💰 **Сумма:** {plan_display_price}
 📝 **Описание:** {plan['description']}
 
 🔗 **Ссылка для оплаты:**

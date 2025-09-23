@@ -9,6 +9,8 @@ python-multipart==0.0.6
 # База данных
 sqlalchemy==2.0.25
 pydantic==2.5.3
+alembic==1.13.1
+psycopg[binary,pool]==3.1.18
 
 # AI и транскрибация
 openai==1.14.0

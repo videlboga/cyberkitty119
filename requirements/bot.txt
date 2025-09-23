@@ -4,7 +4,6 @@
 # Telegram библиотеки
 python-telegram-bot==22.1
 telethon==1.33.1
-pyrogram==2.0.106
 
 # AI и транскрибация
 openai==1.14.0
@@ -14,6 +13,8 @@ sqlalchemy==2.0.25
 fastapi==0.108.0
 uvicorn==0.25.0
 pydantic==2.5.3
+alembic==1.13.1
+psycopg[binary,pool]==3.1.18
 
 # Утилиты
 yt-dlp==2023.12.30

@@ -296,7 +296,7 @@ async def show_api_keys_callback(query, user):
         plan = user_service.get_user_plan(db_user)
 
         # Проверяем доступ к API
-        if plan.name in [PlanType.FREE, PlanType.BASIC]:
+        if not plan or plan.name == PlanType.FREE:
             api_text = f"""🔑 **API доступ**
 
 ❌ API доступ недоступен для плана "{plan.display_name}"

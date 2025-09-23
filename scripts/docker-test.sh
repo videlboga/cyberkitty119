@@ -27,8 +27,6 @@ fi
 echo "📋 Проверка конфигурации..."
 echo "TELEGRAM_API_ID: $(grep TELEGRAM_API_ID .env | cut -d'=' -f2)"
 echo "TELEGRAM_API_HASH: $(grep TELEGRAM_API_HASH .env | cut -d'=' -f2 | head -c 10)..."
-echo "PYROGRAM_WORKER_ENABLED: $(grep PYROGRAM_WORKER_ENABLED .env | cut -d'=' -f2)"
-
 echo ""
 echo "🔨 Сборка Docker образов..."
 docker-compose build
@@ -44,11 +42,6 @@ sleep 10
 echo ""
 echo "📊 Статус контейнеров:"
 docker-compose ps
-
-echo ""
-echo "📝 Логи Pyrogram воркера:"
-echo "========================"
-docker-compose logs pyro-worker | tail -20
 
 echo ""
 echo "📝 Логи основного бота:"
@@ -79,7 +72,6 @@ echo "📊 Полезные команды:"
 echo "==================="
 echo "Просмотр логов в реальном времени:"
 echo "  docker-compose logs -f bot"
-echo "  docker-compose logs -f pyro-worker"
 echo ""
 echo "Перезапуск сервисов:"
 echo "  docker-compose restart"
@@ -89,7 +81,6 @@ echo "  docker-compose down"
 echo ""
 echo "Подключение к контейнеру для отладки:"
 echo "  docker-compose exec bot bash"
-echo "  docker-compose exec pyro-worker bash"
 
 echo ""
 echo "✅ Тестовая среда готова!" 

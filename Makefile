@@ -1,6 +1,9 @@
 # Makefile для Cyberkitty19 Transkribator
 
-.PHONY: help install start start-api start-docker stop-docker logs clean test docker-test docker-shell docker-pyro-auth docker-run docker-dev
+.PHONY: help install setup start start-api start-docker stop-docker logs clean clean-all test docker-test docker-shell docker-run docker-dev migrate revision backup-postgres
+
+POSTGRES_USER ?= $(shell sed -n 's/^POSTGRES_USER=//p' .env | tail -1)
+POSTGRES_DB ?= $(shell sed -n 's/^POSTGRES_DB=//p' .env | tail -1)
 
 # Показать справку
 help:
@@ -15,15 +18,18 @@ help:
 	@echo "  make start-api   - Запустить API сервер"
 	@echo "  make start-docker - Запустить через Docker"
 	@echo ""
+	@echo "🗂️ База данных:"
+	@echo "  make migrate     - Применить миграции Alembic (upgrade head)"
+	@echo "  make revision NAME=msg - Создать новую миграцию"
+	@echo ""
 	@echo "🐳 Docker интерактивность:"
 	@echo "  make docker-shell     - Войти в оболочку Docker контейнера"
-	@echo "  make docker-pyro-auth - Авторизация Pyrogram в Docker"
 	@echo "  make docker-run       - Выполнить команду в контейнере"
 	@echo "  make docker-dev       - Режим разработки Docker"
 	@echo ""
 	@echo "🧪 Тестирование:"
 	@echo "  make docker-test - Тестирование в Docker"
-	@echo "  make test        - Запустить тесты"
+	@echo "  make test        - Запустить pytest"
 	@echo ""
 	@echo "🛑 Остановка:"
 	@echo "  make stop-docker - Остановить Docker сервисы"
@@ -110,17 +116,11 @@ docker-shell:
 	@chmod +x scripts/docker-shell.sh
 	./scripts/docker-shell.sh
 
-# Авторизация Pyrogram в Docker
-docker-pyro-auth:
-	@echo "🔐 Авторизация Pyrogram в Docker..."
-	@chmod +x scripts/docker-pyro-auth.sh
-	./scripts/docker-pyro-auth.sh
-
 # Выполнение команды в Docker контейнере
 docker-run:
 	@echo "🐳 Выполнение команды в Docker..."
 	@chmod +x scripts/docker-run-command.sh
-	@echo "Использование: make docker-run CONTAINER=<bot|pyro|api> CMD='<команда>'"
+	@echo "Использование: make docker-run CONTAINER=<bot|api> CMD='<команда>'"
 	@echo "Пример: make docker-run CONTAINER=bot CMD='python --version'"
 
 # Docker development режим
@@ -129,14 +129,34 @@ docker-dev:
 	@chmod +x scripts/docker-dev.sh
 	@echo "Использование: ./scripts/docker-dev.sh <команда> [сервис]"
 	@echo "Команды: start, shell, stop, build, logs"
-	@echo "Сервисы: bot, pyro, api"
+	@echo "Сервисы: bot, api"
 	@echo ""
 	@echo "Примеры:"
 	@echo "  ./scripts/docker-dev.sh start bot   - Запустить бот интерактивно"
-	@echo "  ./scripts/docker-dev.sh shell pyro  - Войти в оболочку Pyrogram"
+	@echo "  ./scripts/docker-dev.sh shell api   - Войти в оболочку API"
 	@echo "  ./scripts/docker-dev.sh stop        - Остановить все dev сервисы"
 
 # Тестирование (заготовка)
 test:
-	@echo "🧪 Запуск тестов..."
-	@echo "⚠️  Тесты пока не реализованы" 
+	@echo "🧪 Запуск pytest..."
+	pytest -q
+
+# Миграции базы данных
+migrate:
+	@echo "🗂️ Применяем миграции Alembic..."
+	alembic upgrade head
+
+revision:
+	@if [ -z "$(NAME)" ]; then \
+		echo "⚠️  Укажите имя миграции: make revision NAME=add_table"; \
+		exit 1; \
+	fi
+	@echo "🗂️ Создаём миграцию '$(NAME)'..."
+	alembic revision --autogenerate -m "$(NAME)"
+
+backup-postgres:
+	@mkdir -p backups
+	@file="backups/postgres-backup-$$(date +%Y%m%d_%H%M%S).sql"; \
+		echo "📦 Создание бекапа Postgres → $$file"; \
+		docker compose exec -T postgres pg_dump -U $(POSTGRES_USER) $(POSTGRES_DB) > $$file; \
+		echo "✅ Бекап сохранён: $$file"

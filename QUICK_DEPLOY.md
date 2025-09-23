@@ -57,13 +57,6 @@ nano .env  # Заполните ваши API ключи
 ./deploy.sh production
 ```
 
-### Шаг 3: Настройка Pyrogram (для больших видео)
-```bash
-# Авторизация Pyrogram воркера
-docker-compose exec cyberkitty19-transkribator-pyro-worker python -m transkribator_modules.workers.pyro_auth
-
-# Следуйте инструкциям для ввода номера телефона и кода
-```
 
 ## 📊 Управление сервисом
 
@@ -116,13 +109,6 @@ docker-compose ps cyberkitty19-transkribator-api
 
 # Проверьте логи API
 docker-compose logs cyberkitty19-transkribator-api
-```
-
-### Pyrogram не работает
-```bash
-# Повторная авторизация
-rm transkribator_modules/workers/pyro_worker.session*
-docker-compose exec cyberkitty19-transkribator-pyro-worker python -m transkribator_modules.workers.pyro_auth
 ```
 
 ## 🔄 Обновление

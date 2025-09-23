@@ -18,12 +18,11 @@ show_help() {
     echo ""
     echo "Доступные сервисы:"
     echo "  bot    - Telegram бот"
-    echo "  pyro   - Pyrogram воркер"
     echo "  api    - API сервер"
     echo ""
     echo "Примеры:"
     echo "  $0 start bot     - Запустить бот в интерактивном режиме"
-    echo "  $0 shell pyro    - Войти в оболочку Pyrogram воркера"
+    echo "  $0 shell api     - Войти в оболочку API сервиса"
     echo "  $0 stop          - Остановить все сервисы"
 }
 
@@ -44,9 +43,6 @@ get_service_name() {
     case "$1" in
         "bot")
             echo "bot-dev"
-            ;;
-        "pyro"|"worker")
-            echo "pyro-dev"
             ;;
         "api")
             echo "api-dev"
@@ -94,9 +90,6 @@ case "$COMMAND" in
         case "$SERVICE" in
             "bot")
                 CONTAINER="cyberkitty19-transkribator-bot-dev"
-                ;;
-            "pyro"|"worker")
-                CONTAINER="cyberkitty19-transkribator-pyro-dev"
                 ;;
             "api")
                 CONTAINER="cyberkitty19-transkribator-api-dev"

@@ -13,12 +13,10 @@ if [ $# -lt 2 ]; then
     echo ""
     echo "Доступные контейнеры:"
     echo "  bot     - cyberkitty19-transkribator-bot"
-    echo "  pyro    - cyberkitty19-transkribator-pyro-worker" 
     echo "  api     - cyberkitty19-transkribator-api"
     echo ""
     echo "Примеры:"
     echo "  $0 bot python -c 'print(\"Hello\")'"
-    echo "  $0 pyro ls -la"
     echo "  $0 api pip list"
     exit 1
 fi
@@ -31,9 +29,6 @@ COMMAND="$*"
 case "$CONTAINER_TYPE" in
     "bot")
         CONTAINER="cyberkitty19-transkribator-bot"
-        ;;
-    "pyro"|"worker")
-        CONTAINER="cyberkitty19-transkribator-pyro-worker"
         ;;
     "api")
         CONTAINER="cyberkitty19-transkribator-api"
@@ -60,9 +55,6 @@ else
     case "$CONTAINER_TYPE" in
         "bot")
             SERVICE="bot"
-            ;;
-        "pyro"|"worker")
-            SERVICE="pyro-worker"
             ;;
         "api")
             SERVICE="api"

@@ -140,17 +140,15 @@ class YukassaPaymentService:
 
     def get_plan_price(self, plan_type: str) -> float:
         prices = {
-            PlanType.BASIC.value: 299.0,    # PRO план
-            PlanType.PRO.value: 299.0,      # PRO план
-            PlanType.UNLIMITED.value: 699.0, # UNLIMITED план
+            PlanType.PRO.value: 299.0,
+            PlanType.UNLIMITED.value: 699.0,
         }
         return prices.get(plan_type, 0.0)
 
     def get_plan_description(self, plan_type: str) -> str:
         descriptions = {
-            PlanType.BASIC.value: "Базовый план - 30 минут в месяц",
-            PlanType.PRO.value: "PRO план - 10 часов в месяц + API доступ",
-            PlanType.UNLIMITED.value: "UNLIMITED план - безлимитно + VIP функции",
+            PlanType.PRO.value: "PRO план — 600 минут в месяц + API доступ",
+            PlanType.UNLIMITED.value: "UNLIMITED план — безлимитно + VIP функции",
         }
         return descriptions.get(plan_type, "Неизвестный план")
 

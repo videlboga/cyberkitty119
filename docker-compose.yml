@@ -22,6 +22,7 @@ services:
     container_name: cyberkitty19-transkribator-bot
     depends_on:
       - telegram-bot-api
+      - postgres
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
       - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY}
@@ -56,6 +57,23 @@ services:
       - ./data:/app/data
       - ./transcriptions:/app/transcriptions
     restart: unless-stopped
+    depends_on:
+      - postgres
+    networks:
+      - cyberkitty19-transkribator-network
+
+  postgres:
+    image: postgres:16
+    container_name: cyberkitty19-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - transkribator_postgres-data:/var/lib/postgresql/data
+    ports:
+      - "55432:5432"
     networks:
       - cyberkitty19-transkribator-network
 
@@ -67,4 +85,6 @@ volumes:
   telegram-bot-api-data:
   videos:
   audio:
-  transcriptions: 
+  transcriptions:
+  transkribator_postgres-data:
+    external: true

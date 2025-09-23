@@ -77,15 +77,21 @@ TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
 OPENAI_API_KEY=sk-...
 OPENROUTER_API_KEY=sk-or-...
 
-# Настройки Pyrogram для больших видео
-PYROGRAM_WORKER_ENABLED=true
+# Настройки локального Bot API сервера (если используете aiogram/telegram-bot-api в docker-compose)
 TELEGRAM_API_ID=21532963
 TELEGRAM_API_HASH=66e38ebc131425924c2680e6c8fb6c09
-PYROGRAM_WORKER_CHAT_ID=0  # Будет настроено позже
 
-# База данных
+# База данных (выберите вариант)
+# Для локальной разработки на SQLite
 DATABASE_URL=sqlite:///./cyberkitty19-transkribator.db
+# Для PostgreSQL (prod/stage пример)
+# DATABASE_URL=postgresql+psycopg://transkribator:strong_password@postgres:5432/transkribator
+# POSTGRES_DB=transkribator
+# POSTGRES_USER=transkribator
+# POSTGRES_PASSWORD=strong_password
 ```
+
+> Для docker-compose убедитесь, что значения `POSTGRES_DB`, `POSTGRES_USER` и `POSTGRES_PASSWORD` заданы в `.env` — их подхватит контейнер `postgres`.
 
 ### 3. Создание необходимых директорий
 ```bash
@@ -129,14 +135,6 @@ docker-compose logs -f cyberkitty19-transkribator-bot
 docker-compose logs -f cyberkitty19-transkribator-api
 ```
 
-### 3. Авторизация Pyrogram воркера
-```bash
-# Запуск интерактивной авторизации
-docker-compose exec cyberkitty19-transkribator-pyro-worker python -m transkribator_modules.workers.pyro_auth
-
-# Следуйте инструкциям для ввода номера телефона и кода
-```
-
 ## 🔧 Альтернативный запуск (без Docker)
 
 ### 1. Установка Python и зависимостей
@@ -162,8 +160,6 @@ tmux new-session -d -s cyberkitty-bot 'source venv/bin/activate && python cyberk
 # API сервер
 tmux new-session -d -s cyberkitty-api 'source venv/bin/activate && python api_server.py'
 
-# Pyrogram воркер (после авторизации)
-tmux new-session -d -s cyberkitty-pyro 'source venv/bin/activate && python -m transkribator_modules.workers.pyro_worker'
 ```
 
 ## 🔐 Настройка безопасности
@@ -293,14 +289,7 @@ docker-compose exec cyberkitty19-transkribator-bot env | grep TELEGRAM
 docker-compose restart
 ```
 
-### 2. Проблемы с Pyrogram
-```bash
-# Удаление сессии и повторная авторизация
-rm transkribator_modules/workers/pyro_worker.session*
-docker-compose exec cyberkitty19-transkribator-pyro-worker python -m transkribator_modules.workers.pyro_auth
-```
-
-### 3. Проблемы с базой данных
+### 2. Проблемы с базой данных
 ```bash
 # Проверка базы данных
 docker-compose exec cyberkitty19-transkribator-bot python -c "

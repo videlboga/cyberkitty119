@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Boolean, ForeignKey, Text
+from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, Boolean, ForeignKey, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime, timedelta
@@ -16,7 +16,7 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(Integer, unique=True, index=True, nullable=False)
+    telegram_id = Column(BigInteger, unique=True, index=True, nullable=False)
     username = Column(String, nullable=True)
     first_name = Column(String, nullable=True)
     last_name = Column(String, nullable=True)
@@ -80,6 +80,12 @@ class Transaction(Base):
     amount_rub = Column(Float, nullable=True)
     amount_usd = Column(Float, nullable=True)
     amount_stars = Column(Integer, nullable=True)  # Telegram Stars
+    currency = Column(String, nullable=True)
+
+    # Идентификаторы платежей
+    provider_payment_charge_id = Column(String, nullable=True)
+    telegram_payment_charge_id = Column(String, nullable=True)
+    external_payment_id = Column(String, nullable=True)
 
     # Статус оплаты
     status = Column(String, default="pending")  # pending, completed, failed, refunded
@@ -157,6 +163,8 @@ class PromoCode(Base):
 
     # Метаданные
     description = Column(String, nullable=True)  # Описание промокода
+    bonus_type = Column(String, nullable=True)
+    bonus_value = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)  # Когда промокод истекает
@@ -179,6 +187,43 @@ class PromoActivation(Base):
     user = relationship("User")
     promo_code = relationship("PromoCode", back_populates="activations")
 
+
+class ReferralLink(Base):
+    __tablename__ = "referral_links"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_telegram_id = Column(BigInteger, nullable=False, index=True)
+    code = Column(String, unique=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ReferralVisit(Base):
+    __tablename__ = "referral_visits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    referral_code = Column(String, nullable=False, index=True)
+    visitor_telegram_id = Column(BigInteger, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ReferralAttribution(Base):
+    __tablename__ = "referral_attribution"
+
+    id = Column(Integer, primary_key=True, index=True)
+    visitor_telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    referral_code = Column(String, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ReferralPayment(Base):
+    __tablename__ = "referral_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    referral_code = Column(String, nullable=False, index=True)
+    payer_telegram_id = Column(BigInteger, nullable=False, index=True)
+    amount_rub = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 # Предустановленные планы (обновленные описания)
 DEFAULT_PLANS = [
     {
@@ -188,7 +233,7 @@ DEFAULT_PLANS = [
         "max_file_size_mb": 50.0,
         "price_rub": 0.0,
         "price_usd": 0.0,
-        "price_stars": 760,
+        "price_stars": 0,
         "description": "Попробуйте наш сервис бесплатно",
         "features": '["3 генерации в месяц", "Файлы до 50 МБ", "Базовое качество"]'
     },
@@ -197,20 +242,21 @@ DEFAULT_PLANS = [
         "display_name": "⭐ Базовый",
         "minutes_per_month": 180.0,  # 3 часа
         "max_file_size_mb": 200.0,
-        "price_rub": 990.0,
-        "price_usd": 10.0,
-        "price_stars": 760,
-        "description": "Для регулярного использования",
-        "features": '["3 часа в месяц", "Файлы до 200 МБ", "ИИ-форматирование"]'
+        "price_rub": 0.0,
+        "price_usd": 0.0,
+        "price_stars": 0,
+        "description": "План устарел",
+        "features": '["План недоступен"]',
+        "is_active": False
     },
     {
         "name": PlanType.PRO,
         "display_name": "💎 Профессиональный",
         "minutes_per_month": 600.0,  # 10 часов
         "max_file_size_mb": 500.0,
-        "price_rub": 470.0,
-        "price_usd": 5.0,
-        "price_stars": 362,
+        "price_rub": 299.0,
+        "price_usd": 0.0,
+        "price_stars": 230,
         "description": "Для бизнеса и работы",
         "features": '["10 часов в месяц", "Файлы до 500 МБ", "API доступ", "Приоритет"]'
     },
@@ -219,9 +265,9 @@ DEFAULT_PLANS = [
         "display_name": "🚀 Безлимитный",
         "minutes_per_month": None,  # Безлимитный
         "max_file_size_mb": 2000.0,
-        "price_rub": 790.0,
-        "price_usd": 8.0,
-        "price_stars": 608,
+        "price_rub": 699.0,
+        "price_usd": 0.0,
+        "price_stars": 538,
         "description": "Максимальные возможности",
         "features": '["Безлимитные минуты", "Файлы до 2 ГБ", "VIP поддержка", "Все функции"]'
     }
