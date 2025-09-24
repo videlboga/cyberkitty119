@@ -60,6 +60,23 @@ PLAN_DESCRIPTIONS = {
     }
 }
 
+
+def _get_target_message(update: Update):
+    if update.message:
+        return update.message
+    if update.callback_query:
+        return update.callback_query.message
+    return None
+
+
+async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, **kwargs):
+    message = _get_target_message(update)
+    if message:
+        return await message.reply_text(text, **kwargs)
+    if update.callback_query:
+        return await context.bot.send_message(chat_id=update.effective_user.id, text=text, **kwargs)
+    return None
+
 async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает доступные тарифные планы."""
     try:
@@ -102,13 +119,11 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 plans_text, reply_markup=reply_markup, parse_mode='Markdown'
             )
         else:
-            await update.message.reply_text(
-                plans_text, reply_markup=reply_markup, parse_mode='Markdown'
-            )
+            await _reply(update, context, plans_text, reply_markup=reply_markup, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"Ошибка при показе планов: {e}")
-        await update.message.reply_text("❌ Ошибка при загрузке тарифных планов")
+        await _reply(update, context, "❌ Ошибка при загрузке тарифных планов")
 
 async def initiate_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, plan_id: str) -> None:
     """Инициирует процесс оплаты для выбранного плана."""
@@ -332,13 +347,11 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await update.message.reply_text(
-            success_text, reply_markup=reply_markup
-        )
+        await _reply(update, context, success_text, reply_markup=reply_markup)
 
     except Exception as e:
         logger.error(f"Ошибка при обработке успешного платежа: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при активации подписки")
+        await _reply(update, context, "❌ Произошла ошибка при активации подписки")
 
 async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает колбеки связанные с платежами."""

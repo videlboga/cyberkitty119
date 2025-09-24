@@ -100,6 +100,33 @@ else:
 for directory in [VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
+# ===== ФИЧЕФЛАГИ И НОВЫЕ СЕРВИСЫ =====
+FEATURE_BETA_MODE = os.getenv('FEATURE_BETA_MODE', 'false').lower() == 'true'
+ROUTER_MODEL = os.getenv('ROUTER_MODEL', 'google/gemini-2.5-flash-lite')
+ROUTER_CONF_HIGH = float(os.getenv('ROUTER_CONF_HIGH', '0.80'))
+ROUTER_CONF_MID = float(os.getenv('ROUTER_CONF_MID', '0.55'))
+SEARCH_BACKEND = os.getenv('SEARCH_BACKEND', 'pgvector')
+ENABLE_STRUCT_LOGS = os.getenv('ENABLE_STRUCT_LOGS', '0').lower() in ('1', 'true')
+FEATURE_GOOGLE_CALENDAR = os.getenv('FEATURE_GOOGLE_CALENDAR', 'true').lower() == 'true'
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
+GOOGLE_REDIRECT_URI = os.getenv('GOOGLE_REDIRECT_URI', '')
+GOOGLE_ENCRYPTION_KEY = os.getenv('GOOGLE_ENCRYPTION_KEY', '')
+GOOGLE_SCOPES = [
+    'https://www.googleapis.com/auth/drive.file',
+    'https://www.googleapis.com/auth/documents',
+    'https://www.googleapis.com/auth/spreadsheets',
+]
+GOOGLE_OAUTH_CONFIGURED = bool(
+    GOOGLE_CLIENT_ID
+    and GOOGLE_CLIENT_SECRET
+    and GOOGLE_REDIRECT_URI
+    and GOOGLE_ENCRYPTION_KEY
+)
+if FEATURE_GOOGLE_CALENDAR:
+    GOOGLE_SCOPES.append('https://www.googleapis.com/auth/calendar.readonly')
+    GOOGLE_SCOPES.append('https://www.googleapis.com/auth/calendar.events')
+
 logger.info("✅ Конфигурация загружена успешно")
 logger.info(f"🏠 Режим: {'контейнер' if IN_CONTAINER else 'локальный'}")
 logger.info(f"📁 Директория данных: {DATA_DIR}")
@@ -108,3 +135,6 @@ logger.info(f"📁 Директория аудио: {AUDIO_DIR}")
 logger.info(f"📁 Директория транскрипций: {TRANSCRIPTIONS_DIR}")
 logger.info(f"🔧 Максимальный размер файла: {MAX_FILE_SIZE_MB} МБ")
 logger.info(f"⏱️ Максимальная длительность: {MAX_AUDIO_DURATION_MINUTES} минут")
+logger.info(f"🧪 Бета-режим включен по умолчанию: {FEATURE_BETA_MODE}")
+logger.info(f"🧭 Router модель: {ROUTER_MODEL}")
+logger.info(f"📂 Google Drive интеграция включена: {GOOGLE_OAUTH_CONFIGURED}")

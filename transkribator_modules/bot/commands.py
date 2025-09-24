@@ -9,6 +9,23 @@ from transkribator_modules.db.database import (
 )
 from transkribator_modules.db.models import ApiKey, PlanType
 
+
+def _get_target_message(update: Update):
+    if update.message:
+        return update.message
+    if update.callback_query:
+        return update.callback_query.message
+    return None
+
+
+async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, **kwargs):
+    message = _get_target_message(update)
+    if message:
+        return await message.reply_text(text, **kwargs)
+    if update.callback_query:
+        return await context.bot.send_message(chat_id=update.effective_user.id, text=text, **kwargs)
+    return None
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start: показываем нужное главное меню (как по кнопке Назад)."""
     welcome_text = f"""🐱 **Мяу! Добро пожаловать в Cyberkitty19 Transkribator!**
@@ -35,7 +52,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+    await _reply(update, context, welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /help"""
@@ -74,7 +91,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 Просто отправьте файл и я начну обработку! 🚀"""
 
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    await _reply(update, context, help_text, parse_mode='Markdown')
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /status"""
@@ -96,7 +113,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 Готов к работе! 🚀"""
 
-    await update.message.reply_text(status_text, parse_mode='Markdown')
+    await _reply(update, context, status_text, parse_mode='Markdown')
 
 async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /rawtranscript"""
@@ -118,7 +135,7 @@ async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_T
 
 Удобно для дальнейшей обработки! 🔧"""
 
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    await _reply(update, context, help_text, parse_mode='Markdown')
 
 async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /plans"""
@@ -155,13 +172,11 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 Спасибо за использование CyberKitty Transkribator! 🐱"""
 
-        await update.message.reply_text(stats_text, parse_mode='Markdown')
+        await _reply(update, context, stats_text, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"Ошибка при получении статистики: {e}")
-        await update.message.reply_text(
-            "❌ Не удалось получить статистику. Попробуйте позже."
-        )
+        await _reply(update, context, "❌ Не удалось получить статистику. Попробуйте позже.")
 
 async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /api"""
@@ -183,7 +198,7 @@ async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 *API будет доступен для пользователей с PRO подпиской*"""
 
-    await update.message.reply_text(api_text, parse_mode='Markdown')
+    await _reply(update, context, api_text, parse_mode='Markdown')
 
 async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /promo"""
@@ -292,9 +307,13 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
 • Использовано: {usage_info['minutes_used_this_month']:.1f} мин
 • Лимит: Безлимитно ♾️"""
 
+        beta_status = "Включен 🟢" if user_service.is_beta_enabled(db_user) else "Выключен ⚪"
+
         cabinet_text += f"""
 
-📈 **Всего транскрибировано:** {usage_info['total_minutes_transcribed']:.1f} мин"""
+📈 **Всего транскрибировано:** {usage_info['total_minutes_transcribed']:.1f} мин
+
+🧪 **Бета-режим:** {beta_status}"""
 
         # Активные промокоды
         if active_promos:
@@ -310,6 +329,7 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
 
         # Кнопки меню
         keyboard = [
+            [InlineKeyboardButton("🐾 БЕТА_СУПЕР_КОТ", callback_data="toggle_beta")],
             [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
             [InlineKeyboardButton("🎁 Промокоды", callback_data="show_promo_codes")],
             [InlineKeyboardButton("⭐ Купить план", callback_data="show_payment_plans")],

@@ -7,7 +7,13 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
-from transkribator_modules.config import logger, BOT_TOKEN, USE_LOCAL_BOT_API, LOCAL_BOT_API_URL
+from transkribator_modules.config import (
+    logger,
+    BOT_TOKEN,
+    USE_LOCAL_BOT_API,
+    LOCAL_BOT_API_URL,
+    FEATURE_BETA_MODE,
+)
 from transkribator_modules.bot.commands import (
     start_command, help_command, status_command,
     plans_command, stats_command, api_command, promo_codes_command
@@ -20,6 +26,7 @@ from transkribator_modules.bot.payments import (
     handle_pre_checkout_query, handle_successful_payment, show_payment_plans
 )
 from transkribator_modules.db.database import init_database
+from transkribator_modules.beta.reminders import schedule_jobs
 
 def main() -> None:
     """Главная функция для запуска бота."""
@@ -51,6 +58,9 @@ def main() -> None:
         builder = builder.base_file_url(f"{LOCAL_BOT_API_URL}/file/bot")
     
     application = builder.build()
+
+    if FEATURE_BETA_MODE:
+        schedule_jobs(application)
 
     # Обработчики команд
     application.add_handler(CommandHandler("start", start_command))

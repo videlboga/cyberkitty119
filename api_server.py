@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Optional, List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Header, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
+import httpx
 
 # Добавляем корневую директорию проекта в sys.path
 import sys
@@ -21,12 +22,13 @@ sys.path.append(str(current_dir))
 try:
     from transkribator_modules.transcribe.transcriber_v4 import transcribe_audio, format_transcript_with_llm
     from transkribator_modules.audio.extractor import extract_audio_from_video
-    from transkribator_modules.config import logger
+    from transkribator_modules.config import logger, BOT_TOKEN
     from transkribator_modules.db.database import (
         init_database, get_db, UserService, ApiKeyService, TranscriptionService,
-        calculate_audio_duration, get_plans
+        calculate_audio_duration, get_plans, SessionLocal
     )
     from transkribator_modules.db.models import User, ApiKey
+    from transkribator_modules.google_api import GoogleCredentialService, parse_state
 except ImportError as e:
     print(f"Ошибка импорта: {e}")
     sys.exit(1)
@@ -163,6 +165,111 @@ async def root():
 async def health_check():
     """Проверка состояния сервиса"""
     return {"status": "healthy", "service": "transkribator-api", "version": "2.0.0"}
+
+
+async def _notify_google_result(telegram_id: Optional[int], message: str) -> None:
+    if not BOT_TOKEN or not telegram_id:
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(url, json={"chat_id": telegram_id, "text": message})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to notify user about Google OAuth result",
+            extra={"error": str(exc), "telegram_id": telegram_id},
+        )
+
+
+def _html_response(title: str, body: str, status_code: int = 200) -> HTMLResponse:
+    content = f"""
+    <html>
+        <head>
+            <meta charset='utf-8'/>
+            <title>{title}</title>
+            <style>body{{font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;text-align:center}}a{{color:#38bdf8}}</style>
+        </head>
+        <body>
+            <h1>{title}</h1>
+            <p>{body}</p>
+            <p>Можно вернуться в Telegram 🤖</p>
+        </body>
+    </html>
+    """
+    return HTMLResponse(content=content, status_code=status_code)
+
+
+@app.get("/google/callback", response_class=HTMLResponse)
+async def google_oauth_callback(
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+):
+    logger.info(
+        "Google OAuth callback received",
+        extra={"code_present": bool(code), "state": state, "error": error},
+    )
+
+    if error:
+        return _html_response("Авторизация отклонена", f"Google вернул ошибку: {error}", status_code=400)
+
+    if not code or not state:
+        return _html_response("Ошибка", "Не найден параметр code/state в ответе Google", status_code=400)
+
+    try:
+        user_id, _ = parse_state(state)
+    except ValueError as exc:
+        logger.warning("Invalid Google OAuth state", extra={"error": str(exc)})
+        return _html_response("Ошибка", "Некорректный state. Попробуйте начать авторизацию заново.", status_code=400)
+
+    db = SessionLocal()
+    telegram_id: Optional[int] = None
+    try:
+        user = db.query(User).filter(User.id == user_id).one_or_none()
+        if not user:
+            logger.error("User not found for Google OAuth", extra={"user_id": user_id})
+            return _html_response("Ошибка", "Пользователь не найден. Попробуйте снова.", status_code=404)
+
+        telegram_id = user.telegram_id
+
+        google_service = GoogleCredentialService(db)
+        flow = google_service.build_flow(state=state)
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
+
+        tokens = {
+            "access_token": credentials.token,
+            "refresh_token": credentials.refresh_token,
+            "expiry": credentials.expiry.isoformat() if credentials.expiry else None,
+        }
+
+        google_service.store_tokens(user_id, tokens, list(credentials.scopes or []))
+
+        await _notify_google_result(
+            telegram_id,
+            "✅ Google Drive подключён. Возвращайся в Telegram — заметки будут сохраняться в Drive.",
+        )
+
+        return _html_response(
+            "Google подключён",
+            "Интеграция успешно настроена. Можно вернуться в чат с ботом.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Google OAuth callback failed",
+            extra={"user_id": user_id, "error": str(exc)},
+        )
+        await _notify_google_result(
+            telegram_id,
+            "⚠️ Не удалось подключить Google. Попробуй ещё раз через личный кабинет.",
+        )
+        return _html_response(
+            "Ошибка",
+            "Не удалось завершить авторизацию. Попробуйте начать подключение заново.",
+            status_code=500,
+        )
+    finally:
+        db.close()
 
 @app.get("/plans", response_model=List[PlanInfo])
 async def get_plans_endpoint():

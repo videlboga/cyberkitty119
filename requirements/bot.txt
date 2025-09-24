@@ -2,7 +2,7 @@
 -r base.txt
 
 # Telegram библиотеки
-python-telegram-bot==22.1
+python-telegram-bot[job-queue]==22.1
 telethon==1.33.1
 
 # AI и транскрибация

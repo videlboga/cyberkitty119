@@ -1,10 +1,27 @@
+import os
+
 from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, Boolean, ForeignKey, Text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime, timedelta
 from enum import Enum
 
+try:  # Optional pgvector support (PostgreSQL-only)
+    from pgvector.sqlalchemy import Vector as PgVector
+except ImportError:  # pragma: no cover - pgvector unavailable (e.g. sqlite tests)
+    PgVector = None
+
 Base = declarative_base()
+
+
+def _embedding_column_type():
+    """Return appropriate SQLAlchemy column type for note chunk embeddings."""
+
+    database_url = os.getenv('DATABASE_URL', '')
+    use_pgvector = bool(PgVector) and database_url.startswith('postgresql')
+    if use_pgvector:
+        return PgVector(256)
+    return Text
 
 class PlanType(str, Enum):
     FREE = "free"
@@ -38,10 +55,13 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+    beta_enabled = Column(Boolean, default=False)
+    google_connected = Column(Boolean, default=False)
 
     # Связи
     transactions = relationship("Transaction", back_populates="user")
     transcriptions = relationship("Transcription", back_populates="user")
+    notes = relationship("Note", back_populates="user")
 
 class Plan(Base):
     __tablename__ = "plans"
@@ -123,6 +143,93 @@ class Transcription(Base):
 
     # Связи
     user = relationship("User", back_populates="transcriptions")
+
+
+class NoteStatus(str, Enum):
+    NEW = "new"
+    PROCESSED = "processed"
+    PROCESSED_RAW = "processed_raw"
+    BACKLOG = "backlog"
+
+
+class Note(Base):
+    __tablename__ = "notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    ts = Column(DateTime, default=datetime.utcnow, nullable=False)
+    source = Column(String, default="telegram")
+    text = Column(Text, nullable=False)
+    summary = Column(Text, nullable=True)
+    type_hint = Column(String, nullable=True)
+    type_confidence = Column(Float, default=0.0)
+    tags = Column(Text, default="[]")
+    links = Column(Text, default="{}")
+    drive_file_id = Column(String, nullable=True)
+    status = Column(String, default=NoteStatus.NEW.value)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="notes")
+    chunks = relationship("NoteChunk", back_populates="note", cascade="all, delete-orphan")
+    reminders = relationship("Reminder", back_populates="note")
+
+
+class NoteChunk(Base):
+    __tablename__ = "note_chunks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    note_id = Column(Integer, ForeignKey("notes.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    chunk_index = Column(Integer, nullable=False)
+    text = Column(Text, nullable=False)
+    embedding = Column(_embedding_column_type(), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    note = relationship("Note", back_populates="chunks")
+    user = relationship("User")
+
+
+class Reminder(Base):
+    __tablename__ = "reminders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    note_id = Column(Integer, ForeignKey("notes.id"), nullable=True)
+    fire_ts = Column(DateTime, nullable=False)
+    payload = Column(Text, nullable=True)
+    sent_at = Column(DateTime, nullable=True)
+
+    user = relationship("User")
+    note = relationship("Note", back_populates="reminders")
+
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    kind = Column(String, nullable=False)
+    payload = Column(Text, nullable=True)
+    ts = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+
+
+class GoogleCredential(Base):
+    __tablename__ = "google_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    access_token = Column(String, nullable=False)
+    refresh_token = Column(String, nullable=True)
+    expiry = Column(DateTime, nullable=True)
+    scopes = Column(Text, default="[]")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User")
 
 class ApiKey(Base):
     __tablename__ = "api_keys"

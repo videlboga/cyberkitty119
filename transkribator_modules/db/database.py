@@ -5,13 +5,16 @@
 import os
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+import json
+from datetime import datetime, timedelta, time
 from typing import Optional, List
 from sqlalchemy import create_engine, desc, func
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError
 import sqlite3
 from pathlib import Path
+from sqlalchemy import text
+
 from transkribator_modules.config import logger
 
 from .models import (
@@ -29,11 +32,20 @@ from .models import (
     ReferralPayment,
     DEFAULT_PLANS,
     PlanType,
+    Note,
+    NoteChunk,
+    Reminder,
+    Event,
+    GoogleCredential,
+    NoteStatus,
 )
 
 # Настройка базы данных
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./transkribator.db")
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Путь к файлу базы данных
@@ -41,6 +53,13 @@ DB_PATH = Path("data/cyberkitty19_transkribator.db")
 
 def init_database():
     """Инициализирует базу данных и создает необходимые таблицы."""
+    backend = engine.url.get_backend_name()
+
+    # Для PostgreSQL (и других не-sqlite бэкендов) полагаемся на миграции Alembic.
+    if backend != "sqlite":
+        logger.info("Skipping legacy SQLite bootstrap for backend %s", backend)
+        return
+
     try:
         # Создаем директорию для данных если не существует
         DB_PATH.parent.mkdir(exist_ok=True)
@@ -65,9 +84,19 @@ def init_database():
                     generations_used_this_month INTEGER DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    is_active BOOLEAN DEFAULT 1
+                    is_active BOOLEAN DEFAULT 1,
+                    beta_enabled BOOLEAN DEFAULT 0,
+                    google_connected BOOLEAN DEFAULT 0
                 )
             """)
+
+            # Гарантируем наличие beta_enabled в существующих БД
+            cursor.execute("PRAGMA table_info(users)")
+            user_columns = [row[1] for row in cursor.fetchall()]
+            if "beta_enabled" not in user_columns:
+                cursor.execute("ALTER TABLE users ADD COLUMN beta_enabled BOOLEAN DEFAULT 0")
+            if "google_connected" not in user_columns:
+                cursor.execute("ALTER TABLE users ADD COLUMN google_connected BOOLEAN DEFAULT 0")
 
             # Таблица транскрипций
             cursor.execute("""
@@ -120,6 +149,80 @@ def init_database():
                     is_active BOOLEAN DEFAULT 1,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     last_used_at DATETIME,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            """)
+
+            # Таблица заметок
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    source TEXT,
+                    text TEXT,
+                    summary TEXT,
+                    type_hint TEXT,
+                    type_confidence FLOAT DEFAULT 0.0,
+                    tags TEXT,
+                    links TEXT,
+                    drive_file_id TEXT,
+                    status TEXT DEFAULT 'new',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_notes_user_ts ON notes(user_id, ts)")
+
+            # Таблица эмбеддингов заметок
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS note_embeddings (
+                    note_id INTEGER PRIMARY KEY,
+                    user_id INTEGER,
+                    embedding TEXT,
+                    FOREIGN KEY (note_id) REFERENCES notes (id),
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            """)
+
+            # Таблица напоминаний
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    note_id INTEGER,
+                    fire_ts DATETIME,
+                    payload TEXT,
+                    sent_at DATETIME,
+                    FOREIGN KEY (user_id) REFERENCES users (id),
+                    FOREIGN KEY (note_id) REFERENCES notes (id)
+                )
+            """)
+
+            # Таблица событий
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    kind TEXT,
+                    payload TEXT,
+                    ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            """)
+
+            # Таблица Google credentials
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS google_credentials (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    access_token TEXT,
+                    refresh_token TEXT,
+                    expiry DATETIME,
+                    scopes TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (id)
                 )
             """)
@@ -225,6 +328,20 @@ def init_database():
         logger.error(f"Ошибка при инициализации базы данных: {e}")
         raise
 
+    # Дополнительные проверки для PostgreSQL
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS beta_enabled BOOLEAN DEFAULT FALSE"))
+            conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS google_connected BOOLEAN DEFAULT FALSE"))
+            conn.commit()
+    except Exception as exc:
+        logger.warning("Не удалось добавить колонку beta_enabled", extra={"error": str(exc)})
+
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as exc:
+        logger.warning("Метаданные не применены", extra={"error": str(exc)})
+
 def get_db():
     """Получение сессии базы данных"""
     db = SessionLocal()
@@ -262,6 +379,15 @@ class UserService:
             if last_name:
                 user.last_name = last_name
             user.updated_at = datetime.utcnow()
+            self.db.commit()
+
+        # Обнуляем beta_enabled, если пришёл старый null
+        if getattr(user, "beta_enabled", None) is None:
+            user.beta_enabled = False
+            self.db.commit()
+
+        if getattr(user, "google_connected", None) is None:
+            user.google_connected = False
             self.db.commit()
 
         return user
@@ -314,6 +440,28 @@ class UserService:
             user.minutes_used_this_month += minutes_used
             user.total_minutes_transcribed += minutes_used
 
+        user.updated_at = datetime.utcnow()
+        self.db.commit()
+
+    def set_beta_enabled(self, user: User, enabled: bool) -> None:
+        """Включить или выключить бета-режим для пользователя"""
+        user.beta_enabled = enabled
+        user.updated_at = datetime.utcnow()
+        self.db.commit()
+
+    def toggle_beta_enabled(self, user: User) -> bool:
+        """Переключить состояние бета-режима и вернуть новое значение"""
+        new_state = not bool(getattr(user, "beta_enabled", False))
+        self.set_beta_enabled(user, new_state)
+        return new_state
+
+    def is_beta_enabled(self, user: User) -> bool:
+        """Проверить, активен ли бета-режим для пользователя"""
+        return bool(getattr(user, "beta_enabled", False))
+
+    def set_google_connected(self, user: User, connected: bool) -> None:
+        """Обновить флаг подключения Google для пользователя."""
+        user.google_connected = connected
         user.updated_at = datetime.utcnow()
         self.db.commit()
 
@@ -392,6 +540,128 @@ class UserService:
                 user.generations_used_this_month = 0  # Сбрасываем и счетчик генераций
                 user.last_reset_date = datetime.utcnow()
                 self.db.commit()
+
+
+class NoteService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create_note(
+        self,
+        user: User,
+        text: str,
+        source: str = "telegram",
+        summary: Optional[str] = None,
+        type_hint: Optional[str] = None,
+        type_confidence: Optional[float] = None,
+        tags: Optional[list[str]] = None,
+        links: Optional[dict] = None,
+        drive_file_id: Optional[str] = None,
+        status: str = NoteStatus.NEW.value,
+    ) -> Note:
+        note = Note(
+            user_id=user.id,
+            ts=datetime.utcnow(),
+            source=source,
+            text=text,
+            summary=summary,
+            type_hint=type_hint,
+            type_confidence=type_confidence or 0.0,
+            tags=json.dumps(tags or []),
+            links=json.dumps(links or {}),
+            drive_file_id=drive_file_id,
+            status=status,
+        )
+        self.db.add(note)
+        self.db.commit()
+        self.db.refresh(note)
+        return note
+
+    def update_note_metadata(
+        self,
+        note: Note,
+        *,
+        summary: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        links: Optional[dict] = None,
+        drive_file_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Note:
+        if summary is not None:
+            note.summary = summary
+        if tags is not None:
+            note.tags = json.dumps(tags)
+        if links is not None:
+            existing_links = {}
+            try:
+                if note.links:
+                    existing_links = json.loads(note.links)
+            except Exception:
+                existing_links = {}
+            existing_links.update(links)
+            note.links = json.dumps(existing_links)
+        if drive_file_id is not None:
+            note.drive_file_id = drive_file_id
+        if status is not None:
+            note.status = status
+        note.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(note)
+        return note
+
+    def update_status(self, note: Note, status: str) -> Note:
+        note.status = status
+        note.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(note)
+        return note
+
+    def list_backlog(self, user: User, limit: int = 10) -> List[Note]:
+        return (
+            self.db.query(Note)
+            .filter(Note.user_id == user.id, Note.status == NoteStatus.BACKLOG.value)
+            .order_by(Note.ts.asc())
+            .limit(limit)
+            .all()
+        )
+
+    def schedule_backlog_reminder(self, user: User, note: Note) -> Reminder:
+        """Создаёт или обновляет напоминание на 20:00 ближайшего дня."""
+
+        now = datetime.utcnow()
+        target_dt = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        if target_dt <= now:
+            target_dt += timedelta(days=1)
+
+        existing = (
+            self.db.query(Reminder)
+            .filter(
+                Reminder.user_id == user.id,
+                Reminder.note_id == note.id,
+                Reminder.sent_at.is_(None),
+            )
+            .first()
+        )
+
+        payload = json.dumps({"kind": "backlog_reminder", "note_id": note.id})
+
+        if existing:
+            existing.fire_ts = target_dt
+            existing.payload = payload
+            self.db.commit()
+            self.db.refresh(existing)
+            return existing
+
+        reminder = Reminder(
+            user_id=user.id,
+            note_id=note.id,
+            fire_ts=target_dt,
+            payload=payload,
+        )
+        self.db.add(reminder)
+        self.db.commit()
+        self.db.refresh(reminder)
+        return reminder
 
 class ApiKeyService:
     def __init__(self, db: Session):

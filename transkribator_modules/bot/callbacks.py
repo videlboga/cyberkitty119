@@ -7,10 +7,32 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from transkribator_modules.config import logger
+from transkribator_modules.config import logger, GOOGLE_OAUTH_CONFIGURED
 from transkribator_modules.db.database import SessionLocal, UserService, ApiKeyService, PromoCodeService
 from transkribator_modules.db.models import ApiKey, PlanType
 from transkribator_modules.bot.payments import handle_payment_callback, show_payment_plans, initiate_payment, initiate_yukassa_payment
+from transkribator_modules.google_api import (
+    GoogleCredentialService,
+    generate_state,
+    build_authorization_url,
+)
+
+
+def _get_target_message(update: Update):
+    if update.message:
+        return update.message
+    if update.callback_query:
+        return update.callback_query.message
+    return None
+
+
+async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, **kwargs):
+    message = _get_target_message(update)
+    if message:
+        return await message.reply_text(text, **kwargs)
+    if update.callback_query:
+        return await context.bot.send_message(chat_id=update.effective_user.id, text=text, **kwargs)
+    return None
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает колбек запросы от кнопок."""
@@ -22,6 +44,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     logger.info(f"Полный update: {update.to_dict() if hasattr(update, 'to_dict') else str(update)}")
 
     # Обработка различных типов колбеков
+    if data.startswith("beta:"):
+        from transkribator_modules.beta.handlers import handle_callback as handle_beta_callback
+
+        await handle_beta_callback(update, context)
+        return
+
     if data == "show_payment_plans":
         logger.info("Получен колбек show_payment_plans")
         await show_payment_plans(update, context)
@@ -32,6 +60,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "show_help":
         from transkribator_modules.bot.commands import help_command
         await help_command(update, context)
+
+    elif data == "toggle_beta":
+        await toggle_beta_mode(update, context)
+
+    elif data == "google_disconnect":
+        await disconnect_google(update, context)
 
     elif data.startswith("buy_plan_"):
         if data.endswith("_stars"):
@@ -98,6 +132,11 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает личный кабинет пользователя."""
+    google_available = GOOGLE_OAUTH_CONFIGURED
+    google_status = "Недоступно" if not google_available else "Не подключён ⚪"
+    google_auth_url = None
+    db_user = None
+
     try:
         user = update.effective_user
         db = SessionLocal()
@@ -145,6 +184,27 @@ async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TY
 • Использовано: {usage_info['minutes_used_this_month']:.1f} мин
 • Лимит: Безлимитно ♾️"""
 
+            beta_status = "Включен 🟢" if user_service.is_beta_enabled(db_user) else "Выключен ⚪"
+
+            if google_available:
+                try:
+                    google_service = GoogleCredentialService(db)
+                    google_status = "Подключён 🟢" if getattr(db_user, "google_connected", False) else "Не подключён ⚪"
+                    state = generate_state(db_user.id)
+                    google_auth_url = build_authorization_url(state)
+                except RuntimeError as exc:
+                    logger.warning(
+                        "Google OAuth not configured",
+                        extra={"error": str(exc), "user_id": db_user.id},
+                    )
+                    google_status = "Недоступно"
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to prepare Google auth URL",
+                        extra={"error": str(exc), "user_id": db_user.id},
+                    )
+                    google_auth_url = None
+
             cabinet_text = f"""🐱 **Личный кабинет**
 
 👤 **Профиль:**
@@ -158,6 +218,9 @@ async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TY
 • Всего транскрибировано: {usage_info['total_minutes_transcribed']:.1f} мин
 • Последняя активность: {db_user.updated_at.strftime('%d.%m.%Y %H:%M') if db_user.updated_at else 'Никогда'}
 
+🔗 **Google Drive:** {google_status}
+🧪 **Бета-режим:** {beta_status}
+
 **Доступные функции:**
 • Транскрипция видео и аудио
 • Обработка файлов до 2 ГБ
@@ -167,11 +230,27 @@ async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TY
         finally:
             db.close()
 
-        keyboard = [
+        keyboard = []
+
+        if google_available and db_user:
+            google_buttons = []
+            if getattr(db_user, "google_connected", False):
+                row = []
+                if google_auth_url:
+                    row.append(InlineKeyboardButton("🔄 Переподключить Google", url=google_auth_url))
+                row.append(InlineKeyboardButton("🚫 Отключить Google", callback_data="google_disconnect"))
+                google_buttons.append(row)
+            else:
+                if google_auth_url:
+                    google_buttons.append([InlineKeyboardButton("🔗 Подключить Google", url=google_auth_url)])
+            keyboard.extend(google_buttons)
+
+        keyboard.extend([
+            [InlineKeyboardButton("🐾 БЕТА_СУПЕР_КОТ", callback_data="toggle_beta")],
             [InlineKeyboardButton("💎 Тарифы", callback_data="show_payment_plans")],
             [InlineKeyboardButton("🎁 Промокоды", callback_data="enter_promo_code")],
             [InlineKeyboardButton("❓ Помощь", callback_data="show_help")]
-        ]
+        ])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -180,13 +259,75 @@ async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TY
                 cabinet_text, reply_markup=reply_markup, parse_mode='Markdown'
             )
         else:
-            await update.message.reply_text(
-                cabinet_text, reply_markup=reply_markup, parse_mode='Markdown'
-            )
+            await _reply(update, context, cabinet_text, reply_markup=reply_markup, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"Ошибка в личном кабинете: {e}")
-        await update.message.reply_text("❌ Ошибка при загрузке личного кабинета")
+        await _reply(update, context, "❌ Ошибка при загрузке личного кабинета")
+
+async def toggle_beta_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Переключает бета-режим для пользователя и обновляет личный кабинет"""
+    query = update.callback_query
+    user = update.effective_user
+
+    db = SessionLocal()
+    new_state = None
+    try:
+        user_service = UserService(db)
+        db_user = user_service.get_or_create_user(
+            telegram_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
+        )
+
+        new_state = user_service.toggle_beta_enabled(db_user)
+        logger.info(
+            "Бета-режим переключен",
+            extra={"user_id": user.id, "beta_enabled": new_state},
+        )
+
+    finally:
+        db.close()
+
+    if new_state is None:
+        await query.answer("Не удалось переключить бета-режим", show_alert=True)
+        return
+
+    message = "🐾 Бета-режим активирован" if new_state else "🐾 Бета-режим выключен"
+    await query.answer(message, show_alert=False)
+
+    # Обновляем личный кабинет
+    await show_personal_cabinet(update, context)
+
+
+async def disconnect_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляет сохранённые креды Google и обновляет кабинет."""
+    query = update.callback_query
+    db = SessionLocal()
+    try:
+        user_service = UserService(db)
+        user = user_service.get_or_create_user(
+            telegram_id=update.effective_user.id,
+            username=update.effective_user.username,
+            first_name=update.effective_user.first_name,
+            last_name=update.effective_user.last_name,
+        )
+
+        google_service = GoogleCredentialService(db)
+        google_service.revoke(user.id)
+        user_service.set_google_connected(user, False)
+        await query.answer("Google отключён", show_alert=False)
+    except RuntimeError as exc:
+        logger.warning("Google revoke failed", extra={"error": str(exc)})
+        await query.answer("Google OAuth не настроен", show_alert=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Не удалось отключить Google", extra={"error": str(exc)})
+        await query.answer("Не удалось отключить Google", show_alert=True)
+    finally:
+        db.close()
+
+    await show_personal_cabinet(update, context)
 
 async def show_plans_callback(query, user):
     """Показать тарифные планы"""

@@ -16,6 +16,12 @@ from transkribator_modules.config import (
 from transkribator_modules.audio.extractor import extract_audio_from_video, compress_audio_for_api
 from transkribator_modules.transcribe.transcriber_v4 import transcribe_audio, format_transcript_with_llm, _basic_local_format
 from transkribator_modules.utils.large_file_downloader import download_large_file, get_file_info
+from transkribator_modules.db.database import SessionLocal, UserService
+from transkribator_modules.beta.feature_flags import FEATURE_BETA_MODE
+from transkribator_modules.beta.handlers import (
+    handle_update as handle_beta_update,
+    process_text as beta_process_text,
+)
 
 def clean_html_entities(text: str) -> str:
     """Минимальная очистка текста: только удаление HTML-тегов.
@@ -183,11 +189,13 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await process_audio_file(update, context, audio)
 
-async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE, video_file) -> None:
+async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE, video_file, beta_enabled: bool | None = None) -> None:
     """Обрабатывает видео файл"""
     try:
         file_size_mb = video_file.file_size / (1024 * 1024) if video_file.file_size else 0
         filename = getattr(video_file, 'file_name', f"video_{video_file.file_id}")
+        if beta_enabled is None:
+            beta_enabled = await _is_beta_enabled(update)
 
         # В группах не показываем статусные сообщения
         is_group = update.effective_chat and update.effective_chat.type in ("group", "supergroup")
@@ -264,6 +272,21 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
 
         transcript = await transcribe_audio(compressed_audio)
+
+        if beta_enabled and transcript and transcript.strip():
+            if status_msg:
+                await status_msg.edit_text("✅ Транскрипция готова! Открываю меню обработки…")
+            await beta_process_text(update, context, transcript, source='video')
+            try:
+                video_path.unlink(missing_ok=True)
+                audio_path.unlink(missing_ok=True)
+                comp_path = Path(compressed_audio)
+                if comp_path != audio_path:
+                    comp_path.unlink(missing_ok=True)
+            except Exception as clear_exc:
+                logger.warning(f"Не удалось удалить временные файлы (beta video): {clear_exc}")
+            return
+
         # Форматируем транскрипт для читаемости (OpenRouter/DeepSeek) с локальным fallback
         logger.info("Запускаю LLM-форматирование транскрипта (video)")
         formatted_transcript = None
@@ -425,11 +448,13 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
         else:
             await update.message.reply_text(f"❌ Ошибка при обработке видео: {error_msg}")
 
-async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE, audio_file) -> None:
+async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE, audio_file, beta_enabled: bool | None = None) -> None:
     """Обрабатывает аудио файл"""
     try:
         file_size_mb = audio_file.file_size / (1024 * 1024) if audio_file.file_size else 0
         filename = getattr(audio_file, 'file_name', f"audio_{audio_file.file_id}")
+        if beta_enabled is None:
+            beta_enabled = await _is_beta_enabled(update)
 
         # В группах не показываем статусные сообщения
         is_group = update.effective_chat and update.effective_chat.type in ("group", "supergroup")
@@ -489,6 +514,20 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
 
         transcript = await transcribe_audio(processed_audio)
+
+        if beta_enabled and transcript and transcript.strip():
+            if status_msg:
+                await status_msg.edit_text("✅ Транскрипция готова! Открываю меню обработки…")
+            await beta_process_text(update, context, transcript, source='audio')
+            try:
+                audio_path.unlink(missing_ok=True)
+                proc_path = Path(processed_audio)
+                if proc_path != audio_path:
+                    proc_path.unlink(missing_ok=True)
+            except Exception as clear_exc:
+                logger.warning(f"Не удалось удалить временные файлы (beta audio): {clear_exc}")
+            return
+
         # Форматируем транскрипт для читаемости (OpenRouter/DeepSeek) с локальным fallback
         logger.info("Запускаю LLM-форматирование транскрипта (audio)")
         formatted_transcript = None
@@ -647,6 +686,26 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 # Убрали обработчик кнопок сырой транскрипции по требованию — сосредотачиваемся на основной выдаче
 
+async def _is_beta_enabled(update: Update) -> bool:
+    if not FEATURE_BETA_MODE:
+        return False
+    db = SessionLocal()
+    try:
+        user_service = UserService(db)
+        db_user = user_service.get_or_create_user(
+            telegram_id=update.effective_user.id,
+            username=update.effective_user.username,
+            first_name=update.effective_user.first_name,
+            last_name=update.effective_user.last_name,
+        )
+        return user_service.is_beta_enabled(db_user)
+    except Exception as exc:
+        logger.warning(f"Не удалось проверить бета-режим: {exc}")
+        return False
+    finally:
+        db.close()
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Интегрированный обработчик для всех типов сообщений с поддержкой Bot API Server."""
     user_id = update.effective_user.id
@@ -660,23 +719,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.warning("Получен update без сообщения, пропускаем")
         return
 
+    # Определяем, работает ли бот в групповом чате
+    is_group = update.effective_chat and update.effective_chat.type in ("group", "supergroup")
+
+    # Проверяем, активен ли бета-режим для пользователя (только в личных чатах)
+    beta_enabled = False
+    if not is_group:
+        beta_enabled = await _is_beta_enabled(update)
+
+    if FEATURE_BETA_MODE and beta_enabled and (update.message.text or update.message.caption):
+        logger.info("Переключение обработки в бета-режим")
+        await handle_beta_update(update, context)
+        return
+
     # Обработка видео
     if update.message.video:
         logger.info(f"Получено видео от пользователя {user_id}")
         # Запускаем локальный обработчик видео (скачивание и обработка)
-        await process_video_file(update, context, update.message.video)
+        await process_video_file(update, context, update.message.video, beta_enabled=beta_enabled)
         return
 
     # Обработка аудио
     if update.message.audio:
         logger.info(f"Получено аудио от пользователя {user_id}")
-        await process_audio_file(update, context, update.message.audio)
+        await process_audio_file(update, context, update.message.audio, beta_enabled=beta_enabled)
         return
 
     # Обработка голосовых сообщений
     if update.message.voice:
         logger.info(f"Получено голосовое сообщение от пользователя {user_id}")
-        await process_audio_file(update, context, update.message.voice)
+        await process_audio_file(update, context, update.message.voice, beta_enabled=beta_enabled)
         return
 
     # Обработка документов (видео/аудио файлы)
@@ -687,11 +759,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Проверяем, является ли документ видео или аудио
         if any(ext in filename for ext in VIDEO_FORMATS):
             logger.info(f"Получен видео-документ от пользователя {user_id}: {filename}")
-            await process_video_file(update, context, document)
+            await process_video_file(update, context, document, beta_enabled=beta_enabled)
             return
         elif any(ext in filename for ext in AUDIO_FORMATS):
             logger.info(f"Получен аудио-документ от пользователя {user_id}: {filename}")
-            await process_audio_file(update, context, document)
+            await process_audio_file(update, context, document, beta_enabled=beta_enabled)
             return
 
     # Если это обычное текстовое сообщение
