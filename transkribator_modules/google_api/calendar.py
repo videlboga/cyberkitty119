@@ -34,6 +34,7 @@ def calendar_create_timebox(
     start_iso: str,
     end_iso: str,
     description: Optional[str] = None,
+    time_zone: Optional[str] = None,
 ) -> dict:
     """Create a blocking event in the primary calendar."""
     service = build_service('calendar', 'v3', credentials)
@@ -43,9 +44,55 @@ def calendar_create_timebox(
         'start': {'dateTime': start_iso},
         'end': {'dateTime': end_iso},
     }
+    if time_zone:
+        body['start']['timeZone'] = time_zone
+        body['end']['timeZone'] = time_zone
     try:
         event = service.events().insert(calendarId='primary', body=body).execute()
         return event
     except HttpError as exc:
         logger.error("Google Calendar create failed", extra={"error": str(exc)})
+        raise
+
+
+def calendar_get_event(credentials, event_id: str) -> dict:
+    """Fetch existing event from the primary calendar."""
+
+    service = build_service('calendar', 'v3', credentials)
+    try:
+        return service.events().get(calendarId='primary', eventId=event_id).execute()
+    except HttpError as exc:
+        logger.error("Google Calendar fetch failed", extra={"error": str(exc), "event_id": event_id})
+        raise
+
+
+def calendar_update_timebox(
+    credentials,
+    event_id: str,
+    start_iso: str,
+    end_iso: str,
+    description: Optional[str] = None,
+    time_zone: Optional[str] = None,
+) -> dict:
+    """Update existing event timing in the primary calendar."""
+
+    service = build_service('calendar', 'v3', credentials)
+    body: dict = {
+        'start': {'dateTime': start_iso},
+        'end': {'dateTime': end_iso},
+    }
+    if description is not None:
+        body['description'] = description
+    if time_zone:
+        body['start']['timeZone'] = time_zone
+        body['end']['timeZone'] = time_zone
+    try:
+        event = service.events().patch(
+            calendarId='primary',
+            eventId=event_id,
+            body=body,
+        ).execute()
+        return event
+    except HttpError as exc:
+        logger.error("Google Calendar update failed", extra={"error": str(exc), "event_id": event_id})
         raise

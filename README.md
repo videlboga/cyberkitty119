@@ -55,7 +55,7 @@ OPENAI_API_KEY=your_deepinfra_api_key  # Same as DEEPINFRA_API_KEY
 
 # OpenRouter API Key для обработки транскрипций
 OPENROUTER_API_KEY=your_openrouter_api_key
-OPENROUTER_MODEL=deepseek/deepseek-chat
+OPENROUTER_MODEL=google/gemini-2.5-flash-lite
 
 # Telegram User API Credentials
 TELEGRAM_API_ID=your_telegram_api_id

@@ -1,225 +1,280 @@
-"""Точка входа в бета-режим: дальнейшая маршрутизация сообщений."""
+"""Entry point for the updated beta agent flow."""
 
-import asyncio
+from __future__ import annotations
+
 import datetime
-from textwrap import wrap
+import os
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from transkribator_modules.config import logger
-from ..router import route_message
-from .content_flow import show_processing_menu
-from .command_flow import show_command_confirmation, handle_manual_form_message
-from ..presets import get_presets
-from ..content_processor import ContentProcessor
-from transkribator_modules.db.database import SessionLocal, UserService
-from transkribator_modules.db.models import NoteStatus
-from transkribator_modules.google_api import GoogleCredentialService, ensure_tree, create_doc
+from transkribator_modules.db.database import SessionLocal, UserService, NoteService
+from transkribator_modules.db.models import Note, NoteStatus
+from transkribator_modules.google_api import GoogleCredentialService, ensure_tree, upload_markdown
 
-_content_processor = ContentProcessor()
+from ..agent_runtime import AGENT_MANAGER
 
 
-def _reply_target(update: Update):
-    if update.message:
-        return update.message
-    if update.callback_query:
-        return update.callback_query.message
-    return None
+@dataclass
+class _NoteSnapshot:
+    note: Note
+    created: bool
+    drive_link: Optional[str] = None
+    local_file: Optional[str] = None
 
 
-async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, **kwargs):
-    target = _reply_target(update)
-    if target:
-        return await target.reply_text(text, **kwargs)
+async def process_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    source: str = "message",
+    *,
+    existing_note: Optional[Note] = None,
+    force_mode: Optional[str] = None,
+) -> None:
+    """Process incoming text with the conversational agent."""
+
     user = update.effective_user
-    if user:
-        return await context.bot.send_message(chat_id=user.id, text=text, **kwargs)
-    return None
-
-
-async def process_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, source: str = 'message') -> None:
-    user = update.effective_user
-    if not text or not text.strip():
-        await _reply(update, context, "Не нашёл текста в сообщении. Попробуй ещё раз.")
+    if not user:
         return
 
-    logger.info(
-        "Beta routing text",
-        extra={"user_id": user.id if user else None, "source": source, "length": len(text)},
-    )
+    if not text or not text.strip():
+        await _respond(update, context, "Не нашёл текста в сообщении. Попробуй ещё раз.")
+        return
 
-    transcript_link = None
-    if source in {'audio', 'video', 'voice', 'media'}:
-        transcript_link = await _send_transcript_preview(update, context, text)
+    session = AGENT_MANAGER.get_session(user)
+    beta_state = context.user_data.setdefault("beta", {})
+    snapshot: Optional[_NoteSnapshot] = None
 
-    router_result = await route_message({"text": text, "metadata": {"user_id": user.id if user else None, "source": source}})
+    ingest_context = source in {"audio", "video", "voice", "media", "backlog"}
+    ingest_context = ingest_context or force_mode == "content"
+    active_note_id = beta_state.get("active_note_id")
 
-    context.user_data["beta"] = {
-        "original_text": text,
-        "router_payload": router_result.payload.model_dump(),
-        "manual_type": None,
-        "note_saved": None,
-        "manual_form": None,
-        "awaiting_prompt": False,
-        "source": source,
-        "transcript_doc": transcript_link,
-    }
-
-    if router_result.error and router_result.payload.mode == "content" and router_result.payload.content.type_hint == "other":
-        logger.warning("Router вернулся с ошибкой", extra={"error": router_result.error})
-
-    if router_result.mode == "command":
-        await show_command_confirmation(update, context, router_result.payload.model_dump())
+    if ingest_context or not active_note_id:
+        snapshot = _create_or_update_note(user, text, source, existing_note)
+        session.set_active_note(snapshot.note, local_artifact=bool(snapshot.local_file))
+        beta_state["active_note_id"] = snapshot.note.id
+        beta_state["source"] = source
+        payload = {
+            "note_id": snapshot.note.id,
+            "text": text,
+            "summary": snapshot.note.summary,
+            "source": source,
+            "created_at": snapshot.note.ts.isoformat() if snapshot.note.ts else datetime.datetime.utcnow().isoformat(),
+            "created": snapshot.created,
+        }
+        response = await session.handle_ingest(payload)
     else:
-        await show_processing_menu(update, context, router_result)
+        response = await session.handle_user_message(text)
+
+    if snapshot:
+        final_text = _merge_artifact_hint(response.text, snapshot)
+    else:
+        final_text = response.text
+
+    if final_text:
+        await _respond(update, context, final_text)
+
+    if snapshot and snapshot.local_file:
+        await _send_local_artifact(update, context, snapshot.local_file, snapshot.note.id)
 
 
 async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик сообщений в бета-режиме (пока заглушка)."""
-
-    user = update.effective_user
-    logger.info(
-        "Обработка сообщения в бета-режиме",
-        extra={"user_id": user.id if user else None, "has_message": bool(update.message)},
-    )
-
     message = update.message
     if not message:
-        logger.info("Нет текстового сообщения для бета-обработки")
         return
-
-    beta_state = context.user_data.get('beta') or {}
-
-    if beta_state.get('awaiting_prompt') and message.text:
-        await _handle_free_prompt(update, context, beta_state, message.text)
-        return
-
-    manual_form_state = beta_state.get('manual_form')
-    if manual_form_state and message.text:
-        handled = await handle_manual_form_message(update, context, message.text)
-        if handled:
-            return
-
     text = message.text or message.caption
-    await process_text(update, context, text or "", source='message')
+    if not text:
+        return
+
+    await process_text(update, context, text, source="message")
 
 
-async def _send_transcript_preview(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> str | None:
-    preview = (text or '').strip()
-    if not preview:
+def _create_or_update_note(telegram_user, text: str, source: str, existing_note: Optional[Note]) -> _NoteSnapshot:
+    db = SessionLocal()
+    try:
+        user_service = UserService(db)
+        note_service = NoteService(db)
+        google_service = GoogleCredentialService(db)
+
+        user = user_service.get_or_create_user(
+            telegram_id=telegram_user.id,
+            username=getattr(telegram_user, "username", None),
+            first_name=getattr(telegram_user, "first_name", None),
+            last_name=getattr(telegram_user, "last_name", None),
+        )
+
+        created = False
+        drive_link: Optional[str] = None
+        local_file: Optional[str] = None
+        if existing_note is not None:
+            note = note_service.get_note(existing_note.id)
+            if note and note.user_id == user.id:
+                note.text = text
+                note.status = NoteStatus.DRAFT.value
+                note.updated_at = datetime.datetime.utcnow()
+                db.commit()
+                db.refresh(note)
+            else:
+                note = note_service.create_note(
+                    user=user,
+                    text=text,
+                    source=source,
+                    status=NoteStatus.INGESTED.value,
+                )
+                created = True
+        else:
+            note = note_service.create_note(
+                user=user,
+                text=text,
+                source=source,
+                status=NoteStatus.INGESTED.value,
+            )
+            created = True
+
+        if created:
+            drive_link, local_file = _ensure_note_artifact(
+                google_service,
+                note_service,
+                user,
+                note,
+                text,
+            )
+    finally:
+        db.close()
+
+    return _NoteSnapshot(note=note, created=created, drive_link=drive_link, local_file=local_file)
+
+
+async def _respond(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    if update.message:
+        await update.message.reply_text(text)
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(text)
+    else:
+        user = update.effective_user
+        if user:
+            await context.bot.send_message(chat_id=user.id, text=text)
+
+
+def _ensure_note_artifact(
+    google_service: GoogleCredentialService,
+    note_service: NoteService,
+    user,
+    note: Note,
+    text: str,
+) -> tuple[Optional[str], Optional[str]]:
+    drive_link = _upload_note_to_drive(google_service, note_service, user, note, text)
+    if drive_link:
+        return drive_link, None
+    local_file = _export_note_locally(note, text)
+    return None, local_file
+
+
+def _upload_note_to_drive(
+    google_service: GoogleCredentialService,
+    note_service: NoteService,
+    user,
+    note: Note,
+    text: str,
+) -> Optional[str]:
+    try:
+        credentials = google_service.get_credentials(user.id)
+    except RuntimeError:
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Google credentials fetch failed", extra={"user_id": user.id, "error": str(exc)})
         return None
 
-    signature = '\n\n@CyberKitty19_bot'
-    full_text = preview if preview.endswith(signature.strip()) else preview + signature
-
-    limit = 3500
-    if len(full_text) <= limit:
-        await _reply(update, context, full_text)
+    if not credentials:
         return None
 
-    link = await _create_transcript_doc(update, full_text)
+    try:
+        tree = ensure_tree(credentials, user.username or str(user.telegram_id))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_tree failed", extra={"user_id": user.id, "error": str(exc)})
+        return None
+
+    target_folder = (
+        tree.get('Inbox')
+        or tree.get('Notes')
+        or next((tree[val] for val in ('Meetings', 'Ideas', 'Tasks') if val in tree), None)
+    )
+    if not target_folder:
+        return None
+
+    markdown = text.strip()
+    if not markdown:
+        markdown = "(пустая заметка)"
+
+    filename = f"note_{note.id}_{datetime.datetime.utcnow():%Y%m%d_%H%M%S}.md"
+    try:
+        file = upload_markdown(credentials, target_folder, filename, markdown)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("upload_markdown failed", extra={"user_id": user.id, "error": str(exc)})
+        return None
+
+    link = (file or {}).get('webViewLink')
     if link:
-        await _reply(update, context, f"📝 Полная транскрипция: {link}")
-        snippet = preview[:limit].rstrip() + '…'
-        await _reply(update, context, snippet)
+        note_service.update_note_metadata(
+            note,
+            links={'drive_url': link},
+            drive_file_id=(file or {}).get('id'),
+        )
         return link
-
-    for chunk in wrap(full_text, width=limit):
-        await _reply(update, context, chunk)
     return None
 
 
-async def _create_transcript_doc(update: Update, text: str) -> str | None:
-    user = update.effective_user
-    if not user:
+def _export_note_locally(note: Note, text: str) -> Optional[str]:
+    content = (text or '').strip()
+    if not content:
         return None
 
-    db = SessionLocal()
     try:
-        user_service = UserService(db)
-        google_service = GoogleCredentialService(db)
-        db_user = user_service.get_or_create_user(
-            telegram_id=user.id,
-            username=user.username,
-            first_name=user.first_name,
-            last_name=user.last_name,
-        )
-        try:
-            credentials = google_service.get_credentials(db_user.id)
-        except Exception as exc:
-            logger.warning('Не удалось получить Google креды для транскрипта', extra={'error': str(exc)})
-            return None
-        if not credentials:
-            return None
-
-        try:
-            tree = ensure_tree(credentials, user.username or str(user.id))
-        except Exception as exc:
-            logger.warning('ensure_tree для транскрипта не удался', extra={'error': str(exc)})
-            return None
-
-        folder_id = tree.get('Inbox') or tree.get('user')
-        if not folder_id:
-            return None
-
-        title = f"Transcript {datetime.datetime.utcnow():%Y-%m-%d %H:%M}".strip()
-        blocks = [block for block in text.split('\n\n') if block.strip()] or [text]
-        try:
-            doc = await asyncio.to_thread(create_doc, credentials, folder_id, title, blocks)
-        except Exception as exc:
-            logger.warning('Создание Google Doc для транскрипта не удалось', extra={'error': str(exc)})
-            return None
-        return doc.get('link')
-    finally:
-        db.close()
+        fd, path = tempfile.mkstemp(prefix=f"note_{note.id}_", suffix=".md")
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(content)
+        return path
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to create local artifact", extra={"note_id": note.id, "error": str(exc)})
+        return None
 
 
-async def _handle_free_prompt(update, context, beta_state, prompt: str) -> None:
-    user_id = update.effective_user.id
-    text = beta_state.get('original_text')
-    if not text:
-        await _reply(update, context, "Заметка не найдена для обработки.")
-        return
+def _merge_artifact_hint(base_text: Optional[str], snapshot: _NoteSnapshot) -> str:
+    parts: list[str] = []
+    if base_text and base_text.strip():
+        parts.append(base_text.strip())
+    if snapshot.drive_link and (not base_text or snapshot.drive_link not in base_text):
+        parts.append(f"Drive: {snapshot.drive_link}")
+    if snapshot.local_file and (not base_text or 'файл' not in base_text.lower()):
+        parts.append("📎 Файл заметки прикрепил отдельным сообщением.")
+    return "\n\n".join(parts).strip()
 
-    type_hint = beta_state.get('manual_type') or beta_state.get('router_payload', {}).get('content', {}).get('type_hint', 'other')
-    preset_id = beta_state.get('selected_preset')
-    presets = {preset.id: preset for preset in get_presets(type_hint)}
-    preset = presets.get(preset_id)
 
-    if not preset:
-        await _reply(update, context, "Пресет не найден, попробуй снова.")
-        beta_state['awaiting_prompt'] = False
-        beta_state['selected_preset'] = None
-        return
-
-    db = SessionLocal()
+async def _send_local_artifact(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, note_id: int) -> None:
+    caption = f"Заметка #{note_id}."
+    filename = Path(file_path).name
     try:
-        user_service = UserService(db)
-        user = user_service.get_or_create_user(
-            telegram_id=update.effective_user.id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-            last_name=update.effective_user.last_name,
-        )
-
-        result = await _content_processor.process(
-            user,
-            text,
-            type_hint,
-            preset,
-            NoteStatus.PROCESSED.value,
-            custom_prompt=prompt,
-        )
-
-        note = result['note']
-        await _reply(update, context, "✅ Заметка обработана по свободному промпту!")
-        beta_state['note_saved'] = note.id
-    except Exception as exc:
-        logger.error("Свободный промпт не выполнен", extra={"error": str(exc)})
-        await _reply(update, context, "Не удалось обработать запрос. Попробуй позже.")
+        if update.message:
+            with open(file_path, 'rb') as handle:
+                await update.message.reply_document(handle, filename=filename, caption=caption)
+        elif update.callback_query and update.callback_query.message:
+            with open(file_path, 'rb') as handle:
+                await update.callback_query.message.reply_document(handle, filename=filename, caption=caption)
+        else:
+            user = update.effective_user
+            if user:
+                with open(file_path, 'rb') as handle:
+                    await context.bot.send_document(chat_id=user.id, document=handle, filename=filename, caption=caption)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to send local artifact", extra={"note_id": note_id, "error": str(exc)})
     finally:
-        beta_state['awaiting_prompt'] = False
-        beta_state['selected_preset'] = None
-        context.user_data['beta'] = beta_state
-        db.close()
+        try:
+            Path(file_path).unlink(missing_ok=True)
+        except Exception as clear_exc:  # noqa: BLE001
+            logger.debug("Failed to remove temp artifact", extra={"path": file_path, "error": str(clear_exc)})

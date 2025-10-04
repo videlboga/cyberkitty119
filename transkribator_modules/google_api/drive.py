@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
+import time
 
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaInMemoryUpload
@@ -19,6 +20,9 @@ SUBFOLDERS = [
     "Resources",
     "Journal",
 ]
+
+_TREE_CACHE: dict[int, tuple[dict, float]] = {}
+_TREE_CACHE_TTL = 1800  # seconds
 
 
 def _find_item(service, name: str, mime_type: str, parent_id: Optional[str]) -> Optional[str]:
@@ -95,6 +99,24 @@ def ensure_tree(credentials, username: str) -> dict:
         raise
 
 
+def ensure_tree_cached(credentials, user_id: Optional[int], username: str, ttl: int = _TREE_CACHE_TTL) -> dict:
+    """Cached wrapper around ensure_tree to reduce repeated API calls."""
+
+    cache_key = user_id if user_id is not None else None
+    if cache_key is not None:
+        entry = _TREE_CACHE.get(cache_key)
+        now = time.time()
+        if entry and now - entry[1] < ttl:
+            return entry[0]
+
+    folders = ensure_tree(credentials, username)
+
+    if cache_key is not None:
+        _TREE_CACHE[cache_key] = (folders, time.time())
+
+    return folders
+
+
 def upload_markdown(credentials, folder_id: str, filename: str, markdown_text: str) -> dict:
     drive = build_service('drive', 'v3', credentials)
     metadata = {
@@ -108,4 +130,25 @@ def upload_markdown(credentials, folder_id: str, filename: str, markdown_text: s
         return file
     except HttpError as exc:
         logger.error("Failed to upload markdown", extra={"error": str(exc)})
+        raise
+
+
+def move_file(credentials, file_id: str, target_folder_id: str) -> dict:
+    """Move an existing file to a new folder in Google Drive."""
+
+    drive = build_service('drive', 'v3', credentials)
+    try:
+        metadata = drive.files().get(fileId=file_id, fields='id, parents').execute()
+        previous_parents = ','.join(metadata.get('parents', [])) if metadata else ''
+        params = {
+            'fileId': file_id,
+            'addParents': target_folder_id,
+            'fields': 'id, webViewLink, parents, name',
+        }
+        if previous_parents:
+            params['removeParents'] = previous_parents
+        updated = drive.files().update(**params).execute()
+        return updated
+    except HttpError as exc:
+        logger.error("Failed to move file in Drive", extra={"error": str(exc), 'file_id': file_id})
         raise

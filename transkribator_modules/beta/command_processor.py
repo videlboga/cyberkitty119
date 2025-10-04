@@ -19,9 +19,12 @@ from transkribator_modules.google_api import (
     create_doc,
     calendar_read_changes,
     calendar_create_timebox,
+    move_file,
 )
 from transkribator_modules.transcribe.transcriber_v4 import _basic_local_format
 from .content_processor import ContentProcessor
+from .presets import get_default_preset_for_action, get_free_prompt
+from .timezone import timezone_required_message
 
 _index = IndexService()
 _content_processor = ContentProcessor()
@@ -132,6 +135,44 @@ def _split_doc_blocks(summary: str) -> list[str]:
     return [part for part in parts if part]
 
 
+def _format_generation_response(action: str, result: dict) -> str:
+    note_id = result.get('note_id')
+    drive_info = result.get('drive') or {}
+    raw_info = result.get('raw_drive') or {}
+    snippet = (result.get('rendered_output') or '').strip()
+    if len(snippet) > 600:
+        snippet = snippet[:597] + '…'
+
+    lines = [f"🛠 Действие `{action}` выполнено."]
+    if note_id:
+        lines.append(f"Создана заметка #{note_id}.")
+    if drive_info.get('webViewLink'):
+        lines.append(f"Drive: {drive_info['webViewLink']}")
+    if raw_info.get('webViewLink') and raw_info.get('webViewLink') != drive_info.get('webViewLink'):
+        lines.append(f"Raw: {raw_info['webViewLink']}")
+    if result.get('sync_queued'):
+        lines.append('☁️ Загрузка в Google Drive повторится в фоне.')
+    if snippet:
+        if lines:
+            lines.append('')
+        lines.append(snippet)
+    return "\n".join(lines).strip()
+
+
+def _reindex_note(note: Note) -> None:
+    tags = _load_tags(note)
+    links = _load_links(note)
+    _index.add(
+        note.id,
+        note.user_id,
+        note.text or '',
+        summary=note.summary or '',
+        type_hint=note.type_hint or 'other',
+        tags=tags,
+        links=links,
+    )
+
+
 def _ensure_google_context(session, user, action: str, require_tree: bool = True):
     service = GoogleCredentialService(session)
     try:
@@ -188,6 +229,11 @@ async def execute_command(tg_user, command_payload: dict) -> str:
             return await _handle_action(session, db_user, args)
         if intent == 'calendar':
             return await _handle_calendar(session, db_user, args)
+        if intent == 'help':
+            return (
+                "Могу сохранить заметку, открыть меню пресетов или помочь с поиском."
+                " Напиши что хочешь сделать, и я подскажу команды."
+            )
         return "Командный режим ещё обучается. Попробуй позже или переформулируй запрос."
 
 
@@ -273,6 +319,7 @@ async def _handle_action(session, user, args: dict) -> str:
     action = args.get('action')
     if not note_id or not action:
         return "Для действия нужна конкретная заметка и тип действия."
+
     note_service = NoteService(session)
     note = session.query(Note).filter(Note.user_id == user.id, Note.id == note_id).one_or_none()
     if not note:
@@ -282,26 +329,197 @@ async def _handle_action(session, user, args: dict) -> str:
     tags = _load_tags(note)
     summary_text = note.summary or _basic_local_format(note.text or '')
     folder_label = _folder_label(note.type_hint)
+    preset_id = args.get('preset_id')
 
-    if action in {'summary', 'protocol', 'bullets', 'tasks_split'}:
-        preset_map = {
-            'summary': 'other_outline',
-            'protocol': 'meeting_protocol',
-            'bullets': 'idea_outline',
-            'tasks_split': 'task_breakdown',
+    generation_actions = {
+        'summary',
+        'protocol',
+        'bullets',
+        'tasks_split',
+        'post',
+        'quotes',
+        'timed_outline',
+        'task_from_note',
+    }
+
+    if action in generation_actions:
+        type_hint_override = note.type_hint or 'other'
+        generation_tags = tags
+        if action == 'task_from_note':
+            type_hint_override = 'task'
+            generation_tags = sorted(set(list(tags) + ['task']))
+
+        preset = get_default_preset_for_action(action, type_hint_override, preferred_id=preset_id)
+        if not preset:
+            return "Не нашёл подходящий пресет для этого действия."
+
+        try:
+            result = await _content_processor.process(
+                user,
+                note.text,
+                type_hint_override,
+                preset,
+                NoteStatus.PROCESSED.value,
+                tags=generation_tags,
+                type_confidence=note.type_confidence,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                'Preset action failed',
+                extra={'note_id': note.id, 'action': action, 'error': str(exc)},
+            )
+            return "Не удалось выполнить действие. Попробуй позже."
+
+        response = _format_generation_response(action, result)
+        if action == 'task_from_note' and args.get('task_due'):
+            response += f"\n📅 Дедлайн: {args['task_due']}"
+        return response
+
+    if action == 'free_prompt':
+        prompt = (args.get('prompt') or '').strip()
+        if not prompt:
+            return "Нужно указать текст промпта."
+        preset = get_free_prompt()
+        if not preset:
+            return "Свободный промпт сейчас недоступен."
+        try:
+            result = await _content_processor.process(
+                user,
+                note.text,
+                note.type_hint or 'other',
+                preset,
+                NoteStatus.PROCESSED.value,
+                custom_prompt=prompt,
+                tags=tags,
+                type_confidence=note.type_confidence,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error('Free prompt action failed', extra={'note_id': note.id, 'error': str(exc)})
+            return "Не удалось выполнить свободный промпт. Попробуй позже."
+        return _format_generation_response(action, result)
+
+    if action == 'move':
+        target_type = (args.get('target_type') or '').strip().lower()
+        if target_type == 'any':
+            target_type = 'other'
+        target_status = args.get('target_status')
+
+        if not target_type and not target_status:
+            return "Укажи новый тип или статус, чтобы переместить заметку."
+
+        changed = False
+        if target_type and target_type != (note.type_hint or ''):
+            note.type_hint = target_type
+            note.type_confidence = max(note.type_confidence or 0.0, 0.95)
+            changed = True
+        if target_status and target_status != note.status:
+            note.status = target_status
+            changed = True
+
+        if not changed:
+            return "Тип и статус не изменились — перемещать нечего."
+
+        note.updated_at = datetime.datetime.utcnow()
+        session.commit()
+        session.refresh(note)
+
+        move_messages: list[str] = []
+        credentials, tree, error = _ensure_google_context(session, user, action)
+        links = _load_links(note)
+        if error:
+            move_messages.append(error)
+            credentials = None
+            tree = None
+
+        if credentials and tree and note.drive_file_id:
+            target_folder_id = tree.get(_folder_label(note.type_hint), tree.get(DEFAULT_FOLDER))
+            if target_folder_id:
+                try:
+                    file = move_file(credentials, note.drive_file_id, target_folder_id)
+                    if file.get('webViewLink'):
+                        note_service.update_note_metadata(note, links={'drive_url': file.get('webViewLink')})
+                        links = _load_links(note)
+                        move_messages.append(f"Файл перемещён в {_folder_label(note.type_hint)}.")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning('Не удалось переместить файл в Drive', extra={'note_id': note.id, 'error': str(exc)})
+                    move_messages.append('Не удалось переместить файл в Google Drive, попробуй вручную.')
+
+        sheet_id = tree.get('IndexSheet') if tree else None
+        if credentials and sheet_id:
+            _safe_upsert(
+                credentials,
+                sheet_id,
+                _build_sheet_row(
+                    note,
+                    _load_tags(note),
+                    _folder_label(note.type_hint),
+                    drive_url=links.get('drive_url', ''),
+                    doc_url=links.get('doc_url', ''),
+                    extra='move',
+                ),
+            )
+
+        _reindex_note(note)
+
+        status_names = {
+            NoteStatus.PROCESSED.value: 'processed',
+            NoteStatus.BACKLOG.value: 'backlog',
+            NoteStatus.PROCESSED_RAW.value: 'raw',
         }
-        from .presets import get_presets
+        lines = [
+            "🗂 Заметка обновлена.",
+            f"Тип: {note.type_hint or 'other'}",
+            f"Статус: {status_names.get(note.status, note.status)}",
+        ]
+        lines.extend(move_messages)
+        if credentials is None and not move_messages:
+            lines.append('Google Drive недоступен, файл нужно переместить вручную.')
+        lines.append('Индекс обновлён.')
+        return "\n".join(line for line in lines if line)
 
-        presets = {p.id: p for plist in get_presets(note.type_hint) for p in plist}
-        preset = presets.get(preset_map.get(action))
-        await _content_processor.process(
-            user,
-            note.text,
-            note.type_hint or 'other',
-            preset,
-            NoteStatus.PROCESSED.value,
-        )
-        return "🛠 Действие выполнено. Если нужно больше настроек, используй свободный промпт."
+    if action == 'retag':
+        new_tags = args.get('new_tags')
+        remove_tags = args.get('remove_tags') or []
+        if new_tags is None and not remove_tags:
+            return "Укажи новые теги или какие удалить."
+
+        current_tags = _load_tags(note)
+        if new_tags is not None:
+            target_tags = new_tags
+        else:
+            target_tags = [tag for tag in current_tags if tag not in remove_tags]
+
+        note = note_service.update_note_metadata(note, tags=target_tags)
+        links = _load_links(note)
+
+        credentials, tree, error = _ensure_google_context(session, user, action)
+        warnings: list[str] = []
+        if error:
+            warnings.append(error)
+            credentials = None
+            tree = None
+
+        if credentials and tree:
+            sheet_id = tree.get('IndexSheet')
+            _safe_upsert(
+                credentials,
+                sheet_id,
+                _build_sheet_row(
+                    note,
+                    target_tags,
+                    _folder_label(note.type_hint),
+                    drive_url=links.get('drive_url', ''),
+                    doc_url=links.get('doc_url', ''),
+                    extra='retag',
+                ),
+            )
+
+        _reindex_note(note)
+
+        tags_label = ', '.join(target_tags) if target_tags else 'тегов нет'
+        lines = [f"🏷 Теги обновлены: {tags_label}", 'Индекс обновлён.']
+        lines.extend(warnings)
+        return "\n".join(lines)
 
     credentials, tree, error = _ensure_google_context(session, user, action)
     if error:
@@ -317,7 +535,7 @@ async def _handle_action(session, user, args: dict) -> str:
         filename = f"{datetime.datetime.utcnow():%Y%m%d_%H%M%S}_{note.type_hint or 'note'}.md"
         try:
             file = upload_markdown(credentials, target_folder_id, filename, markdown)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error('Не удалось сохранить заметку в Drive', extra={'error': str(exc)})
             return "Не получилось сохранить файл в Google Drive. Попробуй позже."
 
@@ -331,7 +549,14 @@ async def _handle_action(session, user, args: dict) -> str:
         _safe_upsert(
             credentials,
             sheet_id,
-            _build_sheet_row(note, tags, folder_label, drive_url=file.get('webViewLink'), doc_url=_load_links(note).get('doc_url', ''), extra='save_drive'),
+            _build_sheet_row(
+                note,
+                tags,
+                folder_label,
+                drive_url=file.get('webViewLink'),
+                doc_url=_load_links(note).get('doc_url', ''),
+                extra='save_drive',
+            ),
         )
         return f"📂 Файл сохранён в Google Drive: {file.get('webViewLink')}"
 
@@ -344,7 +569,7 @@ async def _handle_action(session, user, args: dict) -> str:
             blocks = [summary_text]
         try:
             doc = create_doc(credentials, target_folder_id, title, blocks)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error('Не удалось создать Google Doc', extra={'error': str(exc)})
             return "Google Docs временно недоступен. Попробуй позже."
 
@@ -356,7 +581,14 @@ async def _handle_action(session, user, args: dict) -> str:
         _safe_upsert(
             credentials,
             sheet_id,
-            _build_sheet_row(note, tags, folder_label, drive_url=links.get('drive_url', ''), doc_url=doc.get('link'), extra='create_doc'),
+            _build_sheet_row(
+                note,
+                tags,
+                folder_label,
+                drive_url=links.get('drive_url', ''),
+                doc_url=doc.get('link'),
+                extra='create_doc',
+            ),
         )
         return f"📄 Документ создан: {doc.get('link')}"
 
@@ -365,7 +597,14 @@ async def _handle_action(session, user, args: dict) -> str:
         _safe_upsert(
             credentials,
             sheet_id,
-            _build_sheet_row(note, tags, folder_label, drive_url=links.get('drive_url', ''), doc_url=links.get('doc_url', ''), extra='update_index'),
+            _build_sheet_row(
+                note,
+                tags,
+                folder_label,
+                drive_url=links.get('drive_url', ''),
+                doc_url=links.get('doc_url', ''),
+                extra='update_index',
+            ),
         )
         return "🗂 Индекс Google Sheets обновлён."
 
@@ -433,6 +672,10 @@ def _format_event_time(payload: dict) -> str:
 async def _handle_calendar(session, user, args: dict) -> str:
     if not FEATURE_GOOGLE_CALENDAR:
         return "Интеграция с календарём выключена."
+
+    tz_message = timezone_required_message(user)
+    if tz_message:
+        return tz_message
 
     mode = (args.get('mode') or 'changes').lower()
     credentials, _, error = _ensure_google_context(session, user, 'calendar', require_tree=False)

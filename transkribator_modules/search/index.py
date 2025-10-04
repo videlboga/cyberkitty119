@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-from typing import Iterable, List
+from typing import Iterable
 
 import numpy as np
 from sqlalchemy import delete, select
@@ -12,10 +11,10 @@ from sqlalchemy.orm import Session
 
 from transkribator_modules.db.database import SessionLocal
 from transkribator_modules.db.models import NoteChunk, Note
+from transkribator_modules.search.embeddings import embed_texts, EMBEDDING_DIM
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 200
-EMBEDDING_DIM = 256
 
 try:  # Detect pgvector availability
     from pgvector.sqlalchemy import Vector as PgVector
@@ -26,20 +25,8 @@ _EMBEDDING_TYPE = NoteChunk.__table__.c.embedding.type
 USE_PGVECTOR = bool(PgVector) and isinstance(_EMBEDDING_TYPE, PgVector)
 
 
-def _hash_embedding(text: str, dim: int = EMBEDDING_DIM) -> List[float]:
-    digest = hashlib.sha256(text.encode('utf-8')).digest()
-    repeats = (dim * 4) // len(digest) + 1
-    data = (digest * repeats)[: dim * 4]
-    arr = np.frombuffer(data, dtype=np.uint8).astype(np.float32)
-    arr = arr[:dim]
-    norm = np.linalg.norm(arr)
-    if norm:
-        arr = arr / norm
-    return arr.tolist()
-
-
 def _chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> Iterable[str]:
-    cleaned = (text or '').strip()
+    cleaned = (text or "").strip()
     if not cleaned:
         return []
     chunks: list[str] = []
@@ -55,27 +42,43 @@ def _chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OV
     return [chunk for chunk in chunks if chunk]
 
 
+def _coerce_tags(raw: object) -> list[str]:
+    if isinstance(raw, list):
+        return [str(tag).strip() for tag in raw if str(tag).strip()]
+    if isinstance(raw, str) and raw:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return []
+        if isinstance(data, list):
+            return [str(tag).strip() for tag in data if str(tag).strip()]
+    return []
+
+
+def _coerce_links(raw: object) -> dict:
+    if isinstance(raw, dict):
+        return {str(key): value for key, value in raw.items()}
+    if isinstance(raw, str) and raw:
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return {}
+        if isinstance(data, dict):
+            return {str(key): value for key, value in data.items()}
+    return {}
+
+
 def _serialize_note(note: Note) -> dict:
-    try:
-        tags = json.loads(note.tags or '[]')
-        if not isinstance(tags, list):
-            tags = []
-    except Exception:
-        tags = []
-    try:
-        links = json.loads(note.links or '{}')
-        if not isinstance(links, dict):
-            links = {}
-    except Exception:
-        links = {}
+    tags = _coerce_tags(getattr(note, "tags", []))
+    links = _coerce_links(getattr(note, "links", {}))
     return {
-        'id': note.id,
-        'ts': note.ts.isoformat() if note.ts else None,
-        'type_hint': note.type_hint or 'other',
-        'summary': note.summary or '',
-        'text': note.text or '',
-        'tags': tags,
-        'links': links,
+        "id": note.id,
+        "ts": note.ts.isoformat() if note.ts else None,
+        "type_hint": note.type_hint or "other",
+        "summary": note.summary or "",
+        "text": note.text or "",
+        "tags": tags,
+        "links": links,
     }
 
 
@@ -108,8 +111,10 @@ class IndexService:
                     NoteChunk.user_id == user_id,
                 )
             )
-            for idx, chunk_text in enumerate(chunks):
-                embedding = _hash_embedding(chunk_text)
+            embeddings = embed_texts(chunks)
+            if len(embeddings) != len(chunks):
+                embeddings = [embed_texts([chunk])[0] for chunk in chunks]
+            for idx, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
                 stored_embedding = embedding if USE_PGVECTOR else json.dumps(embedding)
                 session.add(
                     NoteChunk(
@@ -125,13 +130,13 @@ class IndexService:
     def rebuild(self, notes: list[dict]) -> int:
         updated = 0
         for item in notes:
-            text = (item.get('text') or '').strip()
-            summary = item.get('summary')
+            text = (item.get("text") or "").strip()
+            summary = item.get("summary")
             if not text and not summary:
                 continue
             self.add(
-                item['note_id'],
-                item['user_id'],
+                item["note_id"],
+                item["user_id"],
                 text,
                 summary=summary,
             )
@@ -139,15 +144,15 @@ class IndexService:
         return updated
 
     def search(self, user_id: int, query: str, k: int = 5) -> list[dict]:
-        embedding = _hash_embedding(query)
+        query_embedding_list = embed_texts([query or ""])[0]
         with self.session_factory() as session:
             if USE_PGVECTOR:
-                distance = NoteChunk.embedding.l2_distance(embedding)
+                distance = NoteChunk.embedding.cosine_distance(query_embedding_list)
                 stmt = (
                     select(
                         NoteChunk,
                         Note,
-                        distance.label('distance'),
+                        distance.label("distance"),
                     )
                     .join(Note, Note.id == NoteChunk.note_id)
                     .where(NoteChunk.user_id == user_id)
@@ -160,16 +165,15 @@ class IndexService:
                 for chunk, note, distance in rows:
                     matches.append(
                         {
-                            'note_id': note.id,
-                            'chunk_index': chunk.chunk_index,
-                            'chunk': chunk.text,
-                            'score': float(distance if distance is not None else 0.0),
-                            'note': _serialize_note(note),
+                            "note_id": note.id,
+                            "chunk_index": chunk.chunk_index,
+                            "chunk": chunk.text,
+                            "score": float(distance if distance is not None else 0.0),
+                            "note": _serialize_note(note),
                         }
                     )
                 return matches
 
-            # Fallback: emulate vector search in Python for non-pgvector backends
             stmt = (
                 select(NoteChunk, Note)
                 .join(Note, Note.id == NoteChunk.note_id)
@@ -177,7 +181,7 @@ class IndexService:
             )
             rows = session.execute(stmt).all()
 
-        query_vec = np.array(embedding, dtype=np.float32)
+        query_vec = np.array(query_embedding_list, dtype=np.float32)
         scored: list[dict] = []
         for chunk, note in rows:
             try:
@@ -192,13 +196,13 @@ class IndexService:
             distance = float(np.linalg.norm(chunk_vec - query_vec))
             scored.append(
                 {
-                    'note_id': note.id,
-                    'chunk_index': chunk.chunk_index,
-                    'chunk': chunk.text,
-                    'score': distance,
-                    'note': _serialize_note(note),
+                    "note_id": note.id,
+                    "chunk_index": chunk.chunk_index,
+                    "chunk": chunk.text,
+                    "score": distance,
+                    "note": _serialize_note(note),
                 }
             )
 
-        scored.sort(key=lambda item: item['score'])
+        scored.sort(key=lambda item: item["score"])
         return scored[:k]

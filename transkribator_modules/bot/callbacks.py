@@ -50,6 +50,23 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await handle_beta_callback(update, context)
         return
 
+    if data.startswith("agent:"):
+        parts = data.split(":")
+        action = parts[1] if len(parts) > 1 else None
+        note_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+        if action and note_id:
+            from transkribator_modules.agent.dialog import save_raw_and_index, backlog_note
+            if action == 'save_raw':
+                text = await save_raw_and_index(update, context, note_id)
+                await query.edit_message_reply_markup(reply_markup=None)
+                await _reply(update, context, text)
+                return
+            if action == 'backlog':
+                text = await backlog_note(update, context, note_id)
+                await query.edit_message_reply_markup(reply_markup=None)
+                await _reply(update, context, text)
+                return
+
     if data == "show_payment_plans":
         logger.info("Получен колбек show_payment_plans")
         await show_payment_plans(update, context)

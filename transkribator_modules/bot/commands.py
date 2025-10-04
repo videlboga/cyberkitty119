@@ -1,12 +1,19 @@
 import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from transkribator_modules.config import logger
+from transkribator_modules.config import logger, FEATURE_BETA_MODE
 from transkribator_modules.db.database import (
-    SessionLocal, UserService, ApiKeyService, TransactionService, PromoCodeService
+    SessionLocal,
+    UserService,
+    ApiKeyService,
+    TransactionService,
+    PromoCodeService,
+    NoteService,
 )
+from transkribator_modules.beta.reminders import REMINDER_KEYBOARD
 from transkribator_modules.db.models import ApiKey, PlanType
 
 
@@ -69,6 +76,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /start - Начать работу
 /help - Показать эту справку
 /status - Проверить статус бота
+/backlog - Разобрать заметки из бэклога
 /plans - Показать тарифные планы
 /stats - Статистика использования
 /promo - Промокоды
@@ -177,6 +185,89 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error(f"Ошибка при получении статистики: {e}")
         await _reply(update, context, "❌ Не удалось получить статистику. Попробуйте позже.")
+
+
+async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args
+    if not args:
+        await _reply(
+            update,
+            context,
+            "Укажи часовой пояс. Пример: /timezone Europe/Moscow\n"
+            "Полный список: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones",
+        )
+        return
+
+    tz_name = args[0]
+    try:
+        ZoneInfo(tz_name)
+    except Exception:
+        await _reply(
+            update,
+            context,
+            "Не понял часовой пояс. Используй формат вроде Europe/Moscow или America/New_York.",
+        )
+        return
+
+    db = SessionLocal()
+    try:
+        user_service = UserService(db)
+        user = user_service.get_or_create_user(
+            telegram_id=update.effective_user.id,
+            username=update.effective_user.username,
+            first_name=update.effective_user.first_name,
+            last_name=update.effective_user.last_name,
+        )
+        user_service.set_timezone(user, tz_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Timezone update failed", extra={"user_id": update.effective_user.id, "error": str(exc)})
+        await _reply(update, context, "Не удалось сохранить часовой пояс. Попробуй позже.")
+    else:
+        await _reply(update, context, f"Часовой пояс сохранён: {tz_name}")
+    finally:
+        db.close()
+
+
+async def backlog_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показать пользователю заметки из бэклога и предложить разобрать их."""
+
+    if not FEATURE_BETA_MODE:
+        await _reply(update, context, "Бэклог доступен в новом бета-режиме. Ожидайте обновлений!")
+        return
+
+    db = SessionLocal()
+    try:
+        user_service = UserService(db)
+        note_service = NoteService(db)
+
+        user = user_service.get_or_create_user(
+            telegram_id=update.effective_user.id,
+            username=update.effective_user.username,
+            first_name=update.effective_user.first_name,
+            last_name=update.effective_user.last_name,
+        )
+
+        if not user_service.is_beta_enabled(user):
+            await _reply(update, context, "Включи бета-режим в личном кабинете, чтобы работать с бэклогом.")
+            return
+
+        backlog_notes = note_service.list_backlog(user, limit=5)
+        if not backlog_notes:
+            await _reply(update, context, "Бэклог пуст — можно отдыхать! 💤")
+            return
+
+        lines = []
+        for note in backlog_notes:
+            snippet = note.summary or (note.text or '')
+            snippet = (snippet or '').strip().replace('\n', ' ')
+            if len(snippet) > 80:
+                snippet = snippet[:77] + '…'
+            lines.append(f"• {snippet or 'без текста'}")
+
+        text = "У тебя есть заметки в бэклоге. Разберём 5 сейчас?\n\n" + "\n".join(lines)
+        await _reply(update, context, text, reply_markup=REMINDER_KEYBOARD, disable_web_page_preview=True)
+    finally:
+        db.close()
 
 async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /api"""

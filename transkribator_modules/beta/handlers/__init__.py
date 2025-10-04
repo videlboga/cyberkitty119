@@ -3,7 +3,13 @@
 from .content_flow import show_processing_menu
 from .entrypoint import handle_update, process_text
 from .callbacks import handle_callback
-from .command_flow import show_command_confirmation, handle_command_callback, build_confirmation_text, handle_manual_form_message
+from .command_flow import (
+    show_command_confirmation,
+    handle_command_callback,
+    build_confirmation_text,
+    handle_manual_form_message,
+    handle_calendar_clarification,
+)
 
 __all__ = [
     "show_processing_menu",
@@ -14,4 +20,5 @@ __all__ = [
     "handle_command_callback",
     "build_confirmation_text",
     "handle_manual_form_message",
+    "handle_calendar_clarification",
 ]

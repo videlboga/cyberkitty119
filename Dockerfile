@@ -17,6 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем файлы проекта
 COPY transkribator_modules/ ./transkribator_modules/
+COPY prompts_catalog.json .
+COPY implementation_plan.md .
 COPY cyberkitty_modular.py .
 COPY .env .
 

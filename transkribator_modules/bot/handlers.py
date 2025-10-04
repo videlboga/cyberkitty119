@@ -11,7 +11,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from transkribator_modules.config import (
-    logger, MAX_FILE_SIZE_MB, VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR, BOT_TOKEN
+    logger, MAX_FILE_SIZE_MB, VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR, BOT_TOKEN, AGENT_FIRST
 )
 from transkribator_modules.audio.extractor import extract_audio_from_video, compress_audio_for_api
 from transkribator_modules.transcribe.transcriber_v4 import transcribe_audio, format_transcript_with_llm, _basic_local_format
@@ -22,6 +22,7 @@ from transkribator_modules.beta.handlers import (
     handle_update as handle_beta_update,
     process_text as beta_process_text,
 )
+from transkribator_modules.agent.dialog import ingest_and_prompt, handle_instruction
 
 def clean_html_entities(text: str) -> str:
     """Минимальная очистка текста: только удаление HTML-тегов.
@@ -273,7 +274,40 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         transcript = await transcribe_audio(compressed_audio)
 
-        if beta_enabled and transcript and transcript.strip():
+        if not transcript or not transcript.strip():
+            logger.error(f"Транскрипция не получена для видео {filename}")
+            error_text = (
+                "❌ Не удалось транскрибировать видео. Сервис распознавания пока недоступен. "
+                "Попробуй ещё раз через пару минут."
+            )
+            if status_msg:
+                await status_msg.edit_text(error_text)
+            else:
+                await update.message.reply_text(error_text)
+            try:
+                video_path.unlink(missing_ok=True)
+                audio_path.unlink(missing_ok=True)
+                comp_path = Path(compressed_audio)
+                if comp_path != audio_path:
+                    comp_path.unlink(missing_ok=True)
+            except Exception as clear_exc:
+                logger.warning(f"Не удалось удалить временные файлы после ошибки (video): {clear_exc}")
+            return
+
+        if AGENT_FIRST and transcript and transcript.strip():
+            if status_msg:
+                await status_msg.edit_text("✅ Транскрипция готова! Открываю диалог…")
+            await ingest_and_prompt(update, context, transcript, source='video')
+            try:
+                video_path.unlink(missing_ok=True)
+                audio_path.unlink(missing_ok=True)
+                comp_path = Path(compressed_audio)
+                if comp_path != audio_path:
+                    comp_path.unlink(missing_ok=True)
+            except Exception as clear_exc:
+                logger.warning(f"Не удалось удалить временные файлы (agent video): {clear_exc}")
+            return
+        if beta_enabled and transcript and transcript.strip() and not AGENT_FIRST:
             if status_msg:
                 await status_msg.edit_text("✅ Транскрипция готова! Открываю меню обработки…")
             await beta_process_text(update, context, transcript, source='video')
@@ -379,8 +413,8 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
         logger.info(f"Длина полного сообщения: {len(full_message)} символов")
 
         # Проверяем длину исходной транскрипции для решения о формате отправки
-        if len(transcript or "") <= 4000:
-            logger.info("Отправляем транскрипцию как текстовое сообщение")
+        if False:
+            logger.info("Отправляем транскрипцию как текстовое сообщение (disabled)")
             await update.message.reply_text(full_message)
         else:
             # Если длинный, отправляем .docx
@@ -515,7 +549,38 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         transcript = await transcribe_audio(processed_audio)
 
-        if beta_enabled and transcript and transcript.strip():
+        if not transcript or not transcript.strip():
+            logger.error(f"Транскрипция не получена для аудио {filename}")
+            error_text = (
+                "❌ Не удалось транскрибировать аудио. Сервис распознавания пока недоступен. "
+                "Попробуй ещё раз через пару минут."
+            )
+            if status_msg:
+                await status_msg.edit_text(error_text)
+            else:
+                await update.message.reply_text(error_text)
+            try:
+                audio_path.unlink(missing_ok=True)
+                proc_path = Path(processed_audio)
+                if proc_path != audio_path:
+                    proc_path.unlink(missing_ok=True)
+            except Exception as clear_exc:
+                logger.warning(f"Не удалось удалить временные файлы после ошибки (audio): {clear_exc}")
+            return
+
+        if AGENT_FIRST and transcript and transcript.strip():
+            if status_msg:
+                await status_msg.edit_text("✅ Транскрипция готова! Открываю диалог…")
+            await ingest_and_prompt(update, context, transcript, source='audio')
+            try:
+                audio_path.unlink(missing_ok=True)
+                proc_path = Path(processed_audio)
+                if proc_path != audio_path:
+                    proc_path.unlink(missing_ok=True)
+            except Exception as clear_exc:
+                logger.warning(f"Не удалось удалить временные файлы (agent audio): {clear_exc}")
+            return
+        if beta_enabled and transcript and transcript.strip() and not AGENT_FIRST:
             if status_msg:
                 await status_msg.edit_text("✅ Транскрипция готова! Открываю меню обработки…")
             await beta_process_text(update, context, transcript, source='audio')
@@ -611,8 +676,8 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             logger.info(f"Длина полного сообщения (аудио): {len(full_message)} символов")
 
             # Проверяем длину исходной транскрипции для решения о формате отправки
-            if len(transcript or "") <= 4000:
-                logger.info("Отправляем транскрипцию как текстовое сообщение (аудио)")
+            if False:
+                logger.info("Отправляем транскрипцию как текстовое сообщение (аудио, disabled)")
                 await update.message.reply_text(full_message)
             else:
                 # Если длинный, отправляем .docx
@@ -727,7 +792,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not is_group:
         beta_enabled = await _is_beta_enabled(update)
 
-    if FEATURE_BETA_MODE and beta_enabled and (update.message.text or update.message.caption):
+    # Если агент ждёт инструкцию — перехватываем текстовую реплику
+    if AGENT_FIRST and not is_group and update.message.text and context.user_data.get('agent_waiting_instruction'):
+        await handle_instruction(update, context)
+        return
+
+    if FEATURE_BETA_MODE and beta_enabled and (update.message.text or update.message.caption) and not AGENT_FIRST:
         logger.info("Переключение обработки в бета-режим")
         await handle_beta_update(update, context)
         return
@@ -902,28 +972,31 @@ async def handle_transcript_processing_task(update: Update, context: ContextType
 async def process_transcript_with_task(transcript_text: str, task_description: str) -> str:
     """Обрабатывает транскрипцию согласно задаче пользователя."""
     try:
-        from transkribator_modules.transcribe.transcriber_v4 import format_transcript_with_llm
+        from transkribator_modules.transcribe.transcriber_v4 import request_llm_response
 
-        # Создаем промпт для обработки транскрипции
-        prompt = f"""Ты эксперт по обработке транскрипций. Пользователь просит обработать транскрипцию согласно следующей задаче:
+        system_prompt = (
+            "Ты эксперт по обработке транскрипций. Твоя задача — читать запрос пользователя "
+            "и выдавать готовый результат по предоставленной расшифровке.")
+        user_prompt = (
+            "ЗАДАЧА: {task}\n\n"
+            "ТРАНСКРИПЦИЯ:\n{transcript}\n\n"
+            "Обработай транскрипцию согласно задаче. Если указан конкретный формат, следуй ему точно."
+        ).format(task=task_description, transcript=transcript_text)
 
-ЗАДАЧА: {task_description}
+        processed_text = None
+        if request_llm_response:
+            processed_text = await request_llm_response(system_prompt, user_prompt)
 
-ТРАНСКРИПЦИЯ:
-{transcript_text}
+        if processed_text:
+            cleaned_text = processed_text.strip().replace("*", "").replace("_", "").replace("`", "")
+            if cleaned_text:
+                return cleaned_text
 
-Обработай транскрипцию согласно задаче пользователя. Если в задаче указан конкретный формат или пример, следуй ему точно. Сохрани важную информацию и структурируй результат так, чтобы он соответствовал запросу пользователя."""
-
-        # Используем LLM для обработки
-        processed_text = await format_transcript_with_llm(prompt)
-
-        if processed_text and not processed_text.startswith("Произошла ошибка"):
-            # Очищаем текст от потенциальных markdown сущностей
-            cleaned_text = processed_text.replace("*", "").replace("_", "").replace("`", "")
-            return cleaned_text
-        else:
-            # Fallback - возвращаем исходную транскрипцию с комментарием
-            return f"Не удалось обработать транскрипцию через ИИ. Вот исходная транскрипция:\n\n{transcript_text}"
+        logger.warning("LLM не вернул результат для пользовательской задачи, отдаю исходную транскрипцию")
+        return (
+            "Не удалось обработать транскрипцию через ИИ. Вот исходная транскрипция:\n\n"
+            f"{transcript_text}"
+        )
 
     except Exception as e:
         logger.error(f"Ошибка при обработке транскрипции с задачей: {e}")

@@ -459,7 +459,11 @@ async def transcribe_segment_with_deepinfra(segment_path):
                     logger.error(f"Ретрай завершился ошибкой ({resp.status}) для {file_name}: {err_txt[:300]}")
                     return None
         except Exception as e2:
-            logger.error(f"Ошибка ретрая при транскрибации сегмента {segment_path}: {e2}")
+            logger.error(
+                "Ошибка ретрая при транскрибации сегмента %s: %r",
+                segment_path,
+                e2,
+            )
             return None
     except Exception as e:
         logger.error(f"Ошибка при транскрибации сегмента {segment_path}: {e}")

@@ -15,8 +15,15 @@ from transkribator_modules.config import (
     FEATURE_BETA_MODE,
 )
 from transkribator_modules.bot.commands import (
-    start_command, help_command, status_command,
-    plans_command, stats_command, api_command, promo_codes_command
+    start_command,
+    help_command,
+    status_command,
+    plans_command,
+    stats_command,
+    api_command,
+    promo_codes_command,
+    backlog_command,
+    timezone_command,
 )
 from transkribator_modules.bot.handlers import (
     handle_message
@@ -27,6 +34,7 @@ from transkribator_modules.bot.payments import (
 )
 from transkribator_modules.db.database import init_database
 from transkribator_modules.beta.reminders import schedule_jobs
+from transkribator_modules.beta.drive_sync import schedule_drive_sync_jobs
 
 def main() -> None:
     """Главная функция для запуска бота."""
@@ -61,11 +69,14 @@ def main() -> None:
 
     if FEATURE_BETA_MODE:
         schedule_jobs(application)
+        schedule_drive_sync_jobs(application)
 
     # Обработчики команд
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("backlog", backlog_command))
+    application.add_handler(CommandHandler("timezone", timezone_command))
     # Убрали сырой вывод по кнопке/команде
     
     # Новые команды для монетизации

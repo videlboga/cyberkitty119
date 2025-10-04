@@ -1,7 +1,19 @@
 import os
 
-from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, Boolean, ForeignKey, Text
+from sqlalchemy import (
+    Column,
+    Integer,
+    BigInteger,
+    String,
+    Float,
+    DateTime,
+    Boolean,
+    ForeignKey,
+    Text,
+    JSON,
+)
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.mutable import MutableDict, MutableList
 from sqlalchemy.orm import relationship
 from datetime import datetime, timedelta
 from enum import Enum
@@ -10,6 +22,11 @@ try:  # Optional pgvector support (PostgreSQL-only)
     from pgvector.sqlalchemy import Vector as PgVector
 except ImportError:  # pragma: no cover - pgvector unavailable (e.g. sqlite tests)
     PgVector = None
+
+try:
+    from sqlalchemy.dialects.postgresql import JSONB  # type: ignore
+except Exception:  # pragma: no cover - PostgreSQL driver not available
+    JSONB = None
 
 Base = declarative_base()
 
@@ -20,8 +37,21 @@ def _embedding_column_type():
     database_url = os.getenv('DATABASE_URL', '')
     use_pgvector = bool(PgVector) and database_url.startswith('postgresql')
     if use_pgvector:
-        return PgVector(256)
+        return PgVector(1536)
     return Text
+
+
+def _json_column_type():
+    """Return JSON/JSONB type depending on backend."""
+
+    database_url = os.getenv('DATABASE_URL', '')
+    if JSONB and database_url.startswith('postgresql'):
+        return JSONB
+    return JSON
+
+
+JSONType = _json_column_type()
+
 
 class PlanType(str, Enum):
     FREE = "free"
@@ -57,6 +87,7 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     beta_enabled = Column(Boolean, default=False)
     google_connected = Column(Boolean, default=False)
+    timezone = Column(String, nullable=True)
 
     # Связи
     transactions = relationship("Transaction", back_populates="user")
@@ -146,10 +177,17 @@ class Transcription(Base):
 
 
 class NoteStatus(str, Enum):
+    """Lifecycle statuses for notes."""
+
+    INGESTED = "ingested"
+    DRAFT = "draft"
+    APPROVED = "approved"
+    BACKLOG = "backlog"
+
+    # Legacy statuses retained during migration
     NEW = "new"
     PROCESSED = "processed"
     PROCESSED_RAW = "processed_raw"
-    BACKLOG = "backlog"
 
 
 class Note(Base):
@@ -163,15 +201,24 @@ class Note(Base):
     summary = Column(Text, nullable=True)
     type_hint = Column(String, nullable=True)
     type_confidence = Column(Float, default=0.0)
-    tags = Column(Text, default="[]")
-    links = Column(Text, default="{}")
+    raw_link = Column(String, nullable=True)
+    current_version = Column(Integer, default=0)
+    draft_title = Column(String, nullable=True)
+    draft_md = Column(Text, nullable=True)
+    tags = Column(MutableList.as_mutable(JSONType), default=list)
+    links = Column(MutableDict.as_mutable(JSONType), default=dict)
+    meta = Column(MutableDict.as_mutable(JSONType), default=dict)
     drive_file_id = Column(String, nullable=True)
-    status = Column(String, default=NoteStatus.NEW.value)
+    drive_path = Column(String, nullable=True)
+    sheet_row_id = Column(String, nullable=True)
+    status = Column(String, default=NoteStatus.INGESTED.value)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="notes")
     chunks = relationship("NoteChunk", back_populates="note", cascade="all, delete-orphan")
+    versions = relationship("NoteVersion", back_populates="note", cascade="all, delete-orphan", order_by="NoteVersion.version")
+    embedding = relationship("NoteEmbedding", back_populates="note", cascade="all, delete-orphan", uselist=False)
     reminders = relationship("Reminder", back_populates="note")
 
 
@@ -189,6 +236,33 @@ class NoteChunk(Base):
 
     note = relationship("Note", back_populates="chunks")
     user = relationship("User")
+
+
+class NoteVersion(Base):
+    __tablename__ = "note_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    note_id = Column(Integer, ForeignKey("notes.id"), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    title = Column(String, nullable=True)
+    markdown = Column(Text, nullable=False)
+    meta = Column(MutableDict.as_mutable(JSONType), default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    note = relationship("Note", back_populates="versions")
+
+
+class NoteEmbedding(Base):
+    __tablename__ = "note_embeddings"
+
+    note_id = Column(Integer, ForeignKey("notes.id"), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    embedding = Column(_embedding_column_type(), nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    note = relationship("Note", back_populates="embedding")
+    user = relationship("User")
+
 
 
 class Reminder(Base):

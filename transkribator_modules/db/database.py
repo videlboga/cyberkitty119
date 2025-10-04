@@ -34,6 +34,8 @@ from .models import (
     PlanType,
     Note,
     NoteChunk,
+    NoteVersion,
+    NoteEmbedding,
     Reminder,
     Event,
     GoogleCredential,
@@ -97,6 +99,8 @@ def init_database():
                 cursor.execute("ALTER TABLE users ADD COLUMN beta_enabled BOOLEAN DEFAULT 0")
             if "google_connected" not in user_columns:
                 cursor.execute("ALTER TABLE users ADD COLUMN google_connected BOOLEAN DEFAULT 0")
+            if "timezone" not in user_columns:
+                cursor.execute("ALTER TABLE users ADD COLUMN timezone TEXT")
 
             # Таблица транскрипций
             cursor.execute("""
@@ -156,6 +160,7 @@ def init_database():
             # Таблица заметок
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS notes (
+
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER,
                     ts DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -164,10 +169,17 @@ def init_database():
                     summary TEXT,
                     type_hint TEXT,
                     type_confidence FLOAT DEFAULT 0.0,
+                    raw_link TEXT,
+                    current_version INTEGER DEFAULT 0,
+                    draft_title TEXT,
+                    draft_md TEXT,
                     tags TEXT,
                     links TEXT,
+                    meta TEXT,
                     drive_file_id TEXT,
-                    status TEXT DEFAULT 'new',
+                    drive_path TEXT,
+                    sheet_row_id TEXT,
+                    status TEXT DEFAULT ingested,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (id)
@@ -175,16 +187,55 @@ def init_database():
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_notes_user_ts ON notes(user_id, ts)")
 
+            cursor.execute("PRAGMA table_info(notes)")
+            note_columns = [row[1] for row in cursor.fetchall()]
+            if "raw_link" not in note_columns:
+                cursor.execute("ALTER TABLE notes ADD COLUMN raw_link TEXT")
+            if "current_version" not in note_columns:
+                cursor.execute("ALTER TABLE notes ADD COLUMN current_version INTEGER DEFAULT 0")
+            if "draft_title" not in note_columns:
+                cursor.execute("ALTER TABLE notes ADD COLUMN draft_title TEXT")
+            if "draft_md" not in note_columns:
+                cursor.execute("ALTER TABLE notes ADD COLUMN draft_md TEXT")
+            if "meta" not in note_columns:
+                cursor.execute("ALTER TABLE notes ADD COLUMN meta TEXT")
+            if "drive_path" not in note_columns:
+                cursor.execute("ALTER TABLE notes ADD COLUMN drive_path TEXT")
+            if "sheet_row_id" not in note_columns:
+                cursor.execute("ALTER TABLE notes ADD COLUMN sheet_row_id TEXT")
+            if "status" in note_columns:
+                cursor.execute("UPDATE notes SET status='ingested' WHERE status='new'")
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS note_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    note_id INTEGER,
+                    version INTEGER,
+                    title TEXT,
+                    markdown TEXT,
+                    meta TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (note_id) REFERENCES notes (id)
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_note_versions_note_id ON note_versions(note_id, version)")
+
             # Таблица эмбеддингов заметок
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS note_embeddings (
                     note_id INTEGER PRIMARY KEY,
                     user_id INTEGER,
                     embedding TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (note_id) REFERENCES notes (id),
                     FOREIGN KEY (user_id) REFERENCES users (id)
                 )
             """)
+
+            cursor.execute("PRAGMA table_info(note_embeddings)")
+            embedding_columns = [row[1] for row in cursor.fetchall()]
+            if "updated_at" not in embedding_columns:
+                cursor.execute("ALTER TABLE note_embeddings ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP")
 
             # Таблица напоминаний
             cursor.execute("""
@@ -333,6 +384,7 @@ def init_database():
         with engine.connect() as conn:
             conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS beta_enabled BOOLEAN DEFAULT FALSE"))
             conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS google_connected BOOLEAN DEFAULT FALSE"))
+            conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS timezone VARCHAR(64)"))
             conn.commit()
     except Exception as exc:
         logger.warning("Не удалось добавить колонку beta_enabled", extra={"error": str(exc)})
@@ -388,6 +440,10 @@ class UserService:
 
         if getattr(user, "google_connected", None) is None:
             user.google_connected = False
+            self.db.commit()
+
+        if getattr(user, "timezone", None) == "":
+            user.timezone = None
             self.db.commit()
 
         return user
@@ -448,6 +504,17 @@ class UserService:
         user.beta_enabled = enabled
         user.updated_at = datetime.utcnow()
         self.db.commit()
+
+    def set_timezone(self, user: User, timezone: str | None) -> None:
+        user.timezone = timezone
+        user.updated_at = datetime.utcnow()
+        self.db.commit()
+
+    def get_timezone(self, user: User) -> Optional[str]:
+        value = getattr(user, "timezone", None)
+        if value:
+            return str(value)
+        return None
 
     def toggle_beta_enabled(self, user: User) -> bool:
         """Переключить состояние бета-режима и вернуть новое значение"""
@@ -557,7 +624,12 @@ class NoteService:
         tags: Optional[list[str]] = None,
         links: Optional[dict] = None,
         drive_file_id: Optional[str] = None,
-        status: str = NoteStatus.NEW.value,
+        status: Optional[str] = None,
+        raw_link: Optional[str] = None,
+        draft_title: Optional[str] = None,
+        draft_md: Optional[str] = None,
+        meta: Optional[dict] = None,
+        create_version: bool = False,
     ) -> Note:
         note = Note(
             user_id=user.id,
@@ -567,15 +639,24 @@ class NoteService:
             summary=summary,
             type_hint=type_hint,
             type_confidence=type_confidence or 0.0,
-            tags=json.dumps(tags or []),
-            links=json.dumps(links or {}),
+            raw_link=raw_link,
+            draft_title=draft_title,
+            draft_md=draft_md,
+            tags=tags or [],
+            links=links or {},
+            meta=meta or {},
             drive_file_id=drive_file_id,
-            status=status,
+            status=status or NoteStatus.INGESTED.value,
         )
         self.db.add(note)
         self.db.commit()
         self.db.refresh(note)
+        if create_version and draft_md:
+            self.add_version(note, markdown=draft_md, title=draft_title, meta=meta)
         return note
+
+    def get_note(self, note_id: int) -> Optional[Note]:
+        return self.db.query(Note).filter(Note.id == note_id).one_or_none()
 
     def update_note_metadata(
         self,
@@ -585,29 +666,74 @@ class NoteService:
         tags: Optional[list[str]] = None,
         links: Optional[dict] = None,
         drive_file_id: Optional[str] = None,
+        drive_path: Optional[str] = None,
+        sheet_row_id: Optional[str] = None,
         status: Optional[str] = None,
+        raw_link: Optional[str] = None,
+        draft_title: Optional[str] = None,
+        draft_md: Optional[str] = None,
+        meta: Optional[dict] = None,
     ) -> Note:
         if summary is not None:
             note.summary = summary
         if tags is not None:
-            note.tags = json.dumps(tags)
+            note.tags = list(tags)
         if links is not None:
-            existing_links = {}
-            try:
-                if note.links:
-                    existing_links = json.loads(note.links)
-            except Exception:
-                existing_links = {}
+            existing_links = dict(note.links or {})
             existing_links.update(links)
-            note.links = json.dumps(existing_links)
+            note.links = existing_links
         if drive_file_id is not None:
             note.drive_file_id = drive_file_id
+        if drive_path is not None:
+            note.drive_path = drive_path
+        if sheet_row_id is not None:
+            note.sheet_row_id = sheet_row_id
         if status is not None:
             note.status = status
+        if raw_link is not None:
+            note.raw_link = raw_link
+        if draft_title is not None:
+            note.draft_title = draft_title
+        if draft_md is not None:
+            note.draft_md = draft_md
+        if meta is not None:
+            merged_meta = dict(note.meta or {})
+            merged_meta.update(meta)
+            note.meta = merged_meta
         note.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(note)
         return note
+
+    def add_version(
+        self,
+        note: Note,
+        *,
+        markdown: str,
+        title: Optional[str] = None,
+        meta: Optional[dict] = None,
+    ) -> NoteVersion:
+        next_version = (note.current_version or 0) + 1
+        version_record = NoteVersion(
+            note_id=note.id,
+            version=next_version,
+            title=title,
+            markdown=markdown,
+            meta=meta or {},
+        )
+        self.db.add(version_record)
+        note.current_version = next_version
+        note.draft_title = title
+        note.draft_md = markdown
+        if meta:
+            merged_meta = dict(note.meta or {})
+            merged_meta.update(meta)
+            note.meta = merged_meta
+        note.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(version_record)
+        self.db.refresh(note)
+        return version_record
 
     def update_status(self, note: Note, status: str) -> Note:
         note.status = status
@@ -909,6 +1035,50 @@ class PromoCodeService:
             PromoActivation.user_id == user.id,
             (PromoActivation.expires_at == None) | (PromoActivation.expires_at > datetime.utcnow())
         ).all()
+
+
+class EventService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add_event(self, user_id: int, kind: str, payload: dict) -> Event:
+        event = Event(
+            user_id=user_id,
+            kind=kind,
+            payload=json.dumps(payload, ensure_ascii=False),
+        )
+        self.db.add(event)
+        self.db.commit()
+        self.db.refresh(event)
+        return event
+
+    def has_event(self, user_id: int, kind: str, note_id: int) -> bool:
+        events = (
+            self.db.query(Event)
+            .filter(Event.user_id == user_id, Event.kind == kind)
+            .all()
+        )
+        for event in events:
+            try:
+                data = json.loads(event.payload or "{}")
+            except json.JSONDecodeError:
+                continue
+            if data.get("note_id") == note_id:
+                return True
+        return False
+
+    def list_events(self, kind: str, limit: int = 20) -> list[Event]:
+        return (
+            self.db.query(Event)
+            .filter(Event.kind == kind)
+            .order_by(Event.ts.asc())
+            .limit(limit)
+            .all()
+        )
+
+    def delete_event(self, event: Event) -> None:
+        self.db.delete(event)
+        self.db.commit()
 
 def get_plans() -> List[Plan]:
     """Получить все доступные планы"""

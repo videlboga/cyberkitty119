@@ -63,7 +63,11 @@ else:
 # ===== API КЛЮЧИ ДЛЯ AI СЕРВИСОВ =====
 DEEPINFRA_API_KEY = os.getenv('DEEPINFRA_API_KEY', '')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
-OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'deepseek/deepseek-chat')  # Вернули DeepSeek как просил пользователь
+OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'google/gemini-2.5-flash-lite')
+EMBEDDING_PROVIDER = os.getenv('EMBEDDING_PROVIDER', 'openrouter')
+EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'openai/text-embedding-3-small')
+EMBEDDING_TIMEOUT = float(os.getenv('EMBEDDING_TIMEOUT', '15'))
+DISABLE_REMOTE_EMBEDDINGS = os.getenv('DISABLE_REMOTE_EMBEDDINGS', 'false').lower() in ('1', 'true', 'yes')
 
 # ===== НАСТРОЙКИ ЮКАССЫ =====
 # Установите значения через переменные окружения/.env
@@ -123,6 +127,9 @@ GOOGLE_OAUTH_CONFIGURED = bool(
     and GOOGLE_REDIRECT_URI
     and GOOGLE_ENCRYPTION_KEY
 )
+
+# Агент‑режим: упрощённый диалог после транскрибации
+AGENT_FIRST = os.getenv('AGENT_FIRST', 'false').lower() in ('1', 'true', 'yes')
 if FEATURE_GOOGLE_CALENDAR:
     GOOGLE_SCOPES.append('https://www.googleapis.com/auth/calendar.readonly')
     GOOGLE_SCOPES.append('https://www.googleapis.com/auth/calendar.events')

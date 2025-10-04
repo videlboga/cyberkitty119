@@ -43,6 +43,13 @@ class RouterCommandArgs(BaseModel):
     k: int = 8
     action: Optional[str] = None
     note_id: Optional[str] = None
+    preset_id: Optional[str] = None
+    prompt: Optional[str] = None
+    target_type: Optional[str] = None
+    target_status: Optional[str] = None
+    new_tags: list[str] = Field(default_factory=list)
+    remove_tags: list[str] = Field(default_factory=list)
+    task_due: Optional[str] = None
 
 
 class RouterCommand(BaseModel):
@@ -114,11 +121,11 @@ def _sanitize_payload_dict(data: dict) -> dict:
         if key in command:
             command[key] = _normalize_null(command[key])
 
-    for key in ('query', 'type', 'action', 'note_id'):
+    for key in ('query', 'type', 'action', 'note_id', 'preset_id', 'target_type', 'target_status', 'prompt', 'task_due'):
         if key in args:
             args[key] = _normalize_null(args[key])
 
-    for key in ('tags',):
+    for key in ('tags', 'new_tags', 'remove_tags'):
         if not isinstance(args.get(key), list):
             args[key] = []
 
@@ -149,6 +156,11 @@ def _sanitize_payload_dict(data: dict) -> dict:
 ROUTER_PROMPT = (
     "Ты — маршрутизатор. Верни ТОЛЬКО валидный JSON строго по схеме. "
     "Одно из полей mode должно быть 'command' или 'content'. Если сомневаешься — mode='content' и низкий confidence. "
+    "Дополнительные правила:\n"
+    "- Фразы типа 'создай/добавь/запланируй/назначь встречу/событие' → intent 'calendar'. Если требуется создать событие, ставь args.mode='timebox' и используй существующие указания времени.\n"
+    "- Если время указано словами (сегодня, завтра, через два часа) — сохраняй их в args.query и не придумывай конкретные числа. Команда позже сама уточнит детали.\n"
+    "- Просьбы 'покажи/проверить/что в календаре' → intent 'calendar', args.mode='changes'.\n"
+    "- intent 'action' используй только когда явно требуется операция над существующей заметкой (есть note_id, ссылка на заметку или формулировка 'сделай из заметки'). Для общих запросов без note_id предпочитай intent 'calendar'.\n"
     "Структура:\n"
     "{\n"
     "  \"version\": \"1.0\",\n"
@@ -163,7 +175,14 @@ ROUTER_PROMPT = (
     "      \"time_range\": {\"from\": null, \"to\": null, \"preset\": \"last_week|this_week|this_month|null\"},\n"
     "      \"k\": 8,\n"
     "      \"action\": \"summary|protocol|bullets|tasks_split|task_from_note|post|quotes|timed_outline|retag|move|save_drive|create_doc|update_index|free_prompt|null\",\n"
-    "      \"note_id\": null\n"
+    "      \"note_id\": null,\n"
+    "      \"preset_id\": null,\n"
+    "      \"prompt\": null,\n"
+    "      \"target_type\": \"meeting|idea|task|media|recipe|journal|other|any|null\",\n"
+    "      \"target_status\": \"processed|backlog|raw|null\",\n"
+    "      \"new_tags\": [],\n"
+    "      \"remove_tags\": [],\n"
+    "      \"task_due\": null\n"
     "    }\n"
     "  },\n"
     "  \"content\": {\n"

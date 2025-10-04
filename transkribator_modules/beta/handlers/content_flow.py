@@ -24,8 +24,7 @@ def _build_main_keyboard() -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("⚡ Обработать сейчас", callback_data="beta:act:now")],
             [InlineKeyboardButton("🕓 Обработать позже", callback_data="beta:act:later")],
-            [InlineKeyboardButton("📝 Только транскрипт", callback_data="beta:act:raw")],
-            [InlineKeyboardButton("🗂 Выбрать тип", callback_data="beta:act:type_menu")],
+            [InlineKeyboardButton("💾 Просто сохранить", callback_data="beta:act:raw")],
         ]
     )
 
@@ -70,8 +69,20 @@ async def show_processing_menu(
     type_conf = router_result.content.type_confidence or 0.0
     header = compose_header(type_hint, type_conf, manual_type)
 
-    await update.message.reply_text(
-        header,
-        reply_markup=_build_main_keyboard(),
-        parse_mode="Markdown",
-    )
+    message = update.effective_message
+    if message:
+        await message.reply_text(
+            header,
+            reply_markup=_build_main_keyboard(),
+            parse_mode="Markdown",
+        )
+        return
+
+    chat = update.effective_chat
+    if chat:
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=header,
+            reply_markup=_build_main_keyboard(),
+            parse_mode="Markdown",
+        )

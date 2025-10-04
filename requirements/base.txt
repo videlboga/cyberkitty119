@@ -13,4 +13,4 @@ google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 google-api-python-client==2.119.0
 numpy==1.26.4
-pgvector==0.1.9
+pgvector==0.2.4

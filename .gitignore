@@ -86,3 +86,7 @@ backups/
 
 # Docker artifacts
 *.tar
+*.tar.gz
+
+# Local OAuth secrets
+client_secret_*.json
