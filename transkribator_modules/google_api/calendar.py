@@ -73,6 +73,8 @@ def calendar_update_timebox(
     end_iso: str,
     description: Optional[str] = None,
     time_zone: Optional[str] = None,
+    *,
+    title: Optional[str] = None,
 ) -> dict:
     """Update existing event timing in the primary calendar."""
 
@@ -83,6 +85,8 @@ def calendar_update_timebox(
     }
     if description is not None:
         body['description'] = description
+    if title is not None:
+        body['summary'] = title
     if time_zone:
         body['start']['timeZone'] = time_zone
         body['end']['timeZone'] = time_zone

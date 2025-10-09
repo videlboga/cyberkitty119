@@ -1,7 +1,7 @@
 """Google API helpers for CyberKitty."""
 
 from .credentials import GoogleCredentialService
-from .drive import ensure_tree, ensure_tree_cached, upload_markdown, move_file
+from .drive import ensure_tree, ensure_tree_cached, upload_markdown, upload_docx, move_file
 from .docs import create_doc
 from .sheets import upsert_index
 from .calendar import calendar_read_changes, calendar_create_timebox, calendar_update_timebox, calendar_get_event
@@ -12,6 +12,7 @@ __all__ = [
     'ensure_tree',
     'ensure_tree_cached',
     'upload_markdown',
+    'upload_docx',
     'move_file',
     'create_doc',
     'upsert_index',

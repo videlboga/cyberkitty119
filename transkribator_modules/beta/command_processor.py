@@ -140,8 +140,8 @@ def _format_generation_response(action: str, result: dict) -> str:
     drive_info = result.get('drive') or {}
     raw_info = result.get('raw_drive') or {}
     snippet = (result.get('rendered_output') or '').strip()
-    if len(snippet) > 600:
-        snippet = snippet[:597] + '…'
+    if len(snippet) > 3500:
+        snippet = snippet[:3497] + '…'
 
     lines = [f"🛠 Действие `{action}` выполнено."]
     if note_id:

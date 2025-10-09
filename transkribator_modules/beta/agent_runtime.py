@@ -5,15 +5,24 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Protocol
+
+from zoneinfo import ZoneInfo
 
 from transkribator_modules.config import logger
 from transkribator_modules.db.database import SessionLocal, UserService, NoteService
-from transkribator_modules.db.models import Note
+from transkribator_modules.db.models import Note, User
 
 from .llm import call_agent_llm_with_retry, AgentLLMError
 from .prompts import build_system_prompt, build_event_message
-from .tools import AgentTool, ToolResult, get_tool_specs, resolve_tool
+from .tools import (
+    AgentTool,
+    ToolResult,
+    get_tool_specs,
+    resolve_tool,
+    _looks_like_question,
+)
 
 
 @dataclass(slots=True)
@@ -30,6 +39,14 @@ class AgentResponse:
     text: str
     tool_results: list[ToolResult] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
+
+
+class ProgressReporter(Protocol):
+    async def update(self, text: str, *, mark_error: bool = False) -> None:  # pragma: no cover - protocol definition
+        ...
+
+    async def finalize(self, text: str) -> None:  # pragma: no cover - protocol definition
+        ...
 
 
 class AgentSession:
@@ -80,7 +97,12 @@ class AgentSession:
         if local_artifact is not None:
             self.active_note_has_local_artifact = local_artifact
 
-    async def handle_ingest(self, payload: dict) -> AgentResponse:
+    async def handle_ingest(
+        self,
+        payload: dict,
+        *,
+        progress: Optional[ProgressReporter] = None,
+    ) -> AgentResponse:
         message = build_event_message("ingest", payload)
         fallback_context = {
             "mode": "ingest",
@@ -91,9 +113,19 @@ class AgentSession:
             "links": self.active_note_links,
             "local_artifact": self.active_note_has_local_artifact,
         }
-        return await self._call_agent(message, fallback_context=fallback_context)
+        return await self._call_agent(
+            message,
+            fallback_context=fallback_context,
+            progress=progress,
+            original_query=payload.get("text"),
+        )
 
-    async def handle_user_message(self, text: str) -> AgentResponse:
+    async def handle_user_message(
+        self,
+        text: str,
+        *,
+        progress: Optional[ProgressReporter] = None,
+    ) -> AgentResponse:
         payload = {
             "text": text,
             "active_note_id": self.active_note_id,
@@ -109,13 +141,26 @@ class AgentSession:
             "links": self.active_note_links,
             "local_artifact": self.active_note_has_local_artifact,
         }
-        return await self._call_agent(message, fallback_context=fallback_context)
+        return await self._call_agent(
+            message,
+            fallback_context=fallback_context,
+            progress=progress,
+            original_query=text,
+        )
 
-    async def _call_agent(self, user_message: str, *, fallback_context: Optional[dict[str, Any]] = None) -> AgentResponse:
+    async def _call_agent(
+        self,
+        user_message: str,
+        *,
+        fallback_context: Optional[dict[str, Any]] = None,
+        progress: Optional[ProgressReporter] = None,
+        original_query: Optional[str] = None,
+    ) -> AgentResponse:
         system_prompt = build_system_prompt(get_tool_specs())
         messages = [{"role": "system", "content": system_prompt}]
         messages.extend(self.history)
-        messages.append({"role": "user", "content": user_message})
+        enriched_user_message = self._prepend_time_context(user_message)
+        messages.append({"role": "user", "content": enriched_user_message})
 
         logger.debug(
             "Agent session calling LLM",
@@ -126,9 +171,12 @@ class AgentSession:
             },
         )
 
+        await _progress_safe_update(progress, "🤖 Думаю над ответом…")
+
         try:
             raw_response = await call_agent_llm_with_retry(messages, retries=1)
         except AgentLLMError:
+            await _progress_safe_update(progress, "⚠️ LLM сейчас недоступна. Попробуем ещё раз позже.", mark_error=True)
             return AgentResponse(text="LLM сейчас недоступна. Попробуем ещё раз позже.")
 
         parsed = _parse_agent_json(raw_response)
@@ -137,36 +185,99 @@ class AgentSession:
         suggestions = parsed.get("suggestions") or []
 
         tool_results: list[ToolResult] = []
+        search_executed = False
+        if not actions:
+            await _progress_safe_update(progress, "ℹ️ Дополнительных действий не требуется.")
         for action in actions:
             tool_name = action.get("tool")
             if not tool_name:
                 continue
-            tool = resolve_tool(str(tool_name))
-            if not tool:
-                logger.warning("Agent requested unknown tool", extra={"tool": tool_name})
-                continue
             args = action.get("args") or {}
-            try:
-                result = await self._execute_tool(tool, args)
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "Agent tool failed",
-                    extra={"tool": tool.name, "error": str(exc)},
+            if (
+                tool_name == "update_note_text"
+                and original_query
+                and _looks_like_question(original_query)
+            ):
+                await _progress_safe_update(progress, "🔍 Вместо правки ищу ответ в заметках…")
+                try:
+                    k_value = int(args.get("k", 3))
+                except (TypeError, ValueError):
+                    k_value = 3
+                forced_search = await self._invoke_tool(
+                    "search_notes",
+                    {"query": original_query, "k": max(1, k_value)},
+                    None,
                 )
-                tool_results.append(ToolResult(message=f"Инструмент {tool.name} завершился с ошибкой."))
+                if forced_search:
+                    tool_results.append(forced_search)
+                    status = (forced_search.status or "").lower()
+                    if status in {"error", "blocked"}:
+                        await _progress_safe_update(
+                            progress,
+                            _shorten_progress(forced_search.message or "Поиск не удался"),
+                            mark_error=True,
+                        )
+                    else:
+                        await _progress_safe_update(progress, "✅ Нашёл подходящие заметки")
+                        search_executed = True
+                else:
+                    await _progress_safe_update(progress, "⚠️ Поиск временно недоступен.", mark_error=True)
                 continue
-            if comment := action.get("comment"):
-                message = f"{comment}\n{result.message}" if result.message else comment
-                tool_results.append(ToolResult(message=message, details=result.details, suggestion=result.suggestion))
+            comment = (action.get("comment") or "").strip()
+            tool_obj = resolve_tool(str(tool_name))
+            description = comment or (tool_obj.description if tool_obj else f"Выполняю {tool_name}")
+            await _progress_safe_update(progress, f"🔧 {description}")
+            result = await self._invoke_tool(tool_name, args, comment if comment else None)
+            if not result:
+                await _progress_safe_update(progress, f"⚠️ Инструмент {tool_name} недоступен.", mark_error=True)
+                continue
+            tool_results.append(result)
+            status = (result.status or "").lower()
+            if status in {"error", "blocked"}:
+                message = _shorten_progress(result.message or description)
+                await _progress_safe_update(progress, f"⚠️ {message}", mark_error=True)
             else:
-                tool_results.append(result)
+                await _progress_safe_update(progress, f"✅ {description}")
+            if tool_name == "search_notes" and status not in {"error", "blocked"}:
+                search_executed = True
+
+        if tool_results and any(result.status in {"error", "blocked"} for result in tool_results):
+            response_text = ""
+
+        if (
+            original_query
+            and _looks_like_question(original_query)
+            and not search_executed
+        ):
+            await _progress_safe_update(progress, "🔍 Дополнительно ищу в заметках…")
+            extra_search = await self._invoke_tool(
+                "search_notes",
+                {"query": original_query, "k": 3},
+                None,
+            )
+            if extra_search:
+                tool_results.append(extra_search)
+                status = (extra_search.status or "").lower()
+                if status in {"error", "blocked"}:
+                    await _progress_safe_update(
+                        progress,
+                        _shorten_progress(extra_search.message or "Поиск не удался"),
+                        mark_error=True,
+                    )
+                else:
+                    await _progress_safe_update(progress, "✅ Нашёл подходящие заметки")
+                search_executed = True
+
+        await _progress_safe_update(progress, "🧾 Формирую ответ…")
 
         # Update conversation history
-        self.history.append({"role": "user", "content": user_message})
+        self.history.append({"role": "user", "content": enriched_user_message})
+        tool_suggestions = [res.suggestion for res in tool_results if res.suggestion]
+        merged_suggestions = _merge_suggestions(tool_suggestions, [])
         rendered_response = _render_final_message(
             response_text,
             tool_results,
-            suggestions,
+            merged_suggestions,
             fallback_context=fallback_context,
         )
         self.history.append({"role": "assistant", "content": rendered_response})
@@ -176,16 +287,43 @@ class AgentSession:
         if tool_results and self.active_note_id:
             self._refresh_active_note()
 
-        return AgentResponse(text=rendered_response, tool_results=tool_results, suggestions=suggestions)
+        return AgentResponse(text=rendered_response, tool_results=tool_results, suggestions=merged_suggestions)
 
     async def _execute_tool(self, tool: AgentTool, args: dict[str, Any]) -> ToolResult:
         if tool.requires_note and not (args.get("note_id") or self.active_note_id):
-            return ToolResult(message=f"Инструмент {tool.name} требует активную заметку, но она не установлена.")
+            return ToolResult(message=f"Инструмент {tool.name} требует активную заметку, но она не установлена.", status="blocked")
 
         maybe_coro = tool.func(self, args)
         if asyncio.iscoroutine(maybe_coro):
             return await maybe_coro
         return maybe_coro  # type: ignore[return-value]
+
+    async def _invoke_tool(self, tool_name: str, args: dict[str, Any], comment: Optional[str] = None) -> Optional[ToolResult]:
+        tool = resolve_tool(str(tool_name))
+        if not tool:
+            logger.warning("Agent requested unknown tool", extra={"tool": tool_name})
+            return None
+
+        try:
+            result = await self._execute_tool(tool, args)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Agent tool failed",
+                extra={"tool": tool.name, "error": str(exc)},
+            )
+            return ToolResult(message=f"Инструмент {tool.name} завершился с ошибкой.", status="error")
+
+        if comment:
+            cleaned_comment = comment.strip()
+            if cleaned_comment and not (result.message and result.message.strip()):
+                return ToolResult(
+                    message=cleaned_comment,
+                    details=result.details,
+                    suggestion=result.suggestion,
+                    status=result.status,
+                )
+
+        return result
 
     def _refresh_active_note(self) -> None:
         if not self.active_note_id:
@@ -204,6 +342,39 @@ class AgentSession:
         finally:
             db.close()
 
+    def _get_user_timezone(self) -> Optional[str]:
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == self.user_db_id).one_or_none()
+            if not user:
+                return None
+            tz = getattr(user, "timezone", None)
+            if isinstance(tz, str) and tz.strip():
+                return tz.strip()
+            return None
+        finally:
+            db.close()
+
+    def _prepend_time_context(self, message: str) -> str:
+        header = []
+        user_tz = self._get_user_timezone()
+        header_label = None
+        tzinfo = None
+        if user_tz:
+            header_label = user_tz
+            try:
+                tzinfo = ZoneInfo(user_tz)
+            except Exception:  # noqa: BLE001
+                tzinfo = None
+        now_dt = datetime.now(tzinfo) if tzinfo else datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        if header_label:
+            header.append(f"Сейчас (таймзона {header_label}): {now_iso}")
+        else:
+            header.append(f"Сейчас: {now_iso}")
+        if header:
+            return "\n".join(header + [message])
+        return message
 
 class AgentManager:
     """Creates and caches AgentSession instances per Telegram user."""
@@ -245,6 +416,14 @@ class AgentManager:
         )
 
 
+def _merge_suggestions(primary: list[str], extra: list[str]) -> list[str]:
+    merged: list[str] = []
+    for item in (primary or []) + (extra or []):
+        text = (item or "").strip()
+        if text and text not in merged:
+            merged.append(text)
+    return merged
+
 def _parse_agent_json(raw: str) -> dict[str, Any]:
     text = raw.strip()
     if text.startswith("```"):
@@ -284,9 +463,14 @@ def _render_final_message(
         if result.message:
             parts.append(result.message.strip())
     if suggestions:
-        parts.append("Предложения:")
-        for item in suggestions:
-            parts.append(f"• {item}")
+        inline_suggestions = [item.strip() for item in suggestions if item and item.strip()]
+        if inline_suggestions:
+            if len(inline_suggestions) == 1:
+                parts.append(f"Следом: {inline_suggestions[0]}")
+            else:
+                parts.append("Предложения:")
+                for item in inline_suggestions:
+                    parts.append(f"• {item}")
     if not parts:
         fallback = _build_fallback_message(fallback_context)
         if fallback:
@@ -295,6 +479,36 @@ def _render_final_message(
 
 
 AGENT_MANAGER = AgentManager()
+
+
+async def _progress_safe_update(
+    progress: Optional[ProgressReporter],
+    text: str,
+    *,
+    mark_error: bool = False,
+    parse_mode: Optional[str] = None,
+    disable_preview: bool = True,
+) -> None:
+    if not progress or not text:
+        return
+    try:
+        await progress.update(
+            text,
+            mark_error=mark_error,
+            parse_mode=parse_mode,
+            disable_preview=disable_preview,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Progress update failed", extra={"error": str(exc)})
+
+
+def _shorten_progress(text: Optional[str], limit: int = 160) -> str:
+    if not text:
+        return ""
+    compact = " ".join(text.strip().split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1] + "…"
 
 
 def _normalize_response_text(text: Optional[str]) -> str:
@@ -353,16 +567,12 @@ def _fallback_for_ingest(context: dict[str, Any]) -> str:
 def _fallback_for_user(context: dict[str, Any]) -> str:
     note_id = context.get("note_id")
     links = context.get("links") or {}
-    summary = context.get("summary")
 
     lines: list[str] = []
     if note_id:
-        lines.append(f"Команда выполнена для заметки #{note_id}, но агент не прислал подробностей.")
+        lines.append(f"Не уверен, что ответить по заметке #{note_id}. Уточни, пожалуйста, запрос.")
     else:
-        lines.append("Агент не смог сформировать ответ на сообщение.")
-
-    if summary:
-        lines.append(f"Текущий контекст: {summary}")
+        lines.append("Я пока не понял, что сделать. Расскажи подробнее, пожалуйста.")
 
     link_line = _format_links(links)
     if link_line:

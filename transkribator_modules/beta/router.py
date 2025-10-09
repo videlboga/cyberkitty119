@@ -7,6 +7,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from textwrap import dedent
 from typing import Any, Dict, Optional
 
 import aiohttp
@@ -19,6 +20,7 @@ from transkribator_modules.config import (
     DATA_DIR,
 )
 from .feature_flags import ROUTER_MODEL
+from .tools import get_tool_specs
 
 # OpenRouter требует referer и название приложения
 OPENROUTER_REFERER = os.getenv("OPENROUTER_REFERER", "https://transkribator.local")
@@ -51,23 +53,45 @@ class RouterCommandArgs(BaseModel):
     remove_tags: list[str] = Field(default_factory=list)
     task_due: Optional[str] = None
 
+    model_config = dict(extra="ignore")
+
 
 class RouterCommand(BaseModel):
     intent: Optional[str] = None
     args: RouterCommandArgs = Field(default_factory=RouterCommandArgs)
+
+    model_config = dict(extra="ignore")
 
 
 class RouterContent(BaseModel):
     type_hint: str = "other"
     type_confidence: float = 0.0
 
+    model_config = dict(extra="ignore")
+
+
+class RouterAction(BaseModel):
+    """Единичное действие, которое может выполнить агент."""
+
+    tool: str
+    args: Dict[str, Any] = Field(default_factory=dict)
+    comment: Optional[str] = None
+    confidence: Optional[float] = None
+
+    model_config = dict(extra="ignore")
+
 
 class RouterPayload(BaseModel):
-    version: str = "1.0"
-    mode: str = "content"
+    version: str = "1.1"
+    mode: str = "actions"
     confidence: float = 0.0
-    command: RouterCommand = Field(default_factory=RouterCommand)
-    content: RouterContent = Field(default_factory=RouterContent)
+    actions: list[RouterAction] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+    reason: Optional[str] = None
+    command: Optional[RouterCommand] = None  # для обратной совместимости
+    content: Optional[RouterContent] = None
+
+    model_config = dict(extra="ignore")
 
 
 @dataclass(slots=True)
@@ -80,11 +104,19 @@ class RouterResult:
 
     @property
     def content(self) -> RouterContent:
-        return self.payload.content
+        return self.payload.content or RouterContent()
 
     @property
     def command(self) -> RouterCommand:
-        return self.payload.command
+        return self.payload.command or RouterCommand()
+
+    @property
+    def actions(self) -> list[RouterAction]:
+        return self.payload.actions
+
+    @property
+    def suggestions(self) -> list[str]:
+        return self.payload.suggestions
 
 
 def _clip(text: str, limit: int = 400) -> str:
@@ -95,109 +127,163 @@ def _clip(text: str, limit: int = 400) -> str:
     return text[: limit - 1] + '…'
 
 
-def _normalize_null(value):
-    if isinstance(value, str) and value.strip().lower() == 'null':
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_str(value: Any) -> Optional[str]:
+    if value is None:
         return None
-    return value
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    return str(value)
 
 
 def _sanitize_payload_dict(data: dict) -> dict:
     if not isinstance(data, dict):
         return {}
 
-    data.setdefault('version', '1.0')
-    data.setdefault('mode', 'content')
-    data.setdefault('confidence', 0.0)
+    sanitized: dict[str, Any] = {}
+    sanitized['version'] = _coerce_str(data.get('version')) or '1.1'
 
-    command = data.get('command') or {}
-    if not isinstance(command, dict):
-        command = {}
-    args = command.get('args') or {}
-    if not isinstance(args, dict):
-        args = {}
+    mode_raw = _coerce_str(data.get('mode'))
+    mode = mode_raw.lower() if mode_raw else 'actions'
+    if mode not in {'actions', 'content'}:
+        mode = 'actions'
+    sanitized['mode'] = mode
+    sanitized['confidence'] = _coerce_float(data.get('confidence'), 0.0)
 
-    # normalize simple fields
-    for key in ('intent',):
-        if key in command:
-            command[key] = _normalize_null(command[key])
+    actions_raw = data.get('actions')
+    actions: list[dict[str, Any]] = []
+    if isinstance(actions_raw, list):
+        for item in actions_raw:
+            if not isinstance(item, dict):
+                continue
+            tool = _coerce_str(item.get('tool'))
+            if not tool:
+                continue
+            args = item.get('args') if isinstance(item.get('args'), dict) else {}
+            comment = _coerce_str(item.get('comment'))
+            action_confidence = _coerce_float(item.get('confidence'), None) if item.get('confidence') is not None else None
+            actions.append(
+                {
+                    'tool': tool,
+                    'args': args,
+                    'comment': comment,
+                    'confidence': action_confidence,
+                }
+            )
 
-    for key in ('query', 'type', 'action', 'note_id', 'preset_id', 'target_type', 'target_status', 'prompt', 'task_due'):
-        if key in args:
-            args[key] = _normalize_null(args[key])
+    if not actions:
+        fallback = _convert_legacy_command(data.get('command'))
+        if fallback:
+            actions.append(fallback)
+            sanitized['mode'] = 'actions'
 
-    for key in ('tags', 'new_tags', 'remove_tags'):
-        if not isinstance(args.get(key), list):
-            args[key] = []
+    sanitized['actions'] = actions
 
-    time_range = args.get('time_range') or {}
-    if not isinstance(time_range, dict):
-        time_range = {}
-    for key in ('from', 'to', 'preset'):
-        if key in time_range:
-            time_range[key] = _normalize_null(time_range[key])
-    args['time_range'] = time_range
-    args.setdefault('k', 8)
+    suggestions_raw = data.get('suggestions')
+    if isinstance(suggestions_raw, list):
+        sanitized['suggestions'] = [s for item in suggestions_raw if (s := _coerce_str(item))]
+    else:
+        sanitized['suggestions'] = []
 
-    command['args'] = args
-    data['command'] = command
+    sanitized['reason'] = _coerce_str(data.get('reason'))
 
-    content = data.get('content')
-    if not isinstance(content, dict):
-        content = {}
-    content.setdefault('type_hint', 'other')
-    content.setdefault('type_confidence', 0.0)
-    content['type_hint'] = _normalize_null(content.get('type_hint')) or 'other'
-    content['type_confidence'] = content.get('type_confidence') or 0.0
-    data['content'] = content
+    if sanitized['mode'] == 'content' and actions:
+        sanitized['mode'] = 'actions'
 
-    return data
+    return sanitized
 
 
-ROUTER_PROMPT = (
-    "Ты — маршрутизатор. Верни ТОЛЬКО валидный JSON строго по схеме. "
-    "Одно из полей mode должно быть 'command' или 'content'. Если сомневаешься — mode='content' и низкий confidence. "
-    "Дополнительные правила:\n"
-    "- Фразы типа 'создай/добавь/запланируй/назначь встречу/событие' → intent 'calendar'. Если требуется создать событие, ставь args.mode='timebox' и используй существующие указания времени.\n"
-    "- Если время указано словами (сегодня, завтра, через два часа) — сохраняй их в args.query и не придумывай конкретные числа. Команда позже сама уточнит детали.\n"
-    "- Просьбы 'покажи/проверить/что в календаре' → intent 'calendar', args.mode='changes'.\n"
-    "- intent 'action' используй только когда явно требуется операция над существующей заметкой (есть note_id, ссылка на заметку или формулировка 'сделай из заметки'). Для общих запросов без note_id предпочитай intent 'calendar'.\n"
-    "Структура:\n"
-    "{\n"
-    "  \"version\": \"1.0\",\n"
-    "  \"mode\": \"command|content\",\n"
-    "  \"confidence\": 0.0,\n"
-    "  \"command\": {\n"
-    "    \"intent\": \"qa|filter|digest|calendar|action|help|null\",\n"
-    "    \"args\": {\n"
-    "      \"query\": null,\n"
-    "      \"tags\": [],\n"
-    "      \"type\": \"meeting|idea|task|media|recipe|journal|any|null\",\n"
-    "      \"time_range\": {\"from\": null, \"to\": null, \"preset\": \"last_week|this_week|this_month|null\"},\n"
-    "      \"k\": 8,\n"
-    "      \"action\": \"summary|protocol|bullets|tasks_split|task_from_note|post|quotes|timed_outline|retag|move|save_drive|create_doc|update_index|free_prompt|null\",\n"
-    "      \"note_id\": null,\n"
-    "      \"preset_id\": null,\n"
-    "      \"prompt\": null,\n"
-    "      \"target_type\": \"meeting|idea|task|media|recipe|journal|other|any|null\",\n"
-    "      \"target_status\": \"processed|backlog|raw|null\",\n"
-    "      \"new_tags\": [],\n"
-    "      \"remove_tags\": [],\n"
-    "      \"task_due\": null\n"
-    "    }\n"
-    "  },\n"
-    "  \"content\": {\n"
-    "    \"type_hint\": \"meeting|idea|task|media|recipe|journal|other\",\n"
-    "    \"type_confidence\": 0.0\n"
-    "  }\n"
-    "}\n"
-    "Всегда возвращай JSON без комментариев и текстов вокруг."
-)
+def _convert_legacy_command(raw_command: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(raw_command, dict):
+        return None
+    try:
+        command = RouterCommand.model_validate(raw_command)
+    except ValidationError:
+        return None
+
+    intent = (command.intent or '').strip().lower()
+    if not intent:
+        return None
+
+    args = command.args
+    if intent == 'calendar':
+        action_args: dict[str, Any] = {}
+        time_range = args.time_range
+        if time_range and time_range.from_time:
+            action_args['start'] = time_range.from_time
+        if time_range and time_range.to:
+            action_args['end'] = time_range.to
+        if args.query and 'start' not in action_args:
+            action_args['start'] = args.query
+        if args.task_due and 'start' not in action_args:
+            action_args['start'] = args.task_due
+        if args.action:
+            action_args['title'] = args.action
+        if args.prompt and 'description' not in action_args:
+            action_args['description'] = args.prompt
+        if args.note_id:
+            action_args['note_id'] = args.note_id
+        if not action_args:
+            return None
+        return {
+            'tool': 'create_calendar_event',
+            'args': action_args,
+            'comment': None,
+            'confidence': None,
+        }
+
+    return None
+
+
+def _build_router_prompt() -> str:
+    tool_specs = get_tool_specs()
+    tools_json = json.dumps(tool_specs, ensure_ascii=False, indent=2)
+    return dedent(
+        f"""
+        Ты — маршрутизатор действий для агента заметок. По тексту пользователя нужно определить, какие инструменты вызвать, и вернуть только JSON по схеме.
+
+        Формат ответа:
+        {{
+          "version": "1.1",
+          "mode": "actions|content",
+          "confidence": 0.0-1.0,
+          "actions": [
+            {{
+              "tool": "имя_инструмента",
+              "args": {{...}},
+              "comment": "короткое описание зачем действие",
+              "confidence": 0.0-1.0
+            }}
+          ],
+          "suggestions": ["короткая рекомендация"]
+        }}
+
+        Правила:
+        - Используй только инструменты из списка ниже. Структура и аргументы:
+        {tools_json}
+        - Если подходящего инструмента нет — верни пустой массив actions и низкий confidence.
+        - Даты и время передавай в ISO 8601: `YYYY-MM-DDTHH:MM[:SS][+TZ]`. Для естественных выражений вроде "завтра" считай дату относительно текущего дня пользователя.
+        - Для `create_calendar_event` укажи как минимум `start`. Если указан `duration_minutes`, используй его для расчёта `end`, иначе задавай длительность 60 минут. Название события — в `title`, дополнительный контекст — в `description`.
+        - Для `update_calendar_event` передавай `event_id` (если известно) и новый `start/end`.
+        - Если пользователь просит только предложить действие, помести его в `suggestions`, но не добавляй в actions.
+        - Никогда не придумывай id заметок. Если нужен note_id, но он не указан — опусти поле.
+        - Всегда возвращай строго JSON без пояснений и текста вокруг.
+        """
+    ).strip()
 
 
 async def route_message(payload: Dict[str, Any]) -> RouterResult:
     """Запрашивает LLM и возвращает структурированный результат."""
 
-    text = (payload.get("text") or "").strip()
+    raw_text = payload.get("text")
+    text = (raw_text or "").strip()
     metadata = payload.get("metadata", {})
 
     if not text:
@@ -221,13 +307,35 @@ async def route_message(payload: Dict[str, Any]) -> RouterResult:
             error="missing_api_key",
         )
 
-    user_message = f"Текст: <<<{text}>>>"
+    if _looks_like_question(text):
+        metadata = dict(metadata)
+        boost = float(metadata.get("confidence_boost", 0.0)) + 0.20
+        metadata["confidence_boost"] = boost
+
+    now_iso = metadata.get("now_iso")
+    tz_label = metadata.get("timezone")
+    header_parts = []
+    if tz_label and now_iso:
+        header_parts.append(f"Сейчас (таймзона {tz_label}): {now_iso}")
+    elif now_iso:
+        header_parts.append(f"Сейчас: {now_iso}")
+    if tz_label and not now_iso:
+        header_parts.append(f"Таймзона пользователя: {tz_label}")
+    user_id = metadata.get("user_id")
+    if user_id:
+        header_parts.append(f"UserID: {user_id}")
+    context_header = "\n".join(header_parts)
+    if context_header:
+        user_message = f"{context_header}\nТекст: <<<{text}>>>"
+    else:
+        user_message = f"Текст: <<<{text}>>>"
     logger.info(
         "Router LLM request: len=%s preview=%s metadata=%s",
         len(text),
         _clip(text),
         metadata,
     )
+    prompt = _build_router_prompt()
     tries = 0
     last_error = None
     failure_log = Path(DATA_DIR) / 'router_failures.log'
@@ -235,7 +343,7 @@ async def route_message(payload: Dict[str, Any]) -> RouterResult:
         tries += 1
         response_text = ''
         try:
-            response_text = await _call_openrouter(user_message)
+            response_text = await _call_openrouter(user_message, prompt)
             logger.info(
                 "Router LLM response attempt=%s preview=%s",
                 tries,
@@ -244,8 +352,6 @@ async def route_message(payload: Dict[str, Any]) -> RouterResult:
             cleaned = _extract_json(response_text)
             sanitized = _sanitize_payload_dict(json.loads(cleaned))
             payload_obj = RouterPayload.model_validate(sanitized)
-            if payload_obj.mode not in {"command", "content"}:
-                raise ValueError("mode must be command or content")
             return RouterResult(
                 payload=payload_obj,
                 mode=payload_obj.mode,
@@ -284,7 +390,7 @@ async def route_message(payload: Dict[str, Any]) -> RouterResult:
     )
 
 
-async def _call_openrouter(user_content: str) -> str:
+async def _call_openrouter(user_content: str, system_prompt: str) -> str:
     """Выполняет вызов OpenRouter."""
 
     headers = {
@@ -297,7 +403,7 @@ async def _call_openrouter(user_content: str) -> str:
     body = {
         "model": ROUTER_MODEL or OPENROUTER_MODEL,
         "messages": [
-            {"role": "system", "content": ROUTER_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,

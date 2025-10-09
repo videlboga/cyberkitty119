@@ -133,6 +133,26 @@ def upload_markdown(credentials, folder_id: str, filename: str, markdown_text: s
         raise
 
 
+def upload_docx(credentials, folder_id: str, filename: str, docx_bytes: bytes) -> dict:
+    drive = build_service('drive', 'v3', credentials)
+    metadata = {
+        'name': filename,
+        'mimeType': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'parents': [folder_id],
+    }
+    try:
+        media = MediaInMemoryUpload(
+            docx_bytes,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            resumable=False,
+        )
+        file = drive.files().create(body=metadata, media_body=media, fields='id, webViewLink').execute()
+        return file
+    except HttpError as exc:
+        logger.error("Failed to upload docx", extra={"error": str(exc)})
+        raise
+
+
 def move_file(credentials, file_id: str, target_folder_id: str) -> dict:
     """Move an existing file to a new folder in Google Drive."""
 

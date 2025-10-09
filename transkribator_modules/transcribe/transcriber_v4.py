@@ -404,6 +404,7 @@ async def transcribe_segment_with_deepinfra(segment_path):
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 # Формируем multipart/form-data запрос
                 form_data = aiohttp.FormData()
+                form_data.add_field('language', os.getenv('WHISPER_LANGUAGE', 'ru'))
                 file_name = Path(segment_path).name
                 form_data.add_field('audio', audio_file, filename=file_name)
                 logger.info(f"DeepInfra API POST start: {url} file={file_name}, timeout={request_timeout_sec}s")
@@ -421,6 +422,7 @@ async def transcribe_segment_with_deepinfra(segment_path):
                         # Переоткрываем файл и пересобираем форму для повтора
                         with open(segment_path, 'rb') as audio_file_retry:
                             form_data_retry = aiohttp.FormData()
+                            form_data_retry.add_field('language', os.getenv('WHISPER_LANGUAGE', 'ru'))
                             form_data_retry.add_field('audio', audio_file_retry, filename=file_name)
                             logger.info(f"DeepInfra API POST retry: {url} file={file_name}, timeout={request_timeout_sec + 30}s")
                             retry_timeout = aiohttp.ClientTimeout(total=request_timeout_sec + 30)
@@ -446,6 +448,7 @@ async def transcribe_segment_with_deepinfra(segment_path):
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 with open(segment_path, 'rb') as audio_file:
                     form_data = aiohttp.FormData()
+                    form_data.add_field('language', os.getenv('WHISPER_LANGUAGE', 'ru'))
                     file_name = Path(segment_path).name
                     form_data.add_field('audio', audio_file, filename=file_name)
                     logger.info(f"DeepInfra API POST retry (network): {url} file={file_name}, timeout={request_timeout_sec + 30}s, err={type(e).__name__}: {str(e)[:200]}")
