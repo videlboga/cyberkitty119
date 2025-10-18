@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timedelta, time
 from typing import Optional, List
 from sqlalchemy import create_engine, desc, func
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, joinedload
 from sqlalchemy.exc import IntegrityError
 import sqlite3
 from pathlib import Path
@@ -40,6 +40,7 @@ from .models import (
     Event,
     GoogleCredential,
     NoteStatus,
+    NoteGroup,
 )
 
 # Настройка базы данных
@@ -48,10 +49,13 @@ engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
 )
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 
 # Путь к файлу базы данных
 DB_PATH = Path("data/cyberkitty19_transkribator.db")
+
+# Карта отображаемых названий тарифов по их системным именам
+DEFAULT_PLAN_DISPLAY_NAMES = {plan["name"]: plan["display_name"] for plan in DEFAULT_PLANS}
 
 def init_database():
     """Инициализирует базу данных и создает необходимые таблицы."""
@@ -263,6 +267,20 @@ def init_database():
                 )
             """)
 
+            # Таблица групп заметок для мини-приложения
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS note_groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    color TEXT,
+                    tags TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            """)
+
             # Таблица Google credentials
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS google_credentials (
@@ -417,11 +435,13 @@ class UserService:
                 username=username,
                 first_name=first_name,
                 last_name=last_name,
-                current_plan=PlanType.FREE.value
+                current_plan=PlanType.FREE.value,
+                plan_expires_at=datetime.utcnow() + timedelta(days=7),
             )
             self.db.add(user)
             self.db.commit()
             self.db.refresh(user)
+            setattr(user, "_was_created", True)
         else:
             # Обновляем информацию пользователя
             if username:
@@ -430,6 +450,12 @@ class UserService:
                 user.first_name = first_name
             if last_name:
                 user.last_name = last_name
+            user.updated_at = datetime.utcnow()
+            self.db.commit()
+            setattr(user, "_was_created", False)
+
+        if user.current_plan == PlanType.FREE.value and not user.plan_expires_at:
+            user.plan_expires_at = (user.created_at or datetime.utcnow()) + timedelta(days=7)
             user.updated_at = datetime.utcnow()
             self.db.commit()
 
@@ -456,6 +482,16 @@ class UserService:
         plan = self.get_user_plan(user)
         if not plan:
             return False, "План пользователя не найден"
+
+        if user.plan_expires_at and user.plan_expires_at <= datetime.utcnow():
+            if user.current_plan == PlanType.FREE.value:
+                return False, "⏳ Бесплатный тариф доступен только 7 дней. Оформите подписку, чтобы продолжить."
+            user.current_plan = PlanType.FREE.value
+            user.beta_enabled = False
+            user.plan_expires_at = datetime.utcnow() + timedelta(days=7)
+            user.updated_at = datetime.utcnow()
+            self.db.commit()
+            plan = self.get_user_plan(user)
 
         # Для бесплатного тарифа проверяем количество генераций
         if user.current_plan == "free":
@@ -516,12 +552,6 @@ class UserService:
             return str(value)
         return None
 
-    def toggle_beta_enabled(self, user: User) -> bool:
-        """Переключить состояние бета-режима и вернуть новое значение"""
-        new_state = not bool(getattr(user, "beta_enabled", False))
-        self.set_beta_enabled(user, new_state)
-        return new_state
-
     def is_beta_enabled(self, user: User) -> bool:
         """Проверить, активен ли бета-режим для пользователя"""
         return bool(getattr(user, "beta_enabled", False))
@@ -545,9 +575,19 @@ class UserService:
         self._reset_monthly_usage_if_needed(user)
         plan = self.get_user_plan(user)
 
+        if plan and getattr(plan, "display_name", None):
+            plan_display_name = plan.display_name
+        elif user.current_plan in DEFAULT_PLAN_DISPLAY_NAMES:
+            plan_display_name = DEFAULT_PLAN_DISPLAY_NAMES[user.current_plan]
+        elif user.current_plan:
+            # Fallback to a human-readable variant of the raw plan slug
+            plan_display_name = user.current_plan.replace("_", " ").strip()
+        else:
+            plan_display_name = "Неизвестный"
+
         info = {
             "current_plan": user.current_plan,
-            "plan_display_name": plan.display_name if plan else "Неизвестный",
+            "plan_display_name": plan_display_name or "Неизвестный",
             "minutes_used_this_month": user.minutes_used_this_month,
             "total_minutes_transcribed": user.total_minutes_transcribed,
             "generations_used_this_month": user.generations_used_this_month,
@@ -586,14 +626,22 @@ class UserService:
             return False
 
         user.current_plan = new_plan
-        user.plan_expires_at = datetime.utcnow() + timedelta(days=30)  # 30 дней
-        user.updated_at = datetime.utcnow()
+        now = datetime.utcnow()
 
-        # Если переходим на новый план, сбрасываем месячное использование
-        if new_plan != PlanType.FREE:
+        if new_plan == PlanType.FREE.value:
+            user.plan_expires_at = now + timedelta(days=7)
+            user.beta_enabled = False
+        else:
+            user.plan_expires_at = now + timedelta(days=30)
+            user.beta_enabled = new_plan in {PlanType.BETA.value, PlanType.UNLIMITED.value}
+
+        user.updated_at = now
+
+        # Если переходим на новый платный план, сбрасываем месячное использование
+        if new_plan != PlanType.FREE.value:
             user.minutes_used_this_month = 0.0
             user.generations_used_this_month = 0
-            user.last_reset_date = datetime.utcnow()
+            user.last_reset_date = now
 
         self.db.commit()
         return True
@@ -630,6 +678,7 @@ class NoteService:
         draft_md: Optional[str] = None,
         meta: Optional[dict] = None,
         create_version: bool = False,
+        group_ids: Optional[list[int]] = None,
     ) -> Note:
         note = Note(
             user_id=user.id,
@@ -649,6 +698,15 @@ class NoteService:
             status=status or NoteStatus.INGESTED.value,
         )
         self.db.add(note)
+        if group_ids:
+            groups = (
+                self.db.query(NoteGroup)
+                .filter(NoteGroup.user_id == user.id, NoteGroup.id.in_(group_ids))
+                .all()
+            )
+            note.groups = groups
+        else:
+            note.groups = []
         self.db.commit()
         self.db.refresh(note)
         if create_version and draft_md:
@@ -656,7 +714,12 @@ class NoteService:
         return note
 
     def get_note(self, note_id: int) -> Optional[Note]:
-        return self.db.query(Note).filter(Note.id == note_id).one_or_none()
+        return (
+            self.db.query(Note)
+            .options(joinedload(Note.groups))
+            .filter(Note.id == note_id)
+            .one_or_none()
+        )
 
     def update_note_metadata(
         self,
@@ -673,6 +736,7 @@ class NoteService:
         draft_title: Optional[str] = None,
         draft_md: Optional[str] = None,
         meta: Optional[dict] = None,
+        type_hint: Optional[str] = None,
     ) -> Note:
         if summary is not None:
             note.summary = summary
@@ -700,6 +764,8 @@ class NoteService:
             merged_meta = dict(note.meta or {})
             merged_meta.update(meta)
             note.meta = merged_meta
+        if type_hint is not None:
+            note.type_hint = type_hint
         note.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(note)
@@ -741,6 +807,145 @@ class NoteService:
         self.db.commit()
         self.db.refresh(note)
         return note
+
+    def mark_archived(self, note: Note) -> Note:
+        note.status = "archived"
+        note.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(note)
+        try:
+            from transkribator_modules.search import IndexService
+
+            IndexService().remove(note.id, note.user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to remove note from index",
+                extra={"note_id": note.id, "user_id": note.user_id, "error": str(exc)},
+            )
+        return note
+
+    def list_user_notes(self, user: User) -> List[Note]:
+        return (
+            self.db.query(Note)
+            .options(joinedload(Note.groups))
+            .filter(
+                Note.user_id == user.id,
+                Note.status != "archived",
+            )
+            .order_by(Note.ts.desc())
+            .all()
+        )
+
+    def set_note_groups(self, note: Note, group_ids: list[int]) -> Note:
+        if group_ids:
+            groups = (
+                self.db.query(NoteGroup)
+                .filter(NoteGroup.user_id == note.user_id, NoteGroup.id.in_(group_ids))
+                .all()
+            )
+        else:
+            groups = []
+        note.groups = groups
+        note.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(note)
+        return note
+
+
+class NoteGroupService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def list_groups(self, user_id: int) -> List[NoteGroup]:
+        return (
+            self.db.query(NoteGroup)
+            .options(joinedload(NoteGroup.notes))
+            .filter(NoteGroup.user_id == user_id)
+            .order_by(NoteGroup.created_at.desc())
+            .all()
+        )
+
+    def get_group(self, user_id: int, group_id: int) -> Optional[NoteGroup]:
+        return (
+            self.db.query(NoteGroup)
+            .filter(NoteGroup.user_id == user_id, NoteGroup.id == group_id)
+            .one_or_none()
+        )
+
+    def create_group(self, user_id: int, name: str, tags: list[str], color: Optional[str] = None) -> NoteGroup:
+        group = NoteGroup(user_id=user_id, name=name, tags=list(dict.fromkeys(tags)), color=color)
+        self.db.add(group)
+        self.db.commit()
+        self.db.refresh(group)
+        return group
+
+    def update_group(
+        self,
+        group: NoteGroup,
+        *,
+        name: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        color: Optional[str] = None,
+    ) -> NoteGroup:
+        if name is not None:
+            group.name = name
+        if tags is not None:
+            group.tags = list(dict.fromkeys(tags))
+        if color is not None:
+            group.color = color
+        group.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(group)
+        return group
+
+    def delete_group(self, group: NoteGroup) -> None:
+        self.db.delete(group)
+        self.db.commit()
+
+    def merge_groups(
+        self,
+        user_id: int,
+        group_ids: list[int],
+        *,
+        name: str,
+        color: Optional[str] = None,
+    ) -> NoteGroup:
+        groups = (
+            self.db.query(NoteGroup)
+            .filter(NoteGroup.user_id == user_id, NoteGroup.id.in_(group_ids))
+            .all()
+        )
+        if not groups:
+            raise ValueError("No groups found to merge")
+        merged_tags: list[str] = []
+        for group in groups:
+            merged_tags.extend(group.tags or [])
+
+        note_ids: set[int] = set()
+        for group in groups:
+            note_ids.update(note.id for note in group.notes or [])
+
+        merged_group = NoteGroup(
+            user_id=user_id,
+            name=name,
+            color=color,
+            tags=list(dict.fromkeys(merged_tags)),
+        )
+        self.db.add(merged_group)
+        for group in groups:
+            self.db.delete(group)
+        self.db.flush()
+
+        if note_ids:
+            notes = (
+                self.db.query(Note)
+                .filter(Note.user_id == user_id, Note.id.in_(note_ids))
+                .all()
+            )
+            merged_group.notes = notes
+        self.db.commit()
+        self.db.refresh(merged_group)
+        return merged_group
 
     def list_backlog(self, user: User, limit: int = 10) -> List[Note]:
         return (
@@ -916,6 +1121,21 @@ class TransactionService:
         self.db.commit()
         self.db.refresh(transaction)
 
+        if status == "completed" and amount_rub:
+            try:
+                referral_service = ReferralService(self.db)
+                referral_service.record_referral_payment(user, amount_rub, commit=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to record referral payment",
+                    extra={
+                        "user_id": user.id,
+                        "telegram_id": user.telegram_id,
+                        "amount_rub": amount_rub,
+                        "error": str(exc),
+                    },
+                )
+
         return transaction
 
     def get_user_transactions(self, user: User, limit: int = 50) -> List[Transaction]:
@@ -1014,18 +1234,37 @@ class PromoCodeService:
 
         # Обновляем план пользователя
         user.current_plan = promo.plan_type
+        now = datetime.utcnow()
         if expires_at:
             user.plan_expires_at = expires_at
+        elif promo.plan_type == PlanType.FREE.value:
+            user.plan_expires_at = now + timedelta(days=7)
         else:
             user.plan_expires_at = None  # Бессрочный
 
+        user.beta_enabled = promo.plan_type in {PlanType.BETA.value, PlanType.UNLIMITED.value}
+
         # Сбрасываем месячное использование при активации нового плана
-        user.minutes_used_this_month = 0.0
-        user.last_reset_date = datetime.utcnow()
+        if promo.plan_type != PlanType.FREE.value:
+            user.minutes_used_this_month = 0.0
+            user.generations_used_this_month = 0
+            user.last_reset_date = now
 
         self.db.add(activation)
         self.db.commit()
         self.db.refresh(activation)
+        try:
+            log_event(
+                user,
+                "promo_activated",
+                {
+                    "code": promo.code,
+                    "plan": promo.plan_type,
+                    "duration_days": promo.duration_days,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to log promo activation", exc_info=True)
 
         return activation
 
@@ -1364,9 +1603,17 @@ def init_plans():
                     is_active=plan_data.get("is_active", True)
                 )
                 db.add(plan)
+            else:
+                existing_plan.display_name = plan_data["display_name"]
+                existing_plan.minutes_per_month = plan_data["minutes_per_month"]
+                existing_plan.max_file_size_mb = plan_data["max_file_size_mb"]
+                existing_plan.price_rub = plan_data["price_rub"]
+                existing_plan.price_usd = plan_data["price_usd"]
+                existing_plan.price_stars = plan_data.get("price_stars", existing_plan.price_stars)
+                existing_plan.features = plan_data.get("features", existing_plan.features or "")
+                existing_plan.is_active = plan_data.get("is_active", True)
 
         db.commit()
-        print("✅ Планы инициализированы")
 
     except Exception as e:
         print(f"Ошибка при создании планов: {e}")
@@ -1397,13 +1644,89 @@ def init_promo_codes():
                 code="LIGHTKITTY",
                 plan_type=PlanType.UNLIMITED.value,
                 duration_days=None,  # Бессрочный
-                max_uses=999999,  # Практически безлимитный
+                max_uses=None,  # Не ограничиваем количество использований
                 description="🎉 Бессрочный безлимитный тариф",
                 expires_at=datetime.utcnow() + timedelta(days=365)  # Действует год
             )
 
+        if not promo_service.get_promo_code("BETACAT"):
+            promo_service.create_promo_code(
+                code="BETACAT",
+                plan_type=PlanType.BETA.value,
+                duration_days=60,
+                max_uses=999999,
+                description="🐱 Два месяца beta-доступа",
+                expires_at=datetime.utcnow() + timedelta(days=365)
+            )
+
     except Exception as e:
         print(f"Ошибка при создании промокодов: {e}")
+    finally:
+        db.close()
+
+def _serialize_payload(payload: Optional[object]) -> Optional[str]:
+    if payload is None:
+        return None
+    if isinstance(payload, str):
+        return payload
+    try:
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        return str(payload)
+
+def log_event(user: User | int | None, kind: str, payload: Optional[object] = None) -> None:
+    """Записывает событие пользователя в таблицу events."""
+    if user is None or not kind:
+        return
+    if isinstance(user, User):
+        user_id = user.id
+    else:
+        user_id = int(user)
+    if not user_id:
+        return
+
+    entry = Event(
+        user_id=user_id,
+        kind=kind,
+        payload=_serialize_payload(payload),
+        ts=datetime.utcnow(),
+    )
+    db = SessionLocal()
+    try:
+        db.add(entry)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning(
+            "Failed to log event",
+            extra={"user_id": user_id, "kind": kind, "error": str(exc)},
+        )
+    finally:
+        db.close()
+
+def log_telegram_event(telegram_user, kind: str, payload: Optional[object] = None) -> None:
+    """Записывает событие, идентифицируя пользователя по данным Telegram."""
+    if telegram_user is None or not kind:
+        return
+    db = SessionLocal()
+    try:
+        user_service = UserService(db)
+        user = user_service.get_or_create_user(
+            telegram_id=getattr(telegram_user, "id", None),
+            username=getattr(telegram_user, "username", None),
+            first_name=getattr(telegram_user, "first_name", None),
+            last_name=getattr(telegram_user, "last_name", None),
+        )
+        log_event(user, kind, payload)
+    except Exception as exc:
+        logger.warning(
+            "Failed to log telegram event",
+            extra={
+                "telegram_id": getattr(telegram_user, "id", None),
+                "kind": kind,
+                "error": str(exc),
+            },
+        )
     finally:
         db.close()
 
@@ -1592,6 +1915,16 @@ def seed_promo_codes():
                     max_uses=25,
                     expires_at=None,
                 ),
+                dict(
+                    code='BETACAT',
+                    description='Две недели beta-доступа',
+                    plan_type=PlanType.BETA.value,
+                    duration_days=14,
+                    bonus_type='subscription',
+                    bonus_value='14 дней Beta',
+                    max_uses=500,
+                    expires_at=None,
+                ),
             ]
 
             for data in promo_codes:
@@ -1603,161 +1936,239 @@ def seed_promo_codes():
         logger.error(f"Ошибка при создании промокодов: {e}")
 
 # ===== Реферальная программа =====
-def _generate_referral_code() -> str:
-    return secrets.token_urlsafe(6).replace('-', '').replace('_', '')
+class ReferralService:
+    """Операции по работе с реферальной программой."""
 
-def create_or_get_referral_code(user_telegram_id: int) -> str | None:
-    try:
-        db = SessionLocal()
-        try:
-            existing = (
-                db.query(ReferralLink)
-                .filter(ReferralLink.user_telegram_id == user_telegram_id)
-                .order_by(ReferralLink.id.desc())
+    COMMISSION_RATE = 0.30
+    REFERRAL_PROMO_CODE = "REFERRAL_SUPERCAT"
+    REFERRAL_PROMO_DURATION_DAYS = 14
+    REFERRAL_PROMO_MAX_USES = 1_000_000
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    @staticmethod
+    def _generate_referral_code() -> str:
+        return secrets.token_urlsafe(6).replace("-", "").replace("_", "")
+
+    def _generate_unique_code(self) -> str:
+        for _ in range(10):
+            code = self._generate_referral_code()
+            if not self.db.query(ReferralLink).filter(ReferralLink.code == code).first():
+                return code
+        raise RuntimeError("Не удалось сгенерировать уникальный реферальный код")
+
+    def create_or_get_referral_code(self, user: User) -> str:
+        link = (
+            self.db.query(ReferralLink)
+            .filter(ReferralLink.user_telegram_id == user.telegram_id)
+            .order_by(ReferralLink.id.desc())
+            .first()
+        )
+        if link:
+            return link.code
+
+        code = self._generate_unique_code()
+        link = ReferralLink(user_telegram_id=user.telegram_id, code=code)
+        self.db.add(link)
+        self.db.commit()
+        self.db.refresh(link)
+        return code
+
+    def record_referral_visit(
+        self,
+        referral_code: str,
+        visitor_telegram_id: int | None,
+        *,
+        commit: bool = True,
+    ) -> None:
+        if not referral_code:
+            return
+
+        link_exists = (
+            self.db.query(ReferralLink)
+            .filter(ReferralLink.code == referral_code)
+            .first()
+        )
+        if not link_exists:
+            return
+
+        visit = ReferralVisit(
+            referral_code=referral_code,
+            visitor_telegram_id=visitor_telegram_id,
+        )
+        self.db.add(visit)
+
+        if visitor_telegram_id:
+            exists = (
+                self.db.query(ReferralAttribution)
+                .filter(ReferralAttribution.visitor_telegram_id == visitor_telegram_id)
                 .first()
             )
-            if existing:
-                return existing.code
-
-            code = _generate_referral_code()
-            link = ReferralLink(user_telegram_id=user_telegram_id, code=code)
-            db.add(link)
-            db.commit()
-            return code
-        finally:
-            db.close()
-    except Exception as e:
-        logger.error(f"Ошибка создания реферальной ссылки для {user_telegram_id}: {e}")
-        return None
-
-
-def record_referral_visit(referral_code: str, visitor_telegram_id: int | None) -> None:
-    try:
-        db = SessionLocal()
-        try:
-            visit = ReferralVisit(referral_code=referral_code, visitor_telegram_id=visitor_telegram_id)
-            db.add(visit)
-
-            if visitor_telegram_id:
-                exists = db.query(ReferralAttribution).filter(
-                    ReferralAttribution.visitor_telegram_id == visitor_telegram_id
-                ).first()
-                if not exists:
-                    db.add(
-                        ReferralAttribution(
-                            visitor_telegram_id=visitor_telegram_id,
-                            referral_code=referral_code,
-                        )
+            if not exists:
+                self.db.add(
+                    ReferralAttribution(
+                        visitor_telegram_id=visitor_telegram_id,
+                        referral_code=referral_code,
                     )
-
-            db.commit()
-        finally:
-            db.close()
-    except Exception as e:
-        logger.error(f"Ошибка записи визита по коду {referral_code}: {e}")
-
-
-def attribute_user_referral(visitor_telegram_id: int, referral_code: str) -> None:
-    try:
-        db = SessionLocal()
-        try:
-            exists = db.query(ReferralAttribution).filter(
-                ReferralAttribution.visitor_telegram_id == visitor_telegram_id
-            ).first()
-            if exists:
-                return
-
-            db.add(
-                ReferralAttribution(
-                    visitor_telegram_id=visitor_telegram_id,
-                    referral_code=referral_code,
                 )
+
+        if commit:
+            self.db.commit()
+
+    def attribute_user_referral(
+        self,
+        visitor_telegram_id: int,
+        referral_code: str,
+        *,
+        commit: bool = True,
+    ) -> None:
+        if not referral_code:
+            return
+
+        link_exists = (
+            self.db.query(ReferralLink)
+            .filter(ReferralLink.code == referral_code)
+            .first()
+        )
+        if not link_exists:
+            return
+
+        exists = (
+            self.db.query(ReferralAttribution)
+            .filter(ReferralAttribution.visitor_telegram_id == visitor_telegram_id)
+            .first()
+        )
+        if exists:
+            return
+
+        self.db.add(
+            ReferralAttribution(
+                visitor_telegram_id=visitor_telegram_id,
+                referral_code=referral_code,
             )
-            db.commit()
-        finally:
-            db.close()
-    except Exception as e:
-        logger.error(f"Ошибка атрибуции пользователя {visitor_telegram_id} к коду {referral_code}: {e}")
+        )
+        if commit:
+            self.db.commit()
 
+    def get_attribution_code_for_user(self, payer_telegram_id: int) -> str | None:
+        record = (
+            self.db.query(ReferralAttribution)
+            .filter(ReferralAttribution.visitor_telegram_id == payer_telegram_id)
+            .first()
+        )
+        return record.referral_code if record else None
 
-def get_attribution_code_for_user(payer_telegram_id: int) -> str | None:
-    try:
-        db = SessionLocal()
-        try:
-            record = db.query(ReferralAttribution).filter(
-                ReferralAttribution.visitor_telegram_id == payer_telegram_id
-            ).first()
-            return record.referral_code if record else None
-        finally:
-            db.close()
-    except Exception as e:
-        logger.error(f"Ошибка получения атрибуции для {payer_telegram_id}: {e}")
-        return None
-
-
-def record_referral_payment(payer_telegram_id: int, amount_rub: float) -> None:
-    try:
+    def record_referral_payment(
+        self,
+        user: User,
+        amount_rub: float | None,
+        *,
+        commit: bool = False,
+    ) -> Optional[ReferralPayment]:
         if amount_rub is None:
-            return
+            return None
 
-        ref_code = get_attribution_code_for_user(payer_telegram_id)
-        if not ref_code:
-            return
+        referral_code = self.get_attribution_code_for_user(user.telegram_id)
+        if not referral_code:
+            return None
 
-        db = SessionLocal()
+        payment = ReferralPayment(
+            referral_code=referral_code,
+            payer_telegram_id=user.telegram_id,
+            amount_rub=float(amount_rub),
+        )
+        self.db.add(payment)
+
+        if commit:
+            self.db.commit()
+            self.db.refresh(payment)
+
         try:
-            payment = ReferralPayment(
-                referral_code=ref_code,
-                payer_telegram_id=payer_telegram_id,
-                amount_rub=float(amount_rub),
+            log_event(
+                user,
+                "referral_commission_recorded",
+                {
+                    "referral_code": referral_code,
+                    "amount_rub": float(amount_rub),
+                    "commission_rate": self.COMMISSION_RATE,
+                    "commission_amount": round(float(amount_rub) * self.COMMISSION_RATE, 2),
+                },
             )
-            db.add(payment)
-            db.commit()
-        finally:
-            db.close()
-    except Exception as e:
-        logger.error(f"Ошибка записи реферальной выплаты от {payer_telegram_id}: {e}")
+        except Exception:
+            logger.debug("Failed to log referral commission", exc_info=True)
 
+        return payment
 
-def get_referral_stats_for_user(user_telegram_id: int) -> dict:
-    try:
-        db = SessionLocal()
+    def get_referral_stats_for_user(self, user: User) -> dict:
+        codes = [
+            code
+            for (code,) in self.db.query(ReferralLink.code).filter(
+                ReferralLink.user_telegram_id == user.telegram_id
+            )
+        ]
+        if not codes:
+            return {"visits": 0, "paid_count": 0, "total_amount": 0.0, "balance": 0.0}
+
+        visits = (
+            self.db.query(func.count(ReferralVisit.id))
+            .filter(ReferralVisit.referral_code.in_(codes))
+            .scalar()
+            or 0
+        )
+        paid_count, total_amount = (
+            self.db.query(
+                func.count(ReferralPayment.id),
+                func.coalesce(func.sum(ReferralPayment.amount_rub), 0.0),
+            )
+            .filter(ReferralPayment.referral_code.in_(codes))
+            .one()
+        )
+
+        total_amount = float(total_amount or 0.0)
+        balance = round(total_amount * self.COMMISSION_RATE, 2)
+
+        return {
+            "visits": int(visits),
+            "paid_count": int(paid_count or 0),
+            "total_amount": total_amount,
+            "balance": balance,
+        }
+
+    def ensure_referral_promo(self) -> PromoCode:
+        promo_service = PromoCodeService(self.db)
+        promo = promo_service.get_promo_code(self.REFERRAL_PROMO_CODE)
+        if not promo:
+            promo = promo_service.create_promo_code(
+                code=self.REFERRAL_PROMO_CODE,
+                plan_type=PlanType.BETA.value,
+                duration_days=self.REFERRAL_PROMO_DURATION_DAYS,
+                max_uses=self.REFERRAL_PROMO_MAX_USES,
+                description="Реферальный бонус Super Cat на 14 дней",
+            )
+        return promo
+
+    def apply_referral_welcome_bonus(self, user: User) -> Optional[PromoActivation]:
+        promo_service = PromoCodeService(self.db)
+        promo = self.ensure_referral_promo()
+
+        is_valid, _, promo_obj = promo_service.validate_promo_code(promo.code, user)
+        if not is_valid or not promo_obj:
+            return None
+
+        activation = promo_service.activate_promo_code(promo_obj, user)
+        self.db.refresh(user)
+
         try:
-            codes = [
-                code
-                for (code,) in db.query(ReferralLink.code).filter(
-                    ReferralLink.user_telegram_id == user_telegram_id
-                ).all()
-            ]
-            if not codes:
-                return {"visits": 0, "paid_count": 0, "total_amount": 0.0, "balance": 0.0}
-
-            visits = (
-                db.query(func.count(ReferralVisit.id))
-                .filter(ReferralVisit.referral_code.in_(codes))
-                .scalar()
-                or 0
+            log_event(
+                user,
+                "referral_bonus_applied",
+                {
+                    "promo_code": promo.code,
+                    "duration_days": promo.duration_days,
+                },
             )
-            paid_count, total_amount = (
-                db.query(
-                    func.count(ReferralPayment.id),
-                    func.coalesce(func.sum(ReferralPayment.amount_rub), 0.0),
-                )
-                .filter(ReferralPayment.referral_code.in_(codes))
-                .one()
-            )
+        except Exception:
+            logger.debug("Failed to log referral bonus application", exc_info=True)
 
-            total_amount = float(total_amount or 0.0)
-            balance = round(total_amount * 0.20, 2)
-
-            return {
-                "visits": int(visits),
-                "paid_count": int(paid_count or 0),
-                "total_amount": total_amount,
-                "balance": balance,
-            }
-        finally:
-            db.close()
-    except Exception as e:
-        logger.error(f"Ошибка получения реферальной статистики для {user_telegram_id}: {e}")
-        return {"visits": 0, "paid_count": 0, "total_amount": 0.0, "balance": 0.0}
+        return activation

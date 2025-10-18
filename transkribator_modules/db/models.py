@@ -11,6 +11,8 @@ from sqlalchemy import (
     ForeignKey,
     Text,
     JSON,
+    Table,
+    UniqueConstraint,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.mutable import MutableDict, MutableList
@@ -57,6 +59,7 @@ class PlanType(str, Enum):
     FREE = "free"
     BASIC = "basic"
     PRO = "pro"
+    BETA = "beta"
     UNLIMITED = "unlimited"
 
 class User(Base):
@@ -93,6 +96,7 @@ class User(Base):
     transactions = relationship("Transaction", back_populates="user")
     transcriptions = relationship("Transcription", back_populates="user")
     notes = relationship("Note", back_populates="user")
+    note_groups = relationship("NoteGroup", back_populates="user", cascade="all, delete-orphan")
 
 class Plan(Base):
     __tablename__ = "plans"
@@ -220,6 +224,31 @@ class Note(Base):
     versions = relationship("NoteVersion", back_populates="note", cascade="all, delete-orphan", order_by="NoteVersion.version")
     embedding = relationship("NoteEmbedding", back_populates="note", cascade="all, delete-orphan", uselist=False)
     reminders = relationship("Reminder", back_populates="note")
+    groups = relationship("NoteGroup", secondary="note_group_links", back_populates="notes")
+
+
+class NoteGroup(Base):
+    __tablename__ = "note_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    color = Column(String, nullable=True)
+    tags = Column(MutableList.as_mutable(JSONType), default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="note_groups")
+    notes = relationship("Note", secondary="note_group_links", back_populates="groups")
+
+
+note_group_links = Table(
+    "note_group_links",
+    Base.metadata,
+    Column("note_id", Integer, ForeignKey("notes.id", ondelete="CASCADE"), primary_key=True),
+    Column("group_id", Integer, ForeignKey("note_groups.id", ondelete="CASCADE"), primary_key=True),
+    UniqueConstraint("note_id", "group_id", name="uq_note_group_links_note_group"),
+)
 
 
 class NoteChunk(Base):
@@ -339,7 +368,7 @@ class PromoCode(Base):
     duration_days = Column(Integer, nullable=True)  # None для бессрочного
 
     # Лимиты использования
-    max_uses = Column(Integer, default=1)  # Сколько раз можно использовать
+    max_uses = Column(Integer, nullable=True)  # None -> бесконечное количество
     current_uses = Column(Integer, default=0)  # Сколько раз уже использовали
 
     # Метаданные
@@ -442,6 +471,17 @@ DEFAULT_PLANS = [
         "features": '["10 часов в месяц", "Файлы до 500 МБ", "API доступ", "Приоритет"]'
     },
     {
+        "name": PlanType.BETA,
+        "display_name": "🐾 Супер Кот",
+        "minutes_per_month": None,
+        "max_file_size_mb": 2000.0,
+        "price_rub": 1700.0,
+        "price_usd": 0.0,
+        "price_stars": 1307,
+        "description": "Ранний доступ к экспериментальным возможностям и агенту",
+        "features": '["Бета-режим", "Экспериментальные инструменты", "Приоритетная поддержка"]'
+    },
+    {
         "name": PlanType.UNLIMITED,
         "display_name": "🚀 Безлимитный",
         "minutes_per_month": None,  # Безлимитный
@@ -453,3 +493,39 @@ DEFAULT_PLANS = [
         "features": '["Безлимитные минуты", "Файлы до 2 ГБ", "VIP поддержка", "Все функции"]'
     }
 ]
+
+
+class ProcessingJobStatus(str, Enum):
+    """Статусы задач обработки медиа."""
+
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ProcessingJob(Base):
+    """Запись фоновой задачи обработки."""
+
+    __tablename__ = "processing_jobs"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    note_id = Column(Integer, ForeignKey("notes.id"), nullable=True)
+    job_type = Column(String(50), nullable=False)
+    status = Column(String(32), nullable=False, default=ProcessingJobStatus.QUEUED.value)
+    payload = Column(JSON, nullable=True)
+    progress = Column(Integer, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    locked_by = Column(String(64), nullable=True)
+    locked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return (
+            f"ProcessingJob(id={self.id}, job_type={self.job_type!r}, "
+            f"status={self.status!r}, user_id={self.user_id})"
+        )

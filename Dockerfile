@@ -20,6 +20,7 @@ COPY transkribator_modules/ ./transkribator_modules/
 COPY prompts_catalog.json .
 COPY implementation_plan.md .
 COPY cyberkitty_modular.py .
+COPY job_worker.py .
 COPY .env .
 
 # Создаем необходимые директории

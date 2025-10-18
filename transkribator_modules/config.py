@@ -1,6 +1,8 @@
 import os
 import logging
+import importlib
 from pathlib import Path
+from typing import Any, Mapping, Optional
 
 # Загружаем переменные окружения из .env файла
 try:
@@ -19,6 +21,9 @@ if IN_CONTAINER:
 else:
     DATA_DIR = Path("./data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Определяем окружение
+ENVIRONMENT = os.getenv('ENVIRONMENT', 'development').lower()
 
 # Настройка логирования
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -70,12 +75,11 @@ EMBEDDING_TIMEOUT = float(os.getenv('EMBEDDING_TIMEOUT', '15'))
 DISABLE_REMOTE_EMBEDDINGS = os.getenv('DISABLE_REMOTE_EMBEDDINGS', 'false').lower() in ('1', 'true', 'yes')
 
 # ===== НАСТРОЙКИ ЮКАССЫ =====
-# Установите значения через переменные окружения/.env
 YUKASSA_SHOP_ID = os.getenv('YUKASSA_SHOP_ID', '')
 YUKASSA_SECRET_KEY = os.getenv('YUKASSA_SECRET_KEY', '')
 YUKASSA_DEFAULT_EMAIL = os.getenv('YUKASSA_DEFAULT_EMAIL', 'billing@transkribator.local')
 YUKASSA_VAT_CODE = int(os.getenv('YUKASSA_VAT_CODE', '1'))  # 1 = без НДС
-YUKASSA_TAX_SYSTEM_CODE = os.getenv('YUKASSA_TAX_SYSTEM_CODE')  # опционально: 1..6
+YUKASSA_TAX_SYSTEM_CODE = os.getenv('YUKASSA_TAX_SYSTEM_CODE')
 
 # ===== НАСТРОЙКИ БАЗЫ ДАННЫХ =====
 if IN_CONTAINER:
@@ -100,7 +104,6 @@ else:
     AUDIO_DIR = Path("./audio")
     TRANSCRIPTIONS_DIR = Path("./transcriptions")
 
-# Создаем необходимые директории
 for directory in [VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -127,12 +130,21 @@ GOOGLE_OAUTH_CONFIGURED = bool(
     and GOOGLE_REDIRECT_URI
     and GOOGLE_ENCRYPTION_KEY
 )
+SHOW_GOOGLE_OAUTH_IN_MENU = os.getenv(
+    'SHOW_GOOGLE_OAUTH_IN_MENU',
+    'false' if ENVIRONMENT in ('production', 'prod') else 'true',
+).lower() in ('1', 'true', 'yes')
 
-# Агент‑режим: упрощённый диалог после транскрибации
 AGENT_FIRST = os.getenv('AGENT_FIRST', 'false').lower() in ('1', 'true', 'yes')
 if FEATURE_GOOGLE_CALENDAR:
     GOOGLE_SCOPES.append('https://www.googleapis.com/auth/calendar.readonly')
     GOOGLE_SCOPES.append('https://www.googleapis.com/auth/calendar.events')
+
+MINIAPP_PUBLIC_URL = os.getenv('MINIAPP_PUBLIC_URL', 'https://cyberkitty.ru/miniapp').rstrip("/")
+MINIAPP_PROXY_URL = os.getenv('MINIAPP_PROXY_URL', 'https://t.me/CyberKitty19_bot/journal').rstrip('/')
+MINIAPP_PROXY_QUERY_PARAM = os.getenv('MINIAPP_PROXY_QUERY_PARAM', 'startapp').strip() or 'startapp'
+MINIAPP_NOTE_LINK_TEMPLATE = os.getenv('MINIAPP_NOTE_LINK_TEMPLATE', '').strip()
+TELEGRAM_REFERRAL_URL = os.getenv('TELEGRAM_REFERRAL_URL', 'https://t.me/CyberKitty19_bot/journal').rstrip('/')
 
 logger.info("✅ Конфигурация загружена успешно")
 logger.info(f"🏠 Режим: {'контейнер' if IN_CONTAINER else 'локальный'}")
@@ -145,3 +157,68 @@ logger.info(f"⏱️ Максимальная длительность: {MAX_AUD
 logger.info(f"🧪 Бета-режим включен по умолчанию: {FEATURE_BETA_MODE}")
 logger.info(f"🧭 Router модель: {ROUTER_MODEL}")
 logger.info(f"📂 Google Drive интеграция включена: {GOOGLE_OAUTH_CONFIGURED}")
+
+
+def load_media_service_overrides() -> Optional[Mapping[str, Any]]:
+    """Загрузить переопределения сервисов пайплайна из переменной окружения.
+
+    Ожидается значение формата ``module.path:factory``. Фабрика возвращает mapping
+    с ключами prepare/download/transcribe/finalize/deliver/cleanup.
+    """
+
+    target = os.getenv("MEDIA_SERVICE_OVERRIDES")
+    if not target:
+        return None
+
+    module_name, _, attr = target.partition(":")
+    if not module_name or not attr:
+        logger.warning(
+            "MEDIA_SERVICE_OVERRIDES: некорректное значение, ожидается 'module:attr'",
+            extra={"value": target},
+        )
+        return None
+
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "MEDIA_SERVICE_OVERRIDES: не удалось импортировать модуль",
+            extra={"module": module_name, "error": str(exc)},
+        )
+        return None
+
+    value = getattr(module, attr, None)
+    if value is None:
+        logger.warning(
+            "MEDIA_SERVICE_OVERRIDES: атрибут не найден",
+            extra={"module": module_name, "attr": attr},
+        )
+        return None
+
+    if callable(value):
+        try:
+            value = value()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "MEDIA_SERVICE_OVERRIDES: фабрика завершилась ошибкой",
+                extra={"module": module_name, "attr": attr, "error": str(exc)},
+            )
+            return None
+
+    if not isinstance(value, Mapping):
+        logger.warning(
+            "MEDIA_SERVICE_OVERRIDES: ожидается mapping",
+            extra={"returned_type": type(value).__name__},
+        )
+        return None
+
+    return value
+
+
+__all__ = [
+    "BOT_TOKEN",
+    "DATABASE_URL",
+    "IN_CONTAINER",
+    "logger",
+    "load_media_service_overrides",
+]

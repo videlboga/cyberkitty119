@@ -36,6 +36,11 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
       - GOOGLE_ENCRYPTION_KEY=${GOOGLE_ENCRYPTION_KEY}
+      - MINIAPP_DEV_TELEGRAM_ID=${MINIAPP_DEV_TELEGRAM_ID}
+      - MINIAPP_DEV_FIRST_NAME=${MINIAPP_DEV_FIRST_NAME}
+      - MINIAPP_DEV_LAST_NAME=${MINIAPP_DEV_LAST_NAME}
+      - MINIAPP_DEV_USERNAME=${MINIAPP_DEV_USERNAME}
+      - MINIAPP_DEV_TIMEZONE=${MINIAPP_DEV_TIMEZONE}
       - TELEGRAM_API_ID=${TELEGRAM_API_ID}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
       - USE_LOCAL_BOT_API=true
@@ -47,6 +52,33 @@ services:
       - ./audio:/app/audio
       - ./telegram-bot-api-data:/app/telegram-bot-api-data
     restart: unless-stopped
+    networks:
+      - cyberkitty19-transkribator-network
+
+  worker:
+    build: .
+    container_name: cyberkitty19-transkribator-worker
+    depends_on:
+      - postgres
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - JOB_POLL_INTERVAL=${JOB_POLL_INTERVAL:-5}
+      - JOB_BACKOFF_MIN=${JOB_BACKOFF_MIN:-5}
+      - JOB_BACKOFF_MAX=${JOB_BACKOFF_MAX:-60}
+      - JOB_MAX_JOBS=${JOB_MAX_JOBS:-0}
+      - JOB_TYPES=${JOB_TYPES}
+      - MEDIA_SERVICE_OVERRIDES=${MEDIA_SERVICE_OVERRIDES}
+    entrypoint:
+      - python
+      - job_worker.py
+    command:
+      - --worker-id
+      - ${JOB_WORKER_ID:-worker-default}
+      - --poll-interval
+      - ${JOB_POLL_INTERVAL:-5}
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data
     networks:
       - cyberkitty19-transkribator-network
 
@@ -70,6 +102,11 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
       - GOOGLE_ENCRYPTION_KEY=${GOOGLE_ENCRYPTION_KEY}
+      - MINIAPP_DEV_TELEGRAM_ID=${MINIAPP_DEV_TELEGRAM_ID}
+      - MINIAPP_DEV_FIRST_NAME=${MINIAPP_DEV_FIRST_NAME}
+      - MINIAPP_DEV_LAST_NAME=${MINIAPP_DEV_LAST_NAME}
+      - MINIAPP_DEV_USERNAME=${MINIAPP_DEV_USERNAME}
+      - MINIAPP_DEV_TIMEZONE=${MINIAPP_DEV_TIMEZONE}
       - DATABASE_URL=${DATABASE_URL}
     volumes:
       - ./data:/app/data

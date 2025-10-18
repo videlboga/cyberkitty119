@@ -7,8 +7,9 @@ import time
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Header, Query
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Header, Query, Request
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -28,6 +29,7 @@ try:
         calculate_audio_duration, get_plans, SessionLocal
     )
     from transkribator_modules.db.models import User, ApiKey
+    from transkribator_modules.api.miniapp import router as miniapp_router
     from transkribator_modules.google_api import GoogleCredentialService, parse_state
 except ImportError as e:
     print(f"Ошибка импорта: {e}")
@@ -47,6 +49,230 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Подключаем мини-приложение API и статику, если собран дистрибутив
+app.include_router(miniapp_router, prefix="/api")
+
+MINIAPP_DIST_PATH = current_dir / "miniapp_dist"
+
+EVENTS_DASHBOARD_HTML = """<!doctype html>
+<html lang=\"ru\">
+  <head>
+    <meta charset=\"UTF-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>CyberKitty Events</title>
+    <link rel=\"preconnect\" href=\"https://fonts.googleapis.com\" />
+    <link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin />
+    <link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap\" rel=\"stylesheet\" />
+    <script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js\"></script>
+    <style>
+      body {font-family: 'Inter', sans-serif; margin: 0; padding: 24px; background: #0f172a; color: #e2e8f0;}
+      h1 {margin-bottom: 8px;}
+      .controls {display: flex; gap: 12px; align-items: center; margin-bottom: 20px;}
+      label {font-size: 14px;}
+      select {padding: 6px 10px; border-radius: 6px; border: none;}
+      .summary {margin-bottom: 20px; font-size: 14px;}
+      table {width: 100%; border-collapse: collapse; margin-top: 20px;}
+      th, td {padding: 8px 10px; border-bottom: 1px solid rgba(148, 163, 184, 0.2); font-size: 13px;}
+      th {text-align: left; background: rgba(148, 163, 184, 0.15);}
+      tr:hover {background: rgba(148, 163, 184, 0.1);}
+      #status {font-size: 13px; margin-top: 10px; color: #94a3b8;}
+    </style>
+  </head>
+  <body>
+    <h1>Активность пользователей</h1>
+    <div class=\"controls\">
+      <label for=\"hours\">Интервал:&nbsp;</label>
+      <select id=\"hours\">
+        <option value=\"1\">1 час</option>
+        <option value=\"6\" selected>6 часов</option>
+        <option value=\"12\">12 часов</option>
+        <option value=\"24\">24 часа</option>
+        <option value=\"72\">72 часа</option>
+      </select>
+      <button id=\"refresh\">Обновить</button>
+    </div>
+    <div class=\"summary\">
+      <strong>Всего событий:</strong> <span id=\"total\">–</span>
+    </div>
+    <canvas id=\"eventsChart\" height=\"140\"></canvas>
+    <p id=\"status\"></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Время</th>
+          <th>Тип</th>
+          <th>Пользователь</th>
+          <th>Телеграм ID</th>
+          <th>Детали</th>
+        </tr>
+      </thead>
+      <tbody id=\"eventsBody\"></tbody>
+    </table>
+    <script>
+      const chartCtx = document.getElementById('eventsChart');
+      let eventsChart;
+
+      function renderChart(data) {
+        const labels = data.byKind.map(item => item.kind);
+        const counts = data.byKind.map(item => item.count);
+        if (eventsChart) {
+          eventsChart.data.labels = labels;
+          eventsChart.data.datasets[0].data = counts;
+          eventsChart.update();
+          return;
+        }
+        eventsChart = new Chart(chartCtx, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [{
+              label: 'События',
+              data: counts,
+              backgroundColor: '#6366f1',
+            }],
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { display: false },
+            },
+            scales: {
+              x: { ticks: { color: '#cbd5f5' } },
+              y: { ticks: { color: '#cbd5f5', precision: 0 } },
+            },
+          },
+        });
+      }
+
+      function renderTable(data) {
+        const tbody = document.getElementById('eventsBody');
+        tbody.innerHTML = '';
+        data.events.forEach(event => {
+          const row = document.createElement('tr');
+          const payload = event.payload ? JSON.stringify(event.payload) : '';
+          row.innerHTML = `
+            <td>${new Date(event.ts).toLocaleString()}</td>
+            <td>${event.kind}</td>
+            <td>${event.username ?? ''}</td>
+            <td>${event.telegramId ?? ''}</td>
+            <td>${payload}</td>
+          `;
+          tbody.appendChild(row);
+        });
+      }
+
+      async function loadData() {
+        const hours = document.getElementById('hours').value;
+        const statusEl = document.getElementById('status');
+        statusEl.textContent = 'Загружаю…';
+        try {
+          const response = await fetch(`/api/miniapp/analytics/events?hours=${hours}`);
+          if (!response.ok) {
+            throw new Error('Ошибка загрузки');
+          }
+          const data = await response.json();
+          document.getElementById('total').textContent = data.total;
+          renderChart(data);
+          renderTable(data);
+          statusEl.textContent = `Последнее обновление: ${new Date().toLocaleTimeString()}`;
+        } catch (error) {
+          console.error(error);
+          statusEl.textContent = 'Не удалось загрузить данные';
+        }
+      }
+
+      document.getElementById('refresh').addEventListener('click', loadData);
+      document.getElementById('hours').addEventListener('change', loadData);
+      document.addEventListener('DOMContentLoaded', loadData);
+      loadData();
+    </script>
+  </body>
+</html>
+"""
+
+if MINIAPP_DIST_PATH.exists():
+    assets_dir = MINIAPP_DIST_PATH / "assets"
+    if assets_dir.exists():
+        app.mount(
+            "/miniapp/assets",
+            StaticFiles(directory=str(assets_dir)),
+            name="miniapp_assets",
+        )
+
+    def _build_version_redirect(request, target_path: str):
+        version_file = MINIAPP_DIST_PATH / "version.txt"
+        if not version_file.exists():
+            return None
+        try:
+            version_value = version_file.read_text(encoding="utf-8").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to read miniapp version", extra={"error": str(exc)})
+            return None
+
+        current_version = request.query_params.get("v")
+        logger.debug(
+            "Miniapp version check",
+            extra={
+                "target": target_path,
+                "current_version": current_version,
+                "required_version": version_value,
+            },
+        )
+        if version_value and current_version != version_value:
+            return RedirectResponse(url=f"{target_path}?v={version_value}", status_code=307)
+        return None
+
+    @app.get("/miniapp", response_class=HTMLResponse)
+    async def miniapp_index(request: Request):
+        redirect = _build_version_redirect(request, "/miniapp")
+        if redirect is not None:
+            return redirect
+        index_path = MINIAPP_DIST_PATH / "index.html"
+        if index_path.exists():
+            content = index_path.read_text(encoding="utf-8")
+            headers = {
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
+            return HTMLResponse(content=content, headers=headers)
+        raise HTTPException(status_code=404, detail="Mini app bundle not found")
+
+    @app.get("/miniapp/version.txt", response_class=HTMLResponse)
+    async def miniapp_version():
+        version_path = MINIAPP_DIST_PATH / "version.txt"
+        if version_path.exists():
+            content = version_path.read_text(encoding="utf-8")
+            headers = {
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
+            return HTMLResponse(content=content, headers=headers)
+        raise HTTPException(status_code=404, detail="Version metadata not found")
+
+    @app.get("/miniapp/{path:path}", response_class=HTMLResponse)
+    async def miniapp_catchall(path: str, request: Request):
+        if path == "version.txt":
+            return await miniapp_version()
+        redirect = _build_version_redirect(request, f"/miniapp/{path}")
+        if redirect is not None:
+            return redirect
+        index_path = MINIAPP_DIST_PATH / "index.html"
+        if index_path.exists():
+            content = index_path.read_text(encoding="utf-8")
+            headers = {
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            }
+            return HTMLResponse(content=content, headers=headers)
+        raise HTTPException(status_code=404, detail="Mini app bundle not found")
+
+    @app.get("/events-dashboard", response_class=HTMLResponse)
+    async def events_dashboard():
+        return HTMLResponse(EVENTS_DASHBOARD_HTML)
 
 # Инициализируем базу данных при запуске
 init_database()

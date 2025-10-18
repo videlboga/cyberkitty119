@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from transkribator_modules.db.database import SessionLocal
-from transkribator_modules.db.models import NoteChunk, Note
+from transkribator_modules.db.models import NoteChunk, Note, NoteEmbedding
 from transkribator_modules.search.embeddings import embed_texts, EMBEDDING_DIM
 
 CHUNK_SIZE = 800
@@ -143,6 +143,22 @@ class IndexService:
             updated += 1
         return updated
 
+    def remove(self, note_id: int, user_id: int) -> None:
+        with self.session_factory() as session:
+            session.execute(
+                delete(NoteChunk).where(
+                    NoteChunk.note_id == note_id,
+                    NoteChunk.user_id == user_id,
+                )
+            )
+            session.execute(
+                delete(NoteEmbedding).where(
+                    NoteEmbedding.note_id == note_id,
+                    NoteEmbedding.user_id == user_id,
+                )
+            )
+            session.commit()
+
     def search(self, user_id: int, query: str, k: int = 5) -> list[dict]:
         query_embedding_list = embed_texts([query or ""])[0]
         with self.session_factory() as session:
@@ -155,7 +171,10 @@ class IndexService:
                         distance.label("distance"),
                     )
                     .join(Note, Note.id == NoteChunk.note_id)
-                    .where(NoteChunk.user_id == user_id)
+                    .where(
+                        NoteChunk.user_id == user_id,
+                        Note.status != "archived",
+                    )
                     .order_by(distance)
                     .limit(k)
                 )
@@ -177,7 +196,10 @@ class IndexService:
             stmt = (
                 select(NoteChunk, Note)
                 .join(Note, Note.id == NoteChunk.note_id)
-                .where(NoteChunk.user_id == user_id)
+                .where(
+                    NoteChunk.user_id == user_id,
+                    Note.status != "archived",
+                )
             )
             rows = session.execute(stmt).all()
 

@@ -9,20 +9,22 @@ from telegram.ext import ContextTypes
 
 from transkribator_modules.config import logger
 from transkribator_modules.db.database import SessionLocal, UserService, TransactionService
-from transkribator_modules.db.models import PlanType
+from transkribator_modules.db.models import PlanType, Plan
 from transkribator_modules.payments.yukassa import YukassaPaymentService
 
 # Цены в Telegram Stars (1 Star ≈ 1.3 рубля)
 PLAN_PRICES_STARS = {
     PlanType.PRO: 230,        # 299 руб ≈ 230 Stars
-    PlanType.UNLIMITED: 538   # 699 руб ≈ 538 Stars
+    PlanType.UNLIMITED: 538,   # 699 руб ≈ 538 Stars
+    PlanType.BETA: 1307       # 1700 руб ≈ 1307 Stars
 }
 
 # Цены в рублях для ЮКассы
 PLAN_PRICES_RUB = {
     PlanType.BASIC: 0.0,       # Бесплатный план
     PlanType.PRO: 299.0,       # PRO план
-    PlanType.UNLIMITED: 699.0  # UNLIMITED план
+    PlanType.UNLIMITED: 699.0,  # UNLIMITED план
+    PlanType.BETA: 1700.0       # Super Cat
 }
 
 PLAN_DESCRIPTIONS = {
@@ -57,6 +59,16 @@ PLAN_DESCRIPTIONS = {
             "Расширенный API доступ",
             "Поддержка 24/7"
         ]
+    },
+    PlanType.BETA: {
+        "title": "Супер Кот",
+        "description": "Бета-режим, экспериментальные инструменты, приоритетная поддержка",
+        "features": [
+            "Бета-доступ и ранние возможности",
+            "Экспериментальные инструменты",
+            "Приоритетная поддержка",
+            "Агент CyberKitty"
+        ]
     }
 }
 
@@ -81,36 +93,109 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Показывает доступные тарифные планы."""
     try:
         logger.info("Вызвана функция show_payment_plans")
-        plans_text = """💎 **Тарифные планы CyberKitty Transkribator**
 
-🆓 **Бесплатный**
-• 3 генерации в месяц
-• Файлы до 50 МБ
-• Базовая поддержка
-• Старт для знакомства с сервисом
+        session = SessionLocal()
+        try:
+            plans = (
+                session.query(Plan)
+                .filter(Plan.is_active == True)
+                .all()
+            )
+        finally:
+            session.close()
 
-⭐ **PRO (299₽/месяц)**
-• 10 часов (600 минут) в месяц
-• Файлы до 500 МБ
-• Приоритетная очередь
-• Расширенные функции
+        order = {
+            PlanType.FREE.value: 0,
+            PlanType.BASIC.value: 1,
+            PlanType.PRO.value: 2,
+            PlanType.BETA.value: 3,
+            PlanType.UNLIMITED.value: 4,
+        }
 
-🚀 **UNLIMITED (699₽/месяц)**
-• Безлимитная транскрибация
-• Файлы до 2 ГБ
-• VIP поддержка 24/7
-• Полный набор функций
+        plans.sort(key=lambda p: order.get(p.name, 100))
 
-🎯 **Выберите подходящий план и получите максимум возможностей!**"""
+        plans_text_lines = ["💎 **Тарифные планы CyberKitty Transkribator**", ""]
 
-        keyboard = [
-            [InlineKeyboardButton("🆓 Остаться на бесплатном", callback_data="stay_basic")],
-            [InlineKeyboardButton("⭐ Купить PRO (Stars)", callback_data="buy_plan_pro_stars")],
-            [InlineKeyboardButton("⭐ Купить PRO (ЮКасса)", callback_data="buy_plan_pro_yukassa")],
-            [InlineKeyboardButton("🚀 Купить UNLIMITED (Stars)", callback_data="buy_plan_unlimited_stars")],
-            [InlineKeyboardButton("🚀 Купить UNLIMITED (ЮКасса)", callback_data="buy_plan_unlimited_yukassa")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")]
-        ]
+        for plan in plans:
+            price = "Бесплатно"
+            if plan.price_rub and plan.price_rub > 0:
+                price = f"{int(plan.price_rub)}₽/месяц"
+            stars_price = None
+            try:
+                enum_value = PlanType(plan.name)
+                stars_price = PLAN_PRICES_STARS.get(enum_value)
+            except ValueError:
+                enum_value = None
+
+            minutes_text = "Безлимитные минуты"
+            if plan.minutes_per_month:
+                minutes = int(plan.minutes_per_month)
+                hours = minutes / 60
+                if hours.is_integer():
+                    minutes_text = f"{int(hours)} часов ({minutes} минут) в месяц"
+                else:
+                    minutes_text = f"{minutes} минут в месяц"
+
+            features = []
+            if plan.features:
+                try:
+                    parsed = json.loads(plan.features)
+                    if isinstance(parsed, list):
+                        features = [str(item) for item in parsed]
+                    else:
+                        features = [str(parsed)]
+                except Exception:
+                    features = [plan.features]
+
+            plans_text_lines.append(f"{plan.display_name} ({price})")
+            plans_text_lines.append(f"• {minutes_text}")
+            plans_text_lines.append(f"• Файлы до {int(plan.max_file_size_mb):,} МБ".replace(",", " "))
+
+            if stars_price:
+                plans_text_lines.append(f"• Стоимость в Stars: {stars_price} ⭐")
+
+            if features:
+                for feature in features:
+                    plans_text_lines.append(f"• {feature}")
+
+            if plan.description:
+                plans_text_lines.append(f"• {plan.description}")
+
+            plans_text_lines.append("")  # пустая строка между планами
+
+        plans_text_lines.append("🎯 Выберите подходящий план и получите максимум возможностей!")
+        plans_text = "\n".join(plans_text_lines)
+
+        keyboard = [[InlineKeyboardButton("🆓 Остаться на бесплатном", callback_data="stay_basic")]]
+
+        for plan in plans:
+            name = plan.name
+            display_name = plan.display_name
+            if name == PlanType.FREE.value or name == PlanType.BASIC.value:
+                continue
+
+            enum_value = None
+            try:
+                enum_value = PlanType(name)
+            except ValueError:
+                pass
+
+            if enum_value and enum_value in PLAN_PRICES_STARS:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"{display_name} (Stars)",
+                        callback_data=f"buy_plan_{name}_stars"
+                    )
+                ])
+            if enum_value and enum_value in PLAN_PRICES_RUB and PLAN_PRICES_RUB[enum_value] > 0:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"{display_name} (ЮКасса)",
+                        callback_data=f"buy_plan_{name}_yukassa"
+                    )
+                ])
+
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="personal_cabinet")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -130,39 +215,38 @@ async def initiate_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, p
     try:
         logger.info(f"Инициируем оплату для плана: {plan_id}")
 
-        # Получаем цену в Stars для этого плана
-        plan_type = getattr(PlanType, plan_id.upper())
-        plan_prices = {
-            "pro": PLAN_PRICES_STARS.get(PlanType.PRO, 0),
-            "unlimited": PLAN_PRICES_STARS.get(PlanType.UNLIMITED, 0)
-        }
-
-        plan_info = {
-            "pro": {
-                "name": "PRO",
-                "description": "10 часов в месяц + API доступ"
-            },
-            "unlimited": {
-                "name": "UNLIMITED",
-                "description": "Безлимитно + VIP функции"
-            }
-        }
-
-        if plan_id not in plan_info or plan_id not in plan_prices:
+        try:
+            plan_type = getattr(PlanType, plan_id.upper())
+        except AttributeError:
             logger.warning(f"Неизвестный план: {plan_id}")
             await update.callback_query.edit_message_text(f"❌ Неизвестный тарифный план: {plan_id}")
             return
 
-        plan = plan_info[plan_id]
-        stars_price = plan_prices[plan_id]
+        stars_price = PLAN_PRICES_STARS.get(plan_type)
+        if not stars_price:
+            logger.warning(f"План {plan_id} недоступен для оплаты Stars")
+            await update.callback_query.edit_message_text("❌ Этот план недоступен для оплаты через Telegram Stars")
+            return
+
+        session = SessionLocal()
+        try:
+            plan_obj = session.query(Plan).filter(Plan.name == plan_type.value).first()
+        finally:
+            session.close()
+
+        meta = PLAN_DESCRIPTIONS.get(plan_type, {})
+        display_name = plan_obj.display_name if plan_obj else meta.get("title", plan_type.value.upper())
+        description = meta.get("description", "")
+        if plan_obj and plan_obj.description:
+            description = plan_obj.description
 
         # Создаем invoice для оплаты через Telegram Stars
-        prices = [LabeledPrice(label=f"План {plan['name']}", amount=stars_price)]
+        prices = [LabeledPrice(label=f"План {display_name}", amount=stars_price)]
 
         await context.bot.send_invoice(
             chat_id=update.effective_chat.id,
-            title=f"Подписка {plan['name']} - CyberKitty Transkribator",
-            description=plan['description'],
+            title=f"Подписка {display_name} - CyberKitty Transkribator",
+            description=description or f"Тариф {display_name} в CyberKitty Transkribator",
             payload=f"plan_{plan_id}",
             provider_token="",  # Для Telegram Stars оставляем пустым
             currency="XTR",  # XTR - это код для Telegram Stars
@@ -181,37 +265,30 @@ async def initiate_yukassa_payment(update: Update, context: ContextTypes.DEFAULT
     try:
         logger.info(f"Инициируем оплату через ЮКассу для плана: {plan_id}")
 
-        # Получаем цену в рублях для этого плана
-        plan_type = getattr(PlanType, plan_id.upper())
-        rub_price = PLAN_PRICES_RUB.get(plan_type, 0)
-
-        if rub_price <= 0:
-            await update.callback_query.edit_message_text("❌ Этот план недоступен для оплаты через ЮКассу")
-            return
-
-        plan_prices = {
-            "pro": PLAN_PRICES_RUB.get(PlanType.PRO, 0),
-            "unlimited": PLAN_PRICES_RUB.get(PlanType.UNLIMITED, 0)
-        }
-
-        plan_info = {
-            "pro": {
-                "name": "PRO",
-                "description": "10 часов в месяц + API доступ"
-            },
-            "unlimited": {
-                "name": "UNLIMITED",
-                "description": "Безлимитно + VIP функции"
-            }
-        }
-
-        if plan_id not in plan_info or plan_id not in plan_prices:
+        try:
+            plan_type = getattr(PlanType, plan_id.upper())
+        except AttributeError:
             logger.warning(f"Неизвестный план для ЮКассы: {plan_id}")
             await update.callback_query.edit_message_text(f"❌ Неизвестный тарифный план: {plan_id}")
             return
 
-        plan = plan_info[plan_id]
-        rub_price = plan_prices[plan_id]
+        rub_price = PLAN_PRICES_RUB.get(plan_type, 0.0)
+        if rub_price <= 0:
+            logger.warning(f"План {plan_id} недоступен для ЮКассы")
+            await update.callback_query.edit_message_text("❌ Этот план недоступен для оплаты через ЮКассу")
+            return
+
+        session = SessionLocal()
+        try:
+            plan_obj = session.query(Plan).filter(Plan.name == plan_type.value).first()
+        finally:
+            session.close()
+
+        meta = PLAN_DESCRIPTIONS.get(plan_type, {})
+        display_name = plan_obj.display_name if plan_obj else meta.get("title", plan_type.value.upper())
+        description = meta.get("description", "")
+        if plan_obj and plan_obj.description:
+            description = plan_obj.description
 
         plan_display_price = f"{rub_price:.0f} ₽"
 
@@ -222,15 +299,15 @@ async def initiate_yukassa_payment(update: Update, context: ContextTypes.DEFAULT
                 user_id=update.effective_user.id,
                 plan_type=plan_id,
                 amount=rub_price,
-                description=f"Подписка {plan['name']} - CyberKitty Transkribator"
+                description=f"Подписка {display_name} - CyberKitty Transkribator"
             )
 
             # Отправляем ссылку на оплату
             payment_text = f"""💳 **Оплата через ЮКассу**
 
-📦 **План:** {plan['name']}
+📦 **План:** {display_name}
 💰 **Сумма:** {plan_display_price}
-📝 **Описание:** {plan['description']}
+📝 **Описание:** {description or 'Подписка CyberKitty Transkribator'}
 
 🔗 **Ссылка для оплаты:**
 {payment_result['confirmation_url']}

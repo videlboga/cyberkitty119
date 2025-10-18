@@ -17,6 +17,7 @@ COPY api_server.py .
 COPY transkribator_modules/ ./transkribator_modules/
 COPY prompts_catalog.json .
 COPY implementation_plan.md .
+COPY miniapp_dist/ ./miniapp_dist/
 COPY .env .
 
 # Открываем порт для API

@@ -3,26 +3,48 @@
 """
 
 import asyncio
+import subprocess
 import tempfile
 import html
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from typing import Any
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import ContextTypes
 
-from transkribator_modules.config import (
-    logger, MAX_FILE_SIZE_MB, VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR, BOT_TOKEN, AGENT_FIRST
-)
+from transkribator_modules.agent.dialog import ingest_and_prompt, handle_instruction
 from transkribator_modules.audio.extractor import extract_audio_from_video, compress_audio_for_api
-from transkribator_modules.transcribe.transcriber_v4 import transcribe_audio, format_transcript_with_llm, _basic_local_format
-from transkribator_modules.utils.large_file_downloader import download_large_file, get_file_info
-from transkribator_modules.db.database import SessionLocal, UserService
 from transkribator_modules.beta.feature_flags import FEATURE_BETA_MODE
 from transkribator_modules.beta.handlers import (
     handle_update as handle_beta_update,
     process_text as beta_process_text,
 )
-from transkribator_modules.agent.dialog import ingest_and_prompt, handle_instruction
+from transkribator_modules.config import (
+    logger,
+    MAX_FILE_SIZE_MB,
+    VIDEOS_DIR,
+    AUDIO_DIR,
+    TRANSCRIPTIONS_DIR,
+    BOT_TOKEN,
+    AGENT_FIRST,
+    MINIAPP_PUBLIC_URL,
+)
+from transkribator_modules.db.database import SessionLocal, UserService, log_telegram_event, log_event
+from transkribator_modules.bot.commands import promo_codes_command
+from transkribator_modules.transcribe.transcriber_v4 import transcribe_audio, format_transcript_with_llm, _basic_local_format
+from transkribator_modules.utils.large_file_downloader import download_large_file, get_file_info
+
+
+@dataclass(frozen=True)
+class _YoutubeArtifacts:
+    video_path: Path
+    audio_path: Path
+    transcript: str
+    title: str
+    video_id: str
+    workspace: Path
+    info: dict[str, Any]
 
 def clean_html_entities(text: str) -> str:
     """Минимальная очистка текста: только удаление HTML-тегов.
@@ -35,6 +57,37 @@ def clean_html_entities(text: str) -> str:
 # Поддерживаемые форматы
 VIDEO_FORMATS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.3gp'}
 AUDIO_FORMATS = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus'}
+
+_YOUTUBE_URL_RE = re.compile(
+    r"(https?://(?:www\.)?(?:youtube\.com/(?:watch\?v=|shorts/)[\w-]+(?:[^\s]*)?|youtu\.be/[\w-]+(?:[^\s]*)?))",
+    re.IGNORECASE,
+)
+
+def _schedule_background_task(
+    context: ContextTypes.DEFAULT_TYPE,
+    coro,  # type: ignore[var-annotated]
+    *,
+    description: str,
+) -> None:
+    """Запускает корутину в фоне и логирует необработанные исключения."""
+
+    task = context.application.create_task(coro)
+
+    def _on_done(finished_task: asyncio.Task) -> None:
+        try:
+            finished_task.result()
+        except asyncio.CancelledError:
+            logger.info(
+                "Фоновая задача отменена",
+                extra={"description": description},
+            )
+        except Exception as exc:  # noqa: BLE001 - хотим видеть стек
+            logger.exception(
+                "Ошибка фоновой задачи",
+                extra={"description": description, "error": str(exc)},
+            )
+
+    task.add_done_callback(_on_done)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start"""
@@ -59,7 +112,32 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 Отправьте /help для подробной помощи."""
 
-    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🚀 Открыть веб-приложение",
+                web_app=WebAppInfo(url=MINIAPP_PUBLIC_URL),
+            )
+        ]
+    ])
+
+    if update.message:
+        await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=keyboard)
+    else:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=welcome_text,
+            parse_mode='Markdown',
+            reply_markup=keyboard,
+        )
+    try:
+        log_telegram_event(
+            update.effective_user,
+            "command_start",
+            {"chat_id": update.effective_chat.id if update.effective_chat else None},
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to log /start event", exc_info=True)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /help"""
@@ -95,6 +173,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 Просто отправьте файл и я начну обработку! 🚀"""
 
     await update.message.reply_text(help_text, parse_mode='Markdown')
+    try:
+        log_telegram_event(
+            update.effective_user,
+            "command_help",
+            {"chat_id": update.effective_chat.id if update.effective_chat else None},
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to log /help event", exc_info=True)
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /status"""
@@ -116,6 +202,14 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 Готов к работе! 🚀"""
 
     await update.message.reply_text(status_text, parse_mode='Markdown')
+    try:
+        log_telegram_event(
+            update.effective_user,
+            "command_status",
+            {"chat_id": update.effective_chat.id if update.effective_chat else None},
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to log /status event", exc_info=True)
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик документов (файлов)"""
@@ -139,9 +233,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     file_extension = Path(document.file_name).suffix.lower() if document.file_name else ''
 
     if file_extension in VIDEO_FORMATS:
-        await process_video_file(update, context, document)
+        _schedule_background_task(
+            context,
+            process_video_file(update, context, document),
+            description="document_video_processing",
+        )
     elif file_extension in AUDIO_FORMATS:
-        await process_audio_file(update, context, document)
+        _schedule_background_task(
+            context,
+            process_audio_file(update, context, document),
+            description="document_audio_processing",
+        )
     else:
         await update.message.reply_text(
             f"❌ Неподдерживаемый формат файла: {file_extension}\n\n"
@@ -168,7 +270,11 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    await process_video_file(update, context, video)
+    _schedule_background_task(
+        context,
+        process_video_file(update, context, video),
+        description="video_processing",
+    )
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик аудио файлов"""
@@ -188,7 +294,11 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    await process_audio_file(update, context, audio)
+    _schedule_background_task(
+        context,
+        process_audio_file(update, context, audio),
+        description="audio_processing",
+    )
 
 async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE, video_file, beta_enabled: bool | None = None) -> None:
     """Обрабатывает видео файл"""
@@ -386,6 +496,18 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     user_service.add_usage(user, duration_minutes)
 
                     logger.info(f"✅ Транскрипция сохранена для пользователя {user.telegram_id}")
+                    try:
+                        log_event(
+                            user,
+                            "video_transcription_saved",
+                            {
+                                "filename": filename,
+                                "duration_minutes": duration_minutes,
+                                "file_size_mb": file_size_mb,
+                            },
+                        )
+                    except Exception:
+                        logger.debug("Failed to log video transcription event", exc_info=True)
 
                 finally:
                     db.close()
@@ -657,6 +779,18 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     user_service.add_usage(user, duration_minutes)
 
                     logger.info(f"✅ Транскрипция сохранена для пользователя {user.telegram_id}")
+                    try:
+                        log_event(
+                            user,
+                            "audio_transcription_saved",
+                            {
+                                "filename": filename,
+                                "duration_minutes": duration_minutes,
+                                "file_size_mb": file_size_mb,
+                            },
+                        )
+                    except Exception:
+                        logger.debug("Failed to log audio transcription event", exc_info=True)
 
                 finally:
                     db.close()
@@ -751,6 +885,280 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 # Убрали обработчик кнопок сырой транскрипции по требованию — сосредотачиваемся на основной выдаче
 
+
+def _extract_youtube_links(text: str) -> list[str]:
+    if not text:
+        return []
+    return [match.group(1) for match in _YOUTUBE_URL_RE.finditer(text)]
+
+
+async def _handle_youtube_link(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    url: str,
+    beta_enabled: bool,
+) -> None:
+    status_msg = None
+    artifacts: _YoutubeArtifacts | None = None
+    is_group = update.effective_chat and update.effective_chat.type in ("group", "supergroup")
+    try:
+        if not is_group:
+            status_msg = await update.message.reply_text(
+                "🎬 Нашёл ссылку на YouTube, готовлю обработку…",
+                disable_web_page_preview=True,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Не удалось отправить статусное сообщение по YouTube", extra={"error": str(exc)})
+
+    try:
+        artifacts = await _process_youtube_ingest(update, url, status_msg)
+        transcript = (artifacts.transcript or "").strip()
+        summary = artifacts.title or "YouTube видео"
+        filename = artifacts.video_path.name
+        file_size_mb = artifacts.video_path.stat().st_size / (1024 * 1024)
+
+        if not transcript:
+            warning_text = "⚠️ Не удалось получить аудио из ролика или транскрипция пустая."
+            if status_msg:
+                await _safe_edit_message(status_msg, warning_text)
+            else:
+                await update.message.reply_text(warning_text)
+            return
+
+        if AGENT_FIRST:
+            if status_msg:
+                await status_msg.edit_text("✅ Транскрипция готова! Открываю диалог…")
+            await ingest_and_prompt(update, context, transcript, source='video')
+            return
+
+        if beta_enabled:
+            if status_msg:
+                await status_msg.edit_text("✅ Транскрипция готова! Открываю меню обработки…")
+            await beta_process_text(update, context, transcript, source='video')
+            return
+
+        logger.info("Запускаю LLM-форматирование транскрипта (youtube)")
+        formatted_transcript = None
+        try:
+            formatted_transcript = await format_transcript_with_llm(transcript)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("LLM-форматирование (youtube) исключение: %s", exc)
+        if not formatted_transcript:
+            logger.info("LLM недоступен/неверный ключ — применяю локальное форматирование для YouTube")
+            formatted_transcript = _basic_local_format(transcript)
+
+        if formatted_transcript and formatted_transcript.strip():
+            transcript_path = TRANSCRIPTIONS_DIR / f"youtube_transcript_{artifacts.video_id}.txt"
+            transcript_path.write_text(formatted_transcript, encoding='utf-8')
+
+            try:
+                from transkribator_modules.db.database import (
+                    SessionLocal as _SessionLocal,
+                    TranscriptionService,
+                    get_media_duration,
+                )
+
+                db = _SessionLocal()
+                try:
+                    user_service = UserService(db)
+                    transcription_service = TranscriptionService(db)
+                    user = user_service.get_or_create_user(
+                        telegram_id=update.effective_user.id,
+                        username=update.effective_user.username,
+                        first_name=update.effective_user.first_name,
+                        last_name=update.effective_user.last_name,
+                    )
+
+                    can_use, limit_message = user_service.check_usage_limit(user)
+                    if not can_use:
+                        if status_msg:
+                            await status_msg.edit_text(f"❌ {limit_message}")
+                        else:
+                            await update.message.reply_text(f"❌ {limit_message}")
+                        return
+
+                    duration_minutes = get_media_duration(str(artifacts.audio_path))
+                    transcription_service.save_transcription(
+                        user=user,
+                        filename=filename,
+                        file_size_mb=file_size_mb,
+                        audio_duration_minutes=duration_minutes,
+                        raw_transcript=transcript,
+                        formatted_transcript=formatted_transcript,
+                        processing_time=0.0,
+                        transcription_service="deepinfra",
+                        formatting_service="llm" if formatted_transcript != transcript else "none",
+                    )
+                    user_service.add_usage(user, duration_minutes)
+                    logger.info(
+                        "✅ Транскрипция YouTube сохранена для пользователя %s",
+                        user.telegram_id,
+                    )
+                finally:
+                    db.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Ошибка при сохранении транскрипции YouTube: %s", exc)
+
+            if status_msg:
+                await status_msg.edit_text("✅ Транскрипция готова!")
+
+            clean_text = clean_html_entities(formatted_transcript)
+            logger.info("Длина транскрипции YouTube: %s символов", len(formatted_transcript))
+
+            from docx import Document
+
+            TRANSCRIPTIONS_DIR.mkdir(parents=True, exist_ok=True)
+            docx_path = TRANSCRIPTIONS_DIR / f"transcript_youtube_{artifacts.video_id}.docx"
+            document = Document()
+            document.add_heading(summary, level=1)
+            document.add_paragraph(f"Источник: {url}")
+            document.add_paragraph("")
+            for line in clean_text.splitlines():
+                document.add_paragraph(line)
+            document.save(docx_path)
+
+            with open(docx_path, 'rb') as handle:
+                await update.message.reply_document(
+                    document=handle,
+                    filename=docx_path.name,
+                    caption="📝 Транскрипция готова!\n\n@CyberKitty19_bot",
+                )
+
+            if not is_group:
+                keyboard = [
+                    [
+                        InlineKeyboardButton("🔧 Обработать", callback_data=f"process_transcript_{update.effective_user.id}"),
+                        InlineKeyboardButton("📤 Прислать ещё", callback_data=f"send_more_{update.effective_user.id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("🏠 Главное меню", callback_data=f"main_menu_{update.effective_user.id}"),
+                    ],
+                ]
+                await update.message.reply_text(
+                    "Что дальше будем с этим делать? 🤔",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+        else:
+            message = "❌ Не удалось создать транскрипцию для YouTube видео."
+            if status_msg:
+                await status_msg.edit_text(message)
+            else:
+                await update.message.reply_text(message)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Не удалось обработать YouTube ссылку",
+            extra={"error": str(exc), "url": url, "user_id": update.effective_user.id},
+        )
+        error_text = "⚠️ Не удалось обработать ссылку на YouTube. Попробуй ещё раз позже."
+        if status_msg:
+            await _safe_edit_message(status_msg, error_text)
+        else:
+            await update.message.reply_text(error_text)
+    finally:
+        if artifacts:
+            _cleanup_workspace(artifacts.workspace)
+
+
+async def _process_youtube_ingest(
+    update: Update,
+    url: str,
+    status_msg,
+) -> _YoutubeArtifacts:
+    workspace = Path(tempfile.mkdtemp(prefix="youtube_ingest_"))
+    try:
+        await _safe_edit_message(status_msg, "📥 Скачиваю видео с YouTube…")
+        download_path, info = await asyncio.to_thread(_download_youtube_media, url, workspace)
+
+        await _safe_edit_message(status_msg, "🎛️ Конвертирую аудио…")
+        wav_path = await asyncio.to_thread(_convert_to_wav, download_path)
+
+        await _safe_edit_message(status_msg, "🗣️ Транскрибирую аудио…")
+        transcript_raw = await transcribe_audio(str(wav_path))
+        transcript = (transcript_raw or "").strip()
+        title = (info.get("title") or "").strip() or "YouTube видео"
+        video_id = info.get("id") or download_path.stem
+        return _YoutubeArtifacts(
+            video_path=download_path,
+            audio_path=wav_path,
+            transcript=transcript,
+            title=title,
+            video_id=video_id,
+            workspace=workspace,
+            info=info or {},
+        )
+    except Exception:
+        _cleanup_workspace(workspace)
+        raise
+
+
+def _download_youtube_media(url: str, workspace: Path) -> tuple[Path, dict]:
+    try:
+        import yt_dlp  # type: ignore[import]
+    except ImportError as exc:  # pragma: no cover - внешняя зависимость
+        raise RuntimeError("Пакет yt-dlp не установлен для обработки ссылок YouTube.") from exc
+
+    workspace.mkdir(parents=True, exist_ok=True)
+    output_template = workspace / "%(id)s.%(ext)s"
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": str(output_template),
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+    file_path = Path(filename)
+    if not file_path.exists():
+        # yt_dlp может складывать в workspace под другим расширением
+        candidates = sorted(workspace.glob(f"{info.get('id', '')}.*"))
+        if not candidates:
+            raise FileNotFoundError("Не удалось скачать видео с YouTube")
+        file_path = candidates[0]
+    return file_path, info
+
+
+def _convert_to_wav(input_path: Path) -> Path:
+    output_path = input_path.with_suffix(".wav")
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        str(output_path),
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return output_path
+
+
+def _cleanup_workspace(path: Path) -> None:
+    for item in sorted(path.glob("**/*"), reverse=True):
+        try:
+            if item.is_file() or item.is_symlink():
+                item.unlink()
+            elif item.is_dir():
+                item.rmdir()
+        except FileNotFoundError:
+            continue
+    try:
+        path.rmdir()
+    except Exception:  # noqa: BLE001
+        logger.debug("Не удалось полностью очистить временную директорию YouTube", exc_info=True)
+
+
+async def _safe_edit_message(message, text: str) -> None:
+    if not message:
+        return
+    try:
+        await message.edit_text(text, disable_web_page_preview=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Не удалось обновить статусное сообщение", extra={"error": str(exc)})
+
 async def _is_beta_enabled(update: Update) -> bool:
     if not FEATURE_BETA_MODE:
         return False
@@ -797,7 +1205,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await handle_instruction(update, context)
         return
 
-    if FEATURE_BETA_MODE and beta_enabled and (update.message.text or update.message.caption) and not AGENT_FIRST:
+    text_content = (update.message.text or update.message.caption or "").strip()
+
+    # Команды обрабатываются телеграмом отдельно, поэтому не трогаем сообщения, начинающиеся с "@".
+    if text_content.startswith("/"):
+        return
+
+    if text_content.lower().startswith("promo"):
+        parts = text_content.split()
+        if parts:
+            # Поддерживаем как "promo CODE", так и "PROMO CODE" (без слеша).
+            context.args = parts[1:]
+            await promo_codes_command(update, context)
+            return
+
+    if FEATURE_BETA_MODE and beta_enabled and text_content and not AGENT_FIRST:
+        youtube_links = _extract_youtube_links(text_content)
+        if youtube_links:
+            logger.info("Обнаружена ссылка на YouTube, запускаю бета-ингест")
+            await _handle_youtube_link(update, context, youtube_links[0], beta_enabled)
+            return
         logger.info("Переключение обработки в бета-режим")
         await handle_beta_update(update, context)
         return
@@ -805,20 +1232,71 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Обработка видео
     if update.message.video:
         logger.info(f"Получено видео от пользователя {user_id}")
-        # Запускаем локальный обработчик видео (скачивание и обработка)
-        await process_video_file(update, context, update.message.video, beta_enabled=beta_enabled)
+        try:
+            log_telegram_event(
+                update.effective_user,
+                "message_video",
+                {
+                    "chat_id": chat_id,
+                    "file_id": update.message.video.file_id,
+                    "file_size": update.message.video.file_size,
+                    "caption": update.message.caption,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to log video message", exc_info=True)
+        _schedule_background_task(
+            context,
+            process_video_file(update, context, update.message.video, beta_enabled=beta_enabled),
+            description="message_video_processing",
+        )
         return
 
     # Обработка аудио
     if update.message.audio:
         logger.info(f"Получено аудио от пользователя {user_id}")
-        await process_audio_file(update, context, update.message.audio, beta_enabled=beta_enabled)
+        try:
+            log_telegram_event(
+                update.effective_user,
+                "message_audio",
+                {
+                    "chat_id": chat_id,
+                    "file_id": update.message.audio.file_id,
+                    "file_size": update.message.audio.file_size,
+                    "duration": update.message.audio.duration,
+                    "caption": update.message.caption,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to log audio message", exc_info=True)
+        _schedule_background_task(
+            context,
+            process_audio_file(update, context, update.message.audio, beta_enabled=beta_enabled),
+            description="message_audio_processing",
+        )
         return
 
     # Обработка голосовых сообщений
     if update.message.voice:
         logger.info(f"Получено голосовое сообщение от пользователя {user_id}")
-        await process_audio_file(update, context, update.message.voice, beta_enabled=beta_enabled)
+        try:
+            log_telegram_event(
+                update.effective_user,
+                "message_voice",
+                {
+                    "chat_id": chat_id,
+                    "file_id": update.message.voice.file_id,
+                    "file_size": update.message.voice.file_size,
+                    "duration": update.message.voice.duration,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to log voice message", exc_info=True)
+        _schedule_background_task(
+            context,
+            process_audio_file(update, context, update.message.voice, beta_enabled=beta_enabled),
+            description="voice_processing",
+        )
         return
 
     # Обработка документов (видео/аудио файлы)
@@ -829,11 +1307,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # Проверяем, является ли документ видео или аудио
         if any(ext in filename for ext in VIDEO_FORMATS):
             logger.info(f"Получен видео-документ от пользователя {user_id}: {filename}")
-            await process_video_file(update, context, document, beta_enabled=beta_enabled)
+            try:
+                log_telegram_event(
+                    update.effective_user,
+                    "message_document_video",
+                    {
+                        "chat_id": chat_id,
+                        "file_id": document.file_id,
+                        "file_size": document.file_size,
+                        "file_name": document.file_name,
+                    },
+                )
+            except Exception:
+                logger.debug("Failed to log document video", exc_info=True)
+            _schedule_background_task(
+                context,
+                process_video_file(update, context, document, beta_enabled=beta_enabled),
+                description="message_document_video_processing",
+            )
             return
         elif any(ext in filename for ext in AUDIO_FORMATS):
             logger.info(f"Получен аудио-документ от пользователя {user_id}: {filename}")
-            await process_audio_file(update, context, document, beta_enabled=beta_enabled)
+            try:
+                log_telegram_event(
+                    update.effective_user,
+                    "message_document_audio",
+                    {
+                        "chat_id": chat_id,
+                        "file_id": document.file_id,
+                        "file_size": document.file_size,
+                        "file_name": document.file_name,
+                    },
+                )
+            except Exception:
+                logger.debug("Failed to log document audio", exc_info=True)
+            _schedule_background_task(
+                context,
+                process_audio_file(update, context, document, beta_enabled=beta_enabled),
+                description="message_document_audio_processing",
+            )
             return
 
     # Если это обычное текстовое сообщение
@@ -862,8 +1374,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "🎤 Голосовые сообщения\n\n"
                     "Максимальный размер файла: 2 ГБ\n"
                     "Максимальная длительность: 4 часа\n\n"
-                "Используй /help для получения дополнительной информации!"
-            )
+                    "Используй /help для получения дополнительной информации!"
+                )
+            try:
+                log_telegram_event(
+                    update.effective_user,
+                    "message_text",
+                    {
+                        "chat_id": chat_id,
+                        "text": update.message.text,
+                    },
+                )
+            except Exception:
+                logger.debug("Failed to log text message", exc_info=True)
 
 async def handle_transcript_processing_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает текстовые сообщения с задачами для обработки транскрипции."""
