@@ -57,6 +57,13 @@ DB_PATH = Path("data/cyberkitty19_transkribator.db")
 # Карта отображаемых названий тарифов по их системным именам
 DEFAULT_PLAN_DISPLAY_NAMES = {plan["name"]: plan["display_name"] for plan in DEFAULT_PLANS}
 
+AGENT_ELIGIBLE_PLANS = {
+    PlanType.FREE.value,
+    PlanType.BASIC.value,
+    PlanType.PRO.value,
+    PlanType.UNLIMITED.value,
+}
+
 def init_database():
     """Инициализирует базу данных и создает необходимые таблицы."""
     backend = engine.url.get_backend_name()
@@ -436,7 +443,8 @@ class UserService:
                 first_name=first_name,
                 last_name=last_name,
                 current_plan=PlanType.FREE.value,
-                plan_expires_at=datetime.utcnow() + timedelta(days=7),
+                plan_expires_at=None,
+                beta_enabled=True,
             )
             self.db.add(user)
             self.db.commit()
@@ -454,8 +462,8 @@ class UserService:
             self.db.commit()
             setattr(user, "_was_created", False)
 
-        if user.current_plan == PlanType.FREE.value and not user.plan_expires_at:
-            user.plan_expires_at = (user.created_at or datetime.utcnow()) + timedelta(days=7)
+        if getattr(user, "beta_enabled", None) is None and user.current_plan in AGENT_ELIGIBLE_PLANS:
+            user.beta_enabled = True
             user.updated_at = datetime.utcnow()
             self.db.commit()
 
@@ -484,11 +492,9 @@ class UserService:
             return False, "План пользователя не найден"
 
         if user.plan_expires_at and user.plan_expires_at <= datetime.utcnow():
-            if user.current_plan == PlanType.FREE.value:
-                return False, "⏳ Бесплатный тариф доступен только 7 дней. Оформите подписку, чтобы продолжить."
             user.current_plan = PlanType.FREE.value
-            user.beta_enabled = False
-            user.plan_expires_at = datetime.utcnow() + timedelta(days=7)
+            user.beta_enabled = True
+            user.plan_expires_at = None
             user.updated_at = datetime.utcnow()
             self.db.commit()
             plan = self.get_user_plan(user)
@@ -537,7 +543,10 @@ class UserService:
 
     def set_beta_enabled(self, user: User, enabled: bool) -> None:
         """Включить или выключить бета-режим для пользователя"""
-        user.beta_enabled = enabled
+        if user.current_plan in AGENT_ELIGIBLE_PLANS:
+            user.beta_enabled = bool(enabled)
+        else:
+            user.beta_enabled = False
         user.updated_at = datetime.utcnow()
         self.db.commit()
 
@@ -554,7 +563,18 @@ class UserService:
 
     def is_beta_enabled(self, user: User) -> bool:
         """Проверить, активен ли бета-режим для пользователя"""
-        return bool(getattr(user, "beta_enabled", False))
+        allowed = user.current_plan in AGENT_ELIGIBLE_PLANS
+        if not allowed:
+            return False
+
+        current_value = getattr(user, "beta_enabled", None)
+        if current_value is None:
+            user.beta_enabled = True
+            user.updated_at = datetime.utcnow()
+            self.db.commit()
+            return True
+
+        return bool(current_value)
 
     def set_google_connected(self, user: User, connected: bool) -> None:
         """Обновить флаг подключения Google для пользователя."""
@@ -629,11 +649,11 @@ class UserService:
         now = datetime.utcnow()
 
         if new_plan == PlanType.FREE.value:
-            user.plan_expires_at = now + timedelta(days=7)
-            user.beta_enabled = False
+            user.plan_expires_at = None
         else:
             user.plan_expires_at = now + timedelta(days=30)
-            user.beta_enabled = new_plan in {PlanType.BETA.value, PlanType.UNLIMITED.value}
+
+        user.beta_enabled = new_plan in AGENT_ELIGIBLE_PLANS
 
         user.updated_at = now
 
@@ -642,6 +662,9 @@ class UserService:
             user.minutes_used_this_month = 0.0
             user.generations_used_this_month = 0
             user.last_reset_date = now
+        else:
+            # Для бесплатного тарифа отсчитываем генерации заново в текущем месяце
+            user.generations_used_this_month = min(user.generations_used_this_month, 3)
 
         self.db.commit()
         return True

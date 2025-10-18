@@ -16,7 +16,6 @@ from transkribator_modules.payments.yukassa import YukassaPaymentService
 PLAN_PRICES_STARS = {
     PlanType.PRO: 230,        # 299 руб ≈ 230 Stars
     PlanType.UNLIMITED: 538,   # 699 руб ≈ 538 Stars
-    PlanType.BETA: 1307       # 1700 руб ≈ 1307 Stars
 }
 
 # Цены в рублях для ЮКассы
@@ -24,7 +23,6 @@ PLAN_PRICES_RUB = {
     PlanType.BASIC: 0.0,       # Бесплатный план
     PlanType.PRO: 299.0,       # PRO план
     PlanType.UNLIMITED: 699.0,  # UNLIMITED план
-    PlanType.BETA: 1700.0       # Super Cat
 }
 
 PLAN_DESCRIPTIONS = {
@@ -58,16 +56,6 @@ PLAN_DESCRIPTIONS = {
             "Максимальный приоритет",
             "Расширенный API доступ",
             "Поддержка 24/7"
-        ]
-    },
-    PlanType.BETA: {
-        "title": "Супер Кот",
-        "description": "Бета-режим, экспериментальные инструменты, приоритетная поддержка",
-        "features": [
-            "Бета-доступ и ранние возможности",
-            "Экспериментальные инструменты",
-            "Приоритетная поддержка",
-            "Агент CyberKitty"
         ]
     }
 }
@@ -108,8 +96,7 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
             PlanType.FREE.value: 0,
             PlanType.BASIC.value: 1,
             PlanType.PRO.value: 2,
-            PlanType.BETA.value: 3,
-            PlanType.UNLIMITED.value: 4,
+            PlanType.UNLIMITED.value: 3,
         }
 
         plans.sort(key=lambda p: order.get(p.name, 100))
