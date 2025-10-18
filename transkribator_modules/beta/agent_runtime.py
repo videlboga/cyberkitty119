@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Protocol
 
+import re
 from zoneinfo import ZoneInfo
 
 from transkribator_modules.config import logger
@@ -457,11 +458,41 @@ def _render_final_message(
 ) -> str:
     parts: list[str] = []
     normalized_base = _normalize_response_text(base)
+    if tool_results and normalized_base:
+        lower_base = normalized_base.casefold()
+        negative_markers = (
+            "не нашёл",
+            "не нашел",
+            "ничего не нашлось",
+            "не нашла",
+            "не нашёл информации",
+            "не нашел информации",
+            "no information",
+            "no results",
+        )
+        has_negative = any(marker in lower_base for marker in negative_markers)
+        if has_negative:
+            has_positive_tool = any(
+                _extract_note_ids((result.message or ""))
+                or "нашёл заметки" in (result.message or "").casefold()
+                or "found notes" in (result.message or "").casefold()
+                for result in tool_results
+            )
+            if has_positive_tool:
+                normalized_base = ""
+    seen_note_ids = _extract_note_ids(normalized_base)
     if normalized_base:
         parts.append(normalized_base)
     for result in tool_results:
-        if result.message:
-            parts.append(result.message.strip())
+        message = (result.message or "").strip()
+        if not message:
+            continue
+        note_ids = _extract_note_ids(message)
+        if note_ids and note_ids.issubset(seen_note_ids):
+            continue
+        if note_ids:
+            seen_note_ids.update(note_ids)
+        parts.append(message)
     if suggestions:
         inline_suggestions = [item.strip() for item in suggestions if item and item.strip()]
         if inline_suggestions:
@@ -476,6 +507,9 @@ def _render_final_message(
         if fallback:
             parts.append(fallback)
     return "\n\n".join(parts).strip()
+
+
+
 
 
 AGENT_MANAGER = AgentManager()
@@ -509,6 +543,18 @@ def _shorten_progress(text: Optional[str], limit: int = 160) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 1] + "…"
+
+
+
+_NOTE_ID_RE = re.compile(r"#(\d+)")
+
+def _extract_note_ids(text: Optional[str]) -> set[int]:
+    if not text:
+        return set()
+    try:
+        return {int(match) for match in _NOTE_ID_RE.findall(text)}
+    except ValueError:
+        return set()
 
 
 def _normalize_response_text(text: Optional[str]) -> str:

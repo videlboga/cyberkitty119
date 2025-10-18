@@ -10,12 +10,18 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from transkribator_modules.config import logger
+from transkribator_modules.config import (
+    MINIAPP_NOTE_LINK_TEMPLATE,
+    MINIAPP_PROXY_QUERY_PARAM,
+    MINIAPP_PROXY_URL,
+    logger,
+)
 from transkribator_modules.db.database import SessionLocal, UserService, NoteService
 from transkribator_modules.db.models import Note, NoteStatus
 from transkribator_modules.google_api import GoogleCredentialService, ensure_tree, upload_docx
@@ -23,7 +29,7 @@ from docx import Document
 
 from ..agent_runtime import AGENT_MANAGER
 from ..note_utils import auto_finalize_note
-from ..tools import _ensure_google_credentials, _looks_like_question
+from ..tools import _ensure_google_credentials, _looks_like_question, _build_miniapp_note_link as _tools_build_note_link
 
 
 COMMAND_PREFIXES = (
@@ -536,11 +542,16 @@ def _should_create_artifact(text: str) -> bool:
 
 _MD_BULLET_RE = re.compile(r'^\s*[-*]\s+')
 _MD_ORDERED_RE = re.compile(r'^\s*(\d+)\.\s+')
+_NOTE_HASH_RE = re.compile(r'(?<![<\w/])#(\d{1,8})\b')
+
+
+def _build_miniapp_note_link(note_id: int) -> str:
+    return _tools_build_note_link(note_id)
 
 
 def _prepare_telegram_message(text: str) -> tuple[str, Optional[str]]:
     rendered = _render_markdown_like(text)
-    parse_mode = ParseMode.HTML if any(tag in rendered for tag in ('<b>', '<i>')) else None
+    parse_mode = ParseMode.HTML if "<" in rendered and ">" in rendered else None
     return rendered, parse_mode
 
 
@@ -562,44 +573,57 @@ def _render_markdown_like(text: str) -> str:
             heading = plain[2:].strip()
 
         if heading is not None:
-            lines.append(f"<b>{_escape_html(heading)}</b>")
+            lines.append(f"<b>{_render_inline_markdown(heading)}</b>")
             continue
 
         bullet_match = _MD_BULLET_RE.match(plain)
         if bullet_match:
             content = plain[bullet_match.end():].strip()
-            lines.append(f"• {_escape_html(_strip_markdown_inline(content))}")
+            lines.append(f"• {_render_inline_markdown(content)}")
             continue
 
         ordered_match = _MD_ORDERED_RE.match(plain)
         if ordered_match:
             number = ordered_match.group(1)
             content = plain[ordered_match.end():].strip()
-            lines.append(f"{number}. {_escape_html(_strip_markdown_inline(content))}")
+            lines.append(f"{number}. {_render_inline_markdown(content)}")
             continue
 
-        lines.append(_escape_html(_strip_markdown_inline(plain)))
+        lines.append(_render_inline_markdown(plain))
 
     return "\n".join(lines)
 
 
-def _strip_markdown_inline(text: str) -> str:
-    replacements = [
-        (r'\*\*(.+?)\*\*', r'\1'),
-        (r'__(.+?)__', r'\1'),
-        (r'\*(.+?)\*', r'\1'),
-        (r'_(.+?)_', r'\1'),
-        (r'`(.+?)`', r'\1'),
-    ]
-    result = text
-    for pattern, repl in replacements:
-        result = re.sub(pattern, repl, result)
-    return result
+def _render_inline_markdown(text: str) -> str:
+    escaped = _escape_html(text)
+
+    def replace_links(match: re.Match[str]) -> str:
+        label = match.group(1)
+        url = _escape_attr(match.group(2))
+        return f'<a href="{url}">{label}</a>'
+
+    rendered = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_links, escaped)
+    rendered = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', rendered)
+    rendered = re.sub(r'__(.+?)__', r'<b>\1</b>', rendered)
+    rendered = re.sub(r'\*(.+?)\*', r'<i>\1</i>', rendered)
+    rendered = re.sub(r'_(.+?)_', r'<i>\1</i>', rendered)
+    rendered = re.sub(r'`(.+?)`', r'<code>\1</code>', rendered)
+    rendered = _NOTE_HASH_RE.sub(
+        lambda match: f'<a href="{_escape_attr(_build_miniapp_note_link(int(match.group(1))))}">#{match.group(1)}</a>',
+        rendered,
+    )
+    return rendered
 
 
 
 def _escape_html(text: str) -> str:
     return (text or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def _escape_attr(value: str) -> str:
+    return (
+        value or ''
+    ).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&#39;')
 
 
 def _merge_artifact_hint(base_text: Optional[str], snapshot: _NoteSnapshot) -> str:

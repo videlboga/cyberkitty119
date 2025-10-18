@@ -10,13 +10,19 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional, TYPE_CHECKING
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
 from zoneinfo import ZoneInfo
 
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
 
-from transkribator_modules.config import FEATURE_GOOGLE_CALENDAR, logger
+from transkribator_modules.config import (
+    FEATURE_GOOGLE_CALENDAR,
+    MINIAPP_NOTE_LINK_TEMPLATE,
+    MINIAPP_PROXY_QUERY_PARAM,
+    MINIAPP_PROXY_URL,
+    logger,
+)
 from transkribator_modules.db.database import (
     EventService,
     NoteService,
@@ -24,10 +30,12 @@ from transkribator_modules.db.database import (
     UserService,
 )
 from transkribator_modules.db.models import Note, NoteStatus, User
-from transkribator_modules.google_api import (GoogleCredentialService,
-                                              calendar_create_timebox,
-                                              calendar_get_event,
-                                              calendar_update_timebox)
+from transkribator_modules.google_api import (
+    GoogleCredentialService,
+    calendar_create_timebox,
+    calendar_get_event,
+    calendar_update_timebox,
+)
 from transkribator_modules.search import IndexService
 from .content_processor import ContentProcessor
 from .presets import get_free_prompt
@@ -59,6 +67,43 @@ class AgentTool:
 
 NOTE_PREVIEW_LEN = 60
 _content_processor = ContentProcessor()
+
+
+def _build_miniapp_note_link(note_id: int) -> str:
+    """Build external link to open a note inside the Telegram mini app."""
+    path = f"notes/{note_id}"
+    if MINIAPP_NOTE_LINK_TEMPLATE:
+        encoded_path = quote(path, safe='')
+        payload_b64 = base64.urlsafe_b64encode(path.encode("utf-8")).decode("ascii").rstrip("=")
+        try:
+            return MINIAPP_NOTE_LINK_TEMPLATE.format(path=encoded_path, raw_path=path, payload=payload_b64)
+        except KeyError:
+            return MINIAPP_NOTE_LINK_TEMPLATE.format(path=encoded_path, raw_path=path)
+
+    parsed = urlparse(MINIAPP_PROXY_URL)
+    path_parts = [part for part in parsed.path.split('/') if part]
+    bot_username = path_parts[0] if path_parts else None
+    app_short_name = path_parts[1] if len(path_parts) > 1 else None
+
+    payload_b64 = base64.urlsafe_b64encode(path.encode("utf-8")).decode("ascii").rstrip("=")
+    encoded_payload = quote(payload_b64, safe='')
+
+    if bot_username and app_short_name:
+        return (
+            f"tg://resolve?"
+            f"domain={quote(bot_username, safe='')}"
+            f"&appname={quote(app_short_name, safe='')}"
+            f"&{MINIAPP_PROXY_QUERY_PARAM}={encoded_payload}"
+        )
+
+    if bot_username:
+        return f"https://t.me/{bot_username}?{MINIAPP_PROXY_QUERY_PARAM}={encoded_payload}"
+
+    existing_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    filtered_pairs = [(key, value) for key, value in existing_pairs if key != MINIAPP_PROXY_QUERY_PARAM]
+    filtered_pairs.append((MINIAPP_PROXY_QUERY_PARAM, payload_b64))
+    encoded_query = urlencode(filtered_pairs, doseq=True)
+    return urlunparse(parsed._replace(query=encoded_query))
 
 
 def _with_session(func: Callable[["AgentSession", SessionLocal, dict[str, Any]], ToolResult]) -> Callable[["AgentSession", dict[str, Any]], ToolResult]:
@@ -144,6 +189,12 @@ QUESTION_PREFIXES = (
     "чем",
     "куда",
     "откуда",
+    "покажи",
+    "найди",
+    "ищи",
+    "подскажи",
+    "покажи мне",
+    "найди мне",
 )
 
 
@@ -583,11 +634,21 @@ async def _tool_search_notes(session: "AgentSession", db, args: dict[str, Any]) 
 
     lines: list[str] = []
     notes_payload: list[dict[str, Any]] = []
+    link_entries: list[dict[str, Any]] = []
     for item in results[:5]:
         note = item.get("note", {})
         summary = note.get("summary") or (note.get("text") or "")[:120]
         note_id = note.get("id")
-        lines.append(f"• #{note_id}: {summary}")
+        if not note_id:
+            continue
+        clean_summary = " ".join(str(summary).split())
+        edit_link = _build_miniapp_note_link(note_id)
+        lines.append(f"• #{note_id}: [{clean_summary}]({edit_link})")
+        link_entries.append({
+            "note_id": note_id,
+            "url": edit_link,
+            "summary": clean_summary,
+        })
         notes_payload.append(note)
 
     answer = None
@@ -599,7 +660,8 @@ async def _tool_search_notes(session: "AgentSession", db, args: dict[str, Any]) 
         parts.append(answer)
     parts.append("Нашёл заметки:")
     parts.extend(lines)
-    return ToolResult(message="\n".join(parts))
+    details = {"note_links": link_entries} if link_entries else None
+    return ToolResult(message="\n".join(parts), details=details)
 
 
 @_with_session
