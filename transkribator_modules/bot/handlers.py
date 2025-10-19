@@ -54,6 +54,38 @@ def clean_html_entities(text: str) -> str:
         return text
     return re.sub(r'<[^>]*>', '', text)
 
+
+def _resolve_reply_target(update: Update):
+    if getattr(update, "message", None):
+        return update.message
+    if getattr(update, "callback_query", None) and update.callback_query.message:
+        return update.callback_query.message
+    return None
+
+
+async def _notify_free_quota_if_needed(update: Update, context: ContextTypes.DEFAULT_TYPE, user) -> None:
+    message_text: str | None = None
+
+    if getattr(user, "_was_created", False):
+        message_text = (
+            "🎁 В бесплатном тарифе доступны 3 видео в месяц. Используй их, чтобы попробовать все возможности."
+        )
+        setattr(user, "_was_created", False)
+    elif getattr(user, "_usage_reset", False):
+        message_text = "🔄 Лимит бесплатного тарифа обновился — снова доступны 3 бесплатные загрузки на этот месяц."
+        setattr(user, "_usage_reset", False)
+
+    if not message_text:
+        return
+
+    target = _resolve_reply_target(update)
+    if target:
+        await target.reply_text(message_text)
+    else:
+        effective_user = update.effective_user
+        if effective_user:
+            await context.bot.send_message(chat_id=effective_user.id, text=message_text)
+
 # Поддерживаемые форматы
 VIDEO_FORMATS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.3gp'}
 AUDIO_FORMATS = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma', '.opus'}
@@ -469,6 +501,7 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
                     # Проверяем лимиты использования
                     can_use, limit_message = user_service.check_usage_limit(user)
+                    await _notify_free_quota_if_needed(update, context, user)
                     if not can_use:
                         if status_msg:
                             await status_msg.edit_text(f"❌ {limit_message}")
@@ -752,6 +785,7 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
                     # Проверяем лимиты использования
                     can_use, limit_message = user_service.check_usage_limit(user)
+                    await _notify_free_quota_if_needed(update, context, user)
                     if not can_use:
                         if status_msg:
                             await status_msg.edit_text(f"❌ {limit_message}")
@@ -970,6 +1004,7 @@ async def _handle_youtube_link(
                     )
 
                     can_use, limit_message = user_service.check_usage_limit(user)
+                    await _notify_free_quota_if_needed(update, context, user)
                     if not can_use:
                         if status_msg:
                             await status_msg.edit_text(f"❌ {limit_message}")

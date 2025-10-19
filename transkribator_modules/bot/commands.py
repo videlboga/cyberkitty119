@@ -35,6 +35,31 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start: показываем нужное главное меню (как по кнопке Назад)."""
+    db = SessionLocal()
+    usage_reset = False
+    was_created = False
+    try:
+        user_service = UserService(db)
+        db_user = user_service.get_or_create_user(
+            telegram_id=update.effective_user.id,
+            username=update.effective_user.username,
+            first_name=update.effective_user.first_name,
+            last_name=update.effective_user.last_name,
+        )
+        user_service.get_usage_info(db_user)
+        usage_reset = bool(getattr(db_user, "_usage_reset", False))
+        was_created = bool(getattr(db_user, "_was_created", False))
+        setattr(db_user, "_usage_reset", False)
+        setattr(db_user, "_was_created", False)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Start command: failed to init user",
+            extra={"user_id": update.effective_user.id, "error": str(exc)},
+        )
+        usage_info = None
+    finally:
+        db.close()
+
     first_name = update.effective_user.first_name or 'котик'
     welcome_text = f"""🐱 **Мяу! Добро пожаловать в Cyberkitty19 Transkribator!**
 
@@ -55,6 +80,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 Нажми кнопку ниже, чтобы открыть личный кабинет и «Журнал», или просто пришли мне видео.
 
 *мурчит и готов к новым заметкам* 🐾"""
+
+    extra_lines: list[str] = []
+    if was_created:
+        extra_lines.append(
+            "🎁 В бесплатном тарифе доступны 3 видео в месяц. Используй их, чтобы попробовать все возможности."
+        )
+    elif usage_reset:
+        extra_lines.append(
+            "🔄 Лимит бесплатного тарифа обновился — снова доступны 3 бесплатные загрузки на этот месяц."
+        )
+
+    if extra_lines:
+        welcome_text = f"{welcome_text}\n\n" + "\n".join(extra_lines)
 
     keyboard = [
         [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],

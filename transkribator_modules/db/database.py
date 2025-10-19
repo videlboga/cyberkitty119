@@ -669,15 +669,29 @@ class UserService:
         self.db.commit()
         return True
 
-    def _reset_monthly_usage_if_needed(self, user: User) -> None:
-        """Сбросить месячное использование, если прошел месяц"""
-        if user.last_reset_date:
-            days_since_reset = (datetime.utcnow() - user.last_reset_date).days
+    def _reset_monthly_usage_if_needed(self, user: User) -> bool:
+        """Сбросить месячное использование, если прошёл месяц.
+
+        Возвращает True, если счётчики были сброшены в этом вызове.
+        """
+        reset = False
+        now = datetime.utcnow()
+
+        last_reset = getattr(user, "last_reset_date", None)
+        if last_reset:
+            days_since_reset = (now - last_reset).days
             if days_since_reset >= 30:
                 user.minutes_used_this_month = 0.0
-                user.generations_used_this_month = 0  # Сбрасываем и счетчик генераций
-                user.last_reset_date = datetime.utcnow()
+                user.generations_used_this_month = 0  # Сбрасываем и счётчик генераций
+                user.last_reset_date = now
                 self.db.commit()
+                reset = True
+        else:
+            user.last_reset_date = now
+            self.db.commit()
+
+        setattr(user, "_usage_reset", reset)
+        return reset
 
 
 class NoteService:
