@@ -492,6 +492,18 @@ class UserService:
             return False, "План пользователя не найден"
 
         if user.plan_expires_at and user.plan_expires_at <= datetime.utcnow():
+            expires_at = user.plan_expires_at
+            try:
+                from transkribator_modules.jobs.plan_reminders import (
+                    send_expired_notification,
+                )
+
+                send_expired_notification(user, expires_at)
+            except Exception as exc:  # noqa: BLE001 - уведомление не критично
+                logger.warning(
+                    "Failed to send plan expiration notice",
+                    extra={"user_id": user.id, "error": str(exc)},
+                )
             user.current_plan = PlanType.FREE.value
             user.beta_enabled = True
             user.plan_expires_at = None

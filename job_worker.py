@@ -28,6 +28,7 @@ from transkribator_modules.jobs.handlers import (
 )
 from transkribator_modules.jobs.queue import mark_job_progress
 from transkribator_modules.jobs.bootstrap import register_builtin_handlers
+from transkribator_modules.jobs.plan_reminders import send_plan_reminders
 
 
 class GracefulExit(SystemExit):
@@ -45,6 +46,8 @@ class WorkerConfig:
     max_jobs: Optional[int] = None
     backoff_min: float = 1.0
     backoff_max: float = 30.0
+    plan_reminder_interval: float = 1800.0
+    enable_plan_reminders: bool = True
 
 
 class JobWorker:
@@ -61,6 +64,7 @@ class JobWorker:
         self._last_idle_log = time.monotonic()
         self._max_jobs = config.max_jobs
         self._current_backoff = max(config.backoff_min, 0.1)
+        self._next_plan_reminder_check = 0.0
 
     def start(self) -> None:
         logger.info(
@@ -74,6 +78,7 @@ class JobWorker:
         self._start_monotonic = time.monotonic()
         try:
             while not self._shutdown:
+                self._maybe_send_plan_reminders()
                 job = acquire_job(
                     worker_id=self.config.worker_id,
                     job_types=self.config.job_types,
@@ -137,6 +142,26 @@ class JobWorker:
             )
             self._last_idle_log = now
 
+    def _maybe_send_plan_reminders(self) -> None:
+        if not self.config.enable_plan_reminders:
+            return
+        now_monotonic = time.monotonic()
+        if now_monotonic < self._next_plan_reminder_check:
+            return
+
+        interval = max(self.config.plan_reminder_interval, 300.0)
+        try:
+            sent = send_plan_reminders()
+            if sent:
+                logger.info(
+                    "Plan reminders dispatched",
+                    extra={"count": sent},
+                )
+        except Exception:  # noqa: BLE001 - log full traceback
+            logger.exception("Failed to dispatch plan reminders")
+        finally:
+            self._next_plan_reminder_check = time.monotonic() + interval
+
     def _increase_backoff(self) -> None:
         next_value = min(
             self._current_backoff * 2,
@@ -171,7 +196,7 @@ class JobWorker:
     def _handle_failure(self, job: ProcessingJob, exc: Exception) -> None:
         if isinstance(exc, UnknownJobTypeError):
             available = ", ".join(registry.available()) or "none"
-            error_message = f"Unknown job type '{exc.job_type}'. Registered handlers: {available}"
+            error_message = f"Unknown job type {exc.job_type}. Registered handlers: {available}"
             logger.error(
                 "Job failed: unknown type",
                 extra={
@@ -266,7 +291,7 @@ def build_config(argv: list[str]) -> WorkerConfig:
     parser.add_argument(
         "--service-overrides",
         default=os.environ.get("MEDIA_SERVICE_OVERRIDES"),
-        help="Override media services via 'module:attr' mapping provider.",
+        help="Override media services via module:attr mapping provider.",
     )
     parser.add_argument(
         "--dry-run",
@@ -291,9 +316,30 @@ def build_config(argv: list[str]) -> WorkerConfig:
         default=os.environ.get("JOB_BACKOFF_MAX"),
         help="Maximum idle backoff in seconds when queue is empty.",
     )
+    parser.add_argument(
+        "--plan-reminder-interval",
+        type=float,
+        default=None,
+        help="Interval in seconds between plan reminder checks (default 1800s).",
+    )
+    parser.add_argument(
+        "--disable-plan-reminders",
+        action="store_true",
+        help="Disable automatic plan expiration reminders.",
+    )
     args = parser.parse_args(argv)
 
     job_types = parse_job_types(os.environ.get("JOB_TYPES"), args.job_types)
+    plan_interval_env = os.environ.get("PLAN_REMINDER_INTERVAL")
+    if args.plan_reminder_interval is not None:
+        plan_interval = float(args.plan_reminder_interval)
+    elif plan_interval_env is not None:
+        plan_interval = float(plan_interval_env)
+    else:
+        plan_interval = 1800.0
+
+    disable_env = os.environ.get("DISABLE_PLAN_REMINDERS", "")
+    env_disable = disable_env.lower() in ("1", "true", "yes")
 
     return WorkerConfig(
         worker_id=str(args.worker_id),
@@ -315,6 +361,8 @@ def build_config(argv: list[str]) -> WorkerConfig:
             if args.backoff_max is not None
             else os.environ.get("JOB_BACKOFF_MAX", 30)
         ),
+        plan_reminder_interval=plan_interval,
+        enable_plan_reminders=not (bool(args.disable_plan_reminders) or env_disable),
     )
 
 
@@ -346,3 +394,4 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
