@@ -1,0 +1,546 @@
+{
+  "version": "1.2",
+  "generated_at": "2025-09-25T16:05:00Z",
+  "items": [
+    {
+      "id": "summary.quick_notes",
+      "title": "Короткие заметки",
+      "description": "3–4 предложения с главными идеями и действиями.",
+      "content_types": [
+        "meeting",
+        "idea",
+        "task",
+        "media",
+        "journal",
+        "other"
+      ],
+      "kind": "summary",
+      "detail": "short",
+      "tone": "neutral",
+      "output_format": "md",
+      "priority": 90,
+      "match_hints": [
+        "кратко",
+        "summary",
+        "tl;dr",
+        "итог",
+        "главное"
+      ],
+      "min_characters": 120,
+      "max_characters": 1400,
+      "requires_timecodes": false,
+      "system_prompt": "Ты делаешь короткие заметки по тексту. Выделяешь только главное и действия.",
+      "user_prompt_template": "Выдели 3–4 предложения: контекст, главный вывод, что сделать. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "summary": true,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": false,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "meeting.protocol",
+      "title": "Протокол встречи",
+      "description": "Agenda, Решения, Action items, Риски.",
+      "content_types": [
+        "meeting"
+      ],
+      "kind": "meeting",
+      "detail": "normal",
+      "tone": "neutral",
+      "output_format": "md",
+      "priority": 95,
+      "match_hints": [
+        "протокол",
+        "совещание",
+        "agenda",
+        "решени"
+      ],
+      "min_characters": 200,
+      "max_characters": null,
+      "requires_timecodes": false,
+      "system_prompt": "Ты оформляешь протоколы встреч. Структура фиксированная: Agenda, Decisions, Action items, Risks.",
+      "user_prompt_template": "Оформи протокол по шаблону: Agenda, Decisions, Action items (кто и срок), Risks. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": true,
+        "summary": false,
+        "protocol": true,
+        "bullets": false,
+        "tasks_split": false,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "meeting.action_items",
+      "title": "Action items",
+      "description": "Список поручений: ответственный, задача, срок.",
+      "content_types": [
+        "meeting",
+        "task"
+      ],
+      "kind": "meeting",
+      "detail": "short",
+      "tone": "neutral",
+      "output_format": "md",
+      "priority": 88,
+      "match_hints": [
+        "что делать",
+        "действия",
+        "action",
+        "следующие шаги"
+      ],
+      "min_characters": 150,
+      "max_characters": 1400,
+      "requires_timecodes": false,
+      "system_prompt": "Ты выделяешь конкретные action items из текста.",
+      "user_prompt_template": "Составь список action items в формате: • Ответственный — действие — срок/условие. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "summary": false,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": true,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "meeting.protocol.rich",
+      "title": "Протокол встречи (расширенный)",
+      "description": "Подробный протокол с целями, участниками, ходом обсуждения, решениями и материалами.",
+      "content_types": [
+        "meeting"
+      ],
+      "kind": "meeting",
+      "detail": "rich",
+      "tone": "neutral",
+      "output_format": "md",
+      "priority": 93,
+      "match_hints": [
+        "подробный протокол",
+        "битрикс",
+        "материалы",
+        "agenda",
+        "результаты"
+      ],
+      "min_characters": 300,
+      "max_characters": null,
+      "requires_timecodes": false,
+      "system_prompt": "Ты оформляешь расширенные протоколы встреч в стиле корпоративных ассистентов (например, Bitrix Copilot).",
+      "user_prompt_template": "Сделай подробный протокол с разделами: 1) Цель встречи; 2) Участники и роли; 3) Повестка/темы; 4) Ключевые обсуждения (по пунктам повестки); 5) Принятые решения; 6) Action items (ответственный, срок); 7) Риски/вопросы; 8) Материалы и ссылки. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": true,
+        "summary": false,
+        "protocol": true,
+        "bullets": false,
+        "tasks_split": false,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "idea.outline",
+      "title": "Идея — каркас",
+      "description": "Кратко описывает проблему, решение, ценность и next steps.",
+      "content_types": [
+        "idea"
+      ],
+      "kind": "idea",
+      "detail": "normal",
+      "tone": "product",
+      "output_format": "md",
+      "priority": 92,
+      "match_hints": [
+        "идея",
+        "концеп",
+        "hypothesis",
+        "brainstorm"
+      ],
+      "min_characters": 150,
+      "max_characters": 1800,
+      "requires_timecodes": false,
+      "system_prompt": "Ты оформляешь идеи в понятные каркасы.",
+      "user_prompt_template": "Структура: Проблема, Решение, Для кого, 3 тезиса ценности, 3 шага дальше. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "summary": false,
+        "protocol": false,
+        "bullets": true,
+        "tasks_split": false,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "task.breakdown",
+      "title": "Разбить на подзадачи",
+      "description": "Делит большую задачу на 5–7 шагов с критериями готовности.",
+      "content_types": [
+        "task",
+        "meeting"
+      ],
+      "kind": "task",
+      "detail": "normal",
+      "tone": "tech",
+      "output_format": "md",
+      "priority": 90,
+      "match_hints": [
+        "план",
+        "roadmap",
+        "подзадач",
+        "todo"
+      ],
+      "min_characters": 150,
+      "max_characters": 1800,
+      "requires_timecodes": false,
+      "system_prompt": "Ты превращаешь общую задачу в набор понятных шагов.",
+      "user_prompt_template": "Сделай таблицу: Подзадача, что сделать, критерий готовности/дедлайн. Нужна 1 строка на шаг. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "summary": false,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": true,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "task.single_card",
+      "title": "Оформить задачу",
+      "description": "Выделяет одну ключевую задачу с контекстом и шагами.",
+      "content_types": [
+        "task",
+        "idea",
+        "meeting"
+      ],
+      "kind": "task",
+      "detail": "short",
+      "tone": "neutral",
+      "output_format": "md",
+      "priority": 80,
+      "match_hints": [
+        "ticket",
+        "issue",
+        "main task"
+      ],
+      "min_characters": 120,
+      "max_characters": 900,
+      "requires_timecodes": false,
+      "system_prompt": "Ты оформляешь одну задачу в рабочую карточку.",
+      "user_prompt_template": "Карточка: Заголовок, Контекст, 3 шага, Критерий успеха. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "summary": false,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": false,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": true
+      }
+    },
+    {
+      "id": "media.highlights",
+      "title": "Конспект медиа",
+      "description": "Делит аудио/видео на главы с таймкодами и ключевыми идеями.",
+      "content_types": [
+        "media"
+      ],
+      "kind": "media",
+      "detail": "rich",
+      "tone": "neutral",
+      "output_format": "md",
+      "priority": 95,
+      "match_hints": [
+        "таймкод",
+        "видео",
+        "подкаст",
+        "прослушай"
+      ],
+      "min_characters": 200,
+      "max_characters": null,
+      "requires_timecodes": true,
+      "system_prompt": "Ты делаешь конспекты медиа с таймкодами [мм:сс] и главами.",
+      "user_prompt_template": "Выдели главы с таймкодами, 5–7 ключевых идей и 3 цитаты. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": true,
+        "summary": false,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": false,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "journal.reflection",
+      "title": "Рефлексия",
+      "description": "Фиксирует настроение, выводы и следующий шаг.",
+      "content_types": [
+        "journal"
+      ],
+      "kind": "journal",
+      "detail": "normal",
+      "tone": "journal",
+      "output_format": "md",
+      "priority": 92,
+      "match_hints": [
+        "дневник",
+        "рефлекс",
+        "эмоци"
+      ],
+      "min_characters": 120,
+      "max_characters": 900,
+      "requires_timecodes": false,
+      "system_prompt": "Ты помогаешь человеку осмыслить день и наметить шаг.",
+      "user_prompt_template": "Структура: Настроение, 3–5 тезисов, чему уделить внимание завтра, 1 шаг. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "summary": false,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": false,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "other.structure",
+      "title": "Структурировать заметку",
+      "description": "Разбивает произвольную заметку на понятные блоки и список действий.",
+      "content_types": [
+        "other",
+        "meeting",
+        "idea",
+        "task",
+        "journal"
+      ],
+      "kind": "summary",
+      "detail": "normal",
+      "tone": "neutral",
+      "output_format": "md",
+      "priority": 85,
+      "match_hints": [
+        "структур",
+        "outline",
+        "разложи"
+      ],
+      "min_characters": 120,
+      "max_characters": null,
+      "requires_timecodes": false,
+      "system_prompt": "Ты приводишь заметку в структурированный вид.",
+      "user_prompt_template": "Структура: Контекст, Основные пункты (маркированный список), Действия/следующие шаги. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "summary": false,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": false,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "custom.free_prompt",
+      "title": "Свободный промпт",
+      "description": "Пользователь вводит задачу своим текстом.",
+      "content_types": [
+        "meeting",
+        "idea",
+        "task",
+        "media",
+        "journal",
+        "other"
+      ],
+      "kind": "custom",
+      "detail": "flex",
+      "tone": "user",
+      "output_format": "dynamic",
+      "priority": 10,
+      "match_hints": [],
+      "min_characters": 0,
+      "max_characters": null,
+      "requires_timecodes": false,
+      "system_prompt": "Режим свободного промпта. Следуй инструкции пользователя.",
+      "user_prompt_template": "{user_prompt}",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "summary": false,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": false,
+        "post": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "post.social",
+      "title": "Пост для соцсетей",
+      "description": "Короткий пост в стиле Telegram/LinkedIn с призывом к действию.",
+      "content_types": [
+        "idea",
+        "meeting",
+        "journal",
+        "other"
+      ],
+      "kind": "post",
+      "detail": "short",
+      "tone": "friendly",
+      "output_format": "md",
+      "priority": 82,
+      "match_hints": [
+        "пост",
+        "linkedin",
+        "telegram",
+        "анонс",
+        "поделиться"
+      ],
+      "min_characters": 200,
+      "max_characters": 1200,
+      "requires_timecodes": false,
+      "system_prompt": "Ты превращаешь заметку в лаконичный пост для соцсетей. Пиши живо, добавляй 1-2 эмодзи.",
+      "user_prompt_template": "Сделай готовый пост: 1) захват внимания, 2) суть, 3) призыв к действию. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "post": true,
+        "summary": false,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": false,
+        "quotes": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "insight.quotes",
+      "title": "Подборка цитат",
+      "description": "Выделяет сильные цитаты и формулировки из заметки.",
+      "content_types": [
+        "meeting",
+        "idea",
+        "media",
+        "journal",
+        "other"
+      ],
+      "kind": "insight",
+      "detail": "short",
+      "tone": "neutral",
+      "output_format": "md",
+      "priority": 78,
+      "match_hints": [
+        "цитат",
+        "quote",
+        "ключевые фразы"
+      ],
+      "min_characters": 160,
+      "max_characters": 2000,
+      "requires_timecodes": false,
+      "system_prompt": "Ты выделяешь 5-7 цитат, которые можно использовать в презентациях и постах.",
+      "user_prompt_template": "Собери 5-7 ярких цитат из текста. Формат: • «Цитата» — контекст. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "quotes": true,
+        "summary": false,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": false,
+        "post": false,
+        "timed_outline": false,
+        "task_from_note": false
+      }
+    },
+    {
+      "id": "insight.timeline",
+      "title": "Таймлайн событий",
+      "description": "Хронология ключевых событий с кратким описанием.",
+      "content_types": [
+        "meeting",
+        "media",
+        "journal",
+        "other"
+      ],
+      "kind": "insight",
+      "detail": "normal",
+      "tone": "neutral",
+      "output_format": "md",
+      "priority": 80,
+      "match_hints": [
+        "таймлайн",
+        "timeline",
+        "по времени",
+        "этапы"
+      ],
+      "min_characters": 200,
+      "max_characters": 2400,
+      "requires_timecodes": false,
+      "system_prompt": "Ты строишь упорядоченный таймлайн событий. Если нет явных дат, используй относительные метки.",
+      "user_prompt_template": "Сделай таймлайн: время/этап — что произошло — вывод/следующий шаг. Текст:\n<<<\n{text}\n>>>",
+      "post_actions": {
+        "save_to_drive": true,
+        "update_sheet_index": true,
+        "create_doc": false,
+        "timed_outline": true,
+        "summary": false,
+        "protocol": false,
+        "bullets": false,
+        "tasks_split": false,
+        "post": false,
+        "quotes": false,
+        "task_from_note": false
+      }
+    }
+  ]
+}

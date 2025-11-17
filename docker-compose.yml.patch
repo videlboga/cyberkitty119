@@ -1,0 +1,17 @@
+--- docker-compose.yml.backup
++++ docker-compose.yml
+@@ -60,6 +60,11 @@
+     volumes:
+       - ./videos:/app/videos
+       - ./transcriptions:/app/transcriptions
+       - ./audio:/app/audio
+       - ./telegram-bot-api-data:/app/telegram-bot-api-data
++      - /etc/wireguard:/etc/wireguard:ro
++    cap_add:
++      - NET_ADMIN
++      - SYS_MODULE
++    sysctls:
++      - net.ipv4.conf.all.src_valid_mark=1
+     restart: unless-stopped
+     networks:
+       - cyberkitty19-transkribator-network
