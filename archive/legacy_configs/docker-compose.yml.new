@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  telegram-bot-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.telegram-bot-api
+    container_name: cyberkitty19-telegram-bot-api
+    ports:
+      - "9081:8081"
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+    volumes:
+      - ./telegram-bot-api-data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+    networks:
+      - cyberkitty19-transkribator-network
+
+  bot:
+    build: .
+    container_name: cyberkitty19-transkribator-bot
+    depends_on:
+      - telegram-bot-api
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      - USE_LOCAL_BOT_API=true
+      - LOCAL_BOT_API_URL=http://telegram-bot-api:8081
+      - DATABASE_URL=${DATABASE_URL}
+    volumes:
+      - ./videos:/app/videos
+      - ./transcriptions:/app/transcriptions
+      - ./audio:/app/audio
+    restart: unless-stopped
+    networks:
+      - cyberkitty19-transkribator-network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: cyberkitty19-transkribator-api
+    ports:
+      - "9000:8000"
+    environment:
+      - REQUIRE_BOT_TOKEN=false
+      - DEEPINFRA_API_KEY=${DEEPINFRA_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      - DATABASE_URL=${DATABASE_URL}
+    volumes:
+      - ./data:/app/data
+      - ./transcriptions:/app/transcriptions
+    restart: unless-stopped
+    networks:
+      - cyberkitty19-transkribator-network
+
+networks:
+  cyberkitty19-transkribator-network:
+    driver: bridge
+
+volumes:
+  telegram-bot-api-data:
+  videos:
+  audio:
+  transcriptions: 

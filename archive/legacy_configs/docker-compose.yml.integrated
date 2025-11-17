@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # Локальный Telegram Bot API Server
+  telegram-bot-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.telegram-bot-api
+    container_name: cyberkitty19-telegram-bot-api
+    env_file:
+      - .env
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./telegram-bot-api-data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+    networks:
+      - cyberkitty19-transkribator-network
+    command: >
+      telegram-bot-api
+      --api-id=${TELEGRAM_API_ID}
+      --api-hash=${TELEGRAM_API_HASH}
+      --local
+      --http-port=8081
+      --dir=/var/lib/telegram-bot-api
+      --temp-dir=/tmp
+      --max-file-size=2147483648
+
+  # Telegram бот (интегрированная версия с Bot API Server)
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cyberkitty19-transkribator-bot
+    env_file:
+      - .env
+    volumes:
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+      - ./telegram-bot-api-data:/app/telegram-bot-api-data:ro
+    restart: unless-stopped
+    depends_on:
+      - telegram-bot-api
+    networks:
+      - cyberkitty19-transkribator-network
+
+  # API сервер (сохраняем существующий)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: cyberkitty19-transkribator-api
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+    restart: unless-stopped
+    networks:
+      - cyberkitty19-transkribator-network
+
+networks:
+  cyberkitty19-transkribator-network:
+    driver: bridge
+
+volumes:
+  videos:
+  audio:
+  transcriptions:
+  telegram-bot-api-data: 
