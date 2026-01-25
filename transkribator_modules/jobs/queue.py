@@ -1,3 +1,38 @@
+"""Simple queue/DAO skeleton for processing jobs.
+
+This is an initial skeleton to be expanded: real implementation should use
+the project's DB session/ORM (SQLAlchemy) and proper locking semantics.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict
+
+logger = logging.getLogger(__name__)
+
+
+def enqueue_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Enqueue a job (skeleton).
+
+    For now this function returns a lightweight job dict. Later it will
+    insert into the `processing_jobs` table and return the persisted row.
+    """
+    logger.info("enqueue_job called", extra={"payload_summary": {k: payload.get(k) for k in list(payload)[:5]}})
+    job = {
+        "id": None,
+        "status": "queued",
+        "payload": payload,
+    }
+    return job
+
+
+def dequeue_job(worker_id: str) -> Dict[str, Any] | None:
+    """Skeleton dequeue: real implementation should lock a row in DB.
+
+    Returns None when queue is empty.
+    """
+    logger.debug("dequeue_job called", extra={"worker_id": worker_id})
+    return None
 """Database-backed job queue helpers."""
 
 from __future__ import annotations
