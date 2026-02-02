@@ -125,14 +125,16 @@ class YukassaPaymentService:
         """Проверяет статус платежа"""
         try:
             payment = Payment.find_one(payment_id)
+            # В SDK ЮKassa 3.x нет поля paid_at; используем безопасные поля
+            amt = getattr(payment, "amount", None)
             return {
-                "payment_id": payment.id,
-                "status": payment.status,
-                "amount": float(payment.amount.value),
-                "currency": payment.amount.currency,
-                "metadata": payment.metadata,
-                "created_at": payment.created_at,
-                "paid_at": payment.paid_at
+                "payment_id": getattr(payment, "id", payment_id),
+                "status": getattr(payment, "status", None),
+                "amount": float(getattr(amt, "value", 0.0)) if amt else 0.0,
+                "currency": getattr(amt, "currency", None) if amt else None,
+                "metadata": getattr(payment, "metadata", {}) or {},
+                "paid": getattr(payment, "paid", None),
+                "confirmation": getattr(payment, "confirmation", None),
             }
         except Exception as e:
             logger.error(f"Ошибка проверки платежа ЮKassa {payment_id}: {e}")
@@ -166,9 +168,27 @@ class YukassaPaymentService:
                 return None
 
             payment_info = self.verify_payment(payment_id)
-            if payment_info and payment_info['status'] == 'succeeded':
-                logger.info(f"Платеж {payment_id} успешно подтвержден")
+            if payment_info and payment_info.get('status') == 'succeeded':
+                logger.info(f"Платеж {payment_id} успешно подтвержден через verify_payment")
                 return payment_info
+
+            # Fallback: используем тело вебхука, если оно содержит все данные.
+            status = payment_data.get('status')
+            metadata = payment_data.get('metadata') or {}
+            amount_block = payment_data.get('amount') or {}
+            if status == 'succeeded' and metadata.get('user_id') and metadata.get('plan_type'):
+                logger.warning(
+                    "verify_payment не сработал, используем данные из webhook",
+                    extra={"payment_id": payment_id}
+                )
+                return {
+                    "payment_id": payment_id,
+                    "status": status,
+                    "amount": float(amount_block.get('value') or 0.0),
+                    "currency": amount_block.get('currency'),
+                    "metadata": metadata,
+                    "paid": payment_data.get('paid', True),
+                }
             return None
         except Exception as e:
             logger.error(f"Ошибка обработки webhook ЮKassa: {e}")

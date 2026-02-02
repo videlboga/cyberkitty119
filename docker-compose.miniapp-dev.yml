@@ -1,0 +1,13 @@
+services:
+  # HTTPS tunnel for local MiniApp dev server (Vite)
+  # Usage:
+  #   1) Start MiniApp dev server on host: cd miniapp && npm ci && npm run dev -- --host 0.0.0.0 --port 5173
+  #   2) Start tunnel: docker compose -f docker-compose.miniapp-dev.yml up -d cloudflared
+  #   3) Read tunnel URL: docker compose -f docker-compose.miniapp-dev.yml logs -f cloudflared
+  #   4) Set MINIAPP_DEV_TUNNEL_URL to the https://...trycloudflare.com URL and restart bot.
+  cloudflared:
+    image: cloudflare/cloudflared:2025.10.0
+    command: ["tunnel", "--no-autoupdate", "--url", "http://host.docker.internal:5173"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -1,12 +1,15 @@
 FROM python:3.10-slim
 
-# Установка системных зависимостей
+# Avoid interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install minimal system packages first (procps needed for sysctl access)
+# Defer large packages (ffmpeg, git) to a later layer to reduce chance of dpkg/apt transient failures
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
     wireguard-tools \
     iproute2 \
     iptables \
-    git \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -15,8 +18,41 @@ WORKDIR /app
 COPY requirements/ ./requirements/
 COPY requirements.txt .
 
-# Устанавливаем зависимости
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy pre-downloaded wheels (if any) to avoid building heavy packages inside the container
+# Create wheelhouse on the build host with: python3 -m pip download --only-binary=:all: -r requirements.txt -d wheelhouse
+COPY wheelhouse/ /wheelhouse/
+
+# Устанавливаем зависимости по группам, чтобы уменьшить пиковое потребление памяти
+# Сначала небольшой набор (core utilities) — низкий объём памяти
+RUN pip install --no-cache-dir --prefer-binary \
+    python-dotenv==1.0.1 \
+    requests==2.31.0 \
+    httpx==0.27.0 \
+    aiohttp==3.9.1 \
+    pytest==8.1.1
+
+# Затем более тяжёлые библиотеки и сервис-специфичные зависимости
+RUN pip install --no-cache-dir --prefer-binary \
+    cryptography==42.0.5 \
+    google-auth==2.28.0 \
+    google-auth-oauthlib==1.2.0 \
+    google-auth-httplib2==0.2.0 \
+    google-api-python-client==2.119.0 \
+    numpy==1.26.4 \
+    pgvector==0.2.4 \
+    python-telegram-bot[job-queue]==22.1 \
+    openai==1.14.0 \
+    sqlalchemy==2.0.25 \
+    fastapi==0.108.0 \
+    uvicorn==0.25.0 \
+    pydantic==2.5.3 \
+    alembic==1.13.1 \
+    "psycopg[binary,pool]==3.1.18" \
+    yt-dlp==2025.9.26 \
+    gdown==5.1.0 \
+    python-docx==1.1.2 \
+    yookassa==3.0.0 \
+    mega.py==1.0.8
 
 # Копируем файлы проекта
 COPY transkribator_modules/ ./transkribator_modules/
@@ -29,8 +65,16 @@ COPY .env .
 # Создаем необходимые директории
 RUN mkdir -p /app/videos /app/audio /app/transcriptions
 
+# Install heavier runtime packages (ffmpeg, git) in a separate layer after Python deps
+# This can reduce chance of apt/dpkg transient failures on constrained build hosts
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
 # Запускаем модульного бота
 # Old entrypoint
 COPY entrypoint-wg.sh /entrypoint-wg.sh
 RUN chmod +x /entrypoint-wg.sh
-CMD ["/bin/bash", "/entrypoint-wg.sh"]
+ENTRYPOINT ["/bin/bash", "/entrypoint-wg.sh"]
+CMD []

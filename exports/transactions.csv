@@ -1,0 +1,7 @@
+id,user_id,plan_type,amount_rub,amount_usd,amount_stars,currency,provider_payment_charge_id,telegram_payment_charge_id,external_payment_id,payment_method,status,created_at
+1,13,unlimited,,,100,,,,,manual_upgrade,completed,2025-09-17 19:35:58.810785
+2,43,pro,0,,230,,,,,telegram_stars,completed,2025-10-10 08:17:30.857938
+3,64,pro,299,,,,,,,manual_adjustment,completed,2025-10-23 09:39:54.027935
+4,39,unlimited,0,,538,,,,,telegram_stars,completed,2025-10-23 09:59:24.894646
+5,39,unlimited,0,,538,,,,,telegram_stars,completed,2025-11-19 10:13:24.533984
+6,217,pro,0,,230,,,,,telegram_stars,completed,2025-11-26 08:53:13.114764

@@ -90,3 +90,21 @@ backups/
 
 # Local OAuth secrets
 client_secret_*.json
+# Sensitive and environment files
+.env
+*.env
+archive/env_backups/
+client_secret_*json
+cyberkitty119.log
+1.session
+ref.db
+transkribator.db
+venv/
+videos/
+audio/
+data/
+telegram-bot-api-data/
+*.tar.gz
+# ignore local env and credentials
+.env*
+client_secret_*.json

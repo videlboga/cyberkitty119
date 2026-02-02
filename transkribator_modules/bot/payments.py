@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 
 from transkribator_modules.config import logger
 from transkribator_modules.db.database import SessionLocal, UserService, TransactionService, log_event
+from transkribator_modules.bot.logging_utils import log_step
 from transkribator_modules.db.models import PlanType, Plan
 from transkribator_modules.payments.yukassa import YukassaPaymentService
 
@@ -24,6 +25,8 @@ PLAN_PRICES_RUB = {
     PlanType.PRO: 299.0,       # PRO план
     PlanType.UNLIMITED: 699.0,  # UNLIMITED план
 }
+
+UNLIMITED_YEAR_PLAN = "unlimited_year"
 
 PLAN_DESCRIPTIONS = {
     PlanType.BASIC: {
@@ -60,7 +63,42 @@ PLAN_DESCRIPTIONS = {
     }
 }
 
+PLAN_DESCRIPTIONS_EXTRA = {
+    UNLIMITED_YEAR_PLAN: {
+        "title": "🚀 Безлимит на год",
+        "description": "Одна оплата — год доступа без ограничений",
+        "features": [
+            "12 месяцев бесконечных минут",
+            "Файлы до 2 ГБ и максимум функций",
+            "Выгода по сравнению с помесячными платежами",
+        ],
+    }
+}
+
 EXCLUDED_PLAN_TYPES = {PlanType.BETA}
+
+
+def _resolve_plan_meta(enum_value, plan_name: str) -> dict:
+    if enum_value and enum_value in PLAN_DESCRIPTIONS:
+        return PLAN_DESCRIPTIONS.get(enum_value, {})
+    return PLAN_DESCRIPTIONS_EXTRA.get(plan_name, {})
+
+
+def _get_rub_price(plan: Plan, enum_value: PlanType | None) -> float | None:
+    if getattr(plan, "price_rub", None):
+        return float(plan.price_rub)
+    if enum_value and enum_value in PLAN_PRICES_RUB:
+        return PLAN_PRICES_RUB[enum_value]
+    return None
+
+
+def _get_stars_price(plan: Plan, enum_value: PlanType | None) -> int | None:
+    if enum_value and enum_value in PLAN_PRICES_STARS:
+        return PLAN_PRICES_STARS[enum_value]
+    raw = getattr(plan, "price_stars", None)
+    if raw:
+        return int(raw)
+    return None
 
 
 def _get_target_message(update: Update):
@@ -83,6 +121,7 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Показывает доступные тарифные планы."""
     try:
         logger.info("Вызвана функция show_payment_plans")
+        log_step(update, "payments:show_plans")
 
         session = SessionLocal()
         try:
@@ -101,63 +140,29 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
             PlanType.BASIC.value: 1,
             PlanType.PRO.value: 2,
             PlanType.UNLIMITED.value: 3,
+            UNLIMITED_YEAR_PLAN: 4,
         }
 
         plans.sort(key=lambda p: order.get(p.name, 100))
 
-        plans_text_lines = ["💎 **Тарифные планы CyberKitty Transkribator**", ""]
+        plans_text = (
+            "💎 Тарифы CyberKitty Transkribator\n"
+            "🆓 Бесплатный\n"
+            "• Безлимитные минуты\n"
+            "• 3 генерации в месяц\n"
+            "• Базовое качество\n\n"
+            "💎 Профессиональный — 299₽/мес\n"
+            "• 10 часов транскрибации\n"
+            "• Приоритетная обработка\n\n"
+            "🚀 Безлимитный — 699₽/мес\n"
+            "• Полный безлимит\n"
+            "• Максимальный приоритет\n\n"
+            "🚀 Безлимит на год — 4900₽/год <s>8400₽</s>\n"
+            "• Безлимит на 12 месяцев\n"
+            "• Все функции включены"
+        )
 
-        for plan in plans:
-            price = "Бесплатно"
-            if plan.price_rub and plan.price_rub > 0:
-                price = f"{int(plan.price_rub)}₽/месяц"
-            stars_price = None
-            try:
-                enum_value = PlanType(plan.name)
-                stars_price = PLAN_PRICES_STARS.get(enum_value)
-            except ValueError:
-                enum_value = None
-
-            minutes_text = "Безлимитные минуты"
-            if plan.minutes_per_month:
-                minutes = int(plan.minutes_per_month)
-                hours = minutes / 60
-                if hours.is_integer():
-                    minutes_text = f"{int(hours)} часов ({minutes} минут) в месяц"
-                else:
-                    minutes_text = f"{minutes} минут в месяц"
-
-            features = []
-            if plan.features:
-                try:
-                    parsed = json.loads(plan.features)
-                    if isinstance(parsed, list):
-                        features = [str(item) for item in parsed]
-                    else:
-                        features = [str(parsed)]
-                except Exception:
-                    features = [plan.features]
-
-            plans_text_lines.append(f"{plan.display_name} ({price})")
-            plans_text_lines.append(f"• {minutes_text}")
-            plans_text_lines.append(f"• Файлы до {int(plan.max_file_size_mb):,} МБ".replace(",", " "))
-
-            if stars_price:
-                plans_text_lines.append(f"• Стоимость в Stars: {stars_price} ⭐")
-
-            if features:
-                for feature in features:
-                    plans_text_lines.append(f"• {feature}")
-
-            if plan.description:
-                plans_text_lines.append(f"• {plan.description}")
-
-            plans_text_lines.append("")  # пустая строка между планами
-
-        plans_text_lines.append("🎯 Выберите подходящий план и получите максимум возможностей!")
-        plans_text = "\n".join(plans_text_lines)
-
-        keyboard = [[InlineKeyboardButton("🆓 Остаться на бесплатном", callback_data="stay_basic")]]
+        keyboard = []
 
         for plan in plans:
             name = plan.name
@@ -174,14 +179,16 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if enum_value and enum_value in EXCLUDED_PLAN_TYPES:
                 continue
 
-            if enum_value and enum_value in PLAN_PRICES_STARS:
+            stars_price = _get_stars_price(plan, enum_value)
+            if stars_price:
                 keyboard.append([
                     InlineKeyboardButton(
                         f"{display_name} (Stars)",
                         callback_data=f"buy_plan_{name}_stars"
                     )
                 ])
-            if enum_value and enum_value in PLAN_PRICES_RUB and PLAN_PRICES_RUB[enum_value] > 0:
+            rub_price_value = _get_rub_price(plan, enum_value)
+            if rub_price_value and rub_price_value > 0:
                 keyboard.append([
                     InlineKeyboardButton(
                         f"{display_name} (ЮКасса)",
@@ -195,10 +202,10 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if update.callback_query:
             await update.callback_query.edit_message_text(
-                plans_text, reply_markup=reply_markup, parse_mode='Markdown'
+                plans_text, reply_markup=reply_markup, parse_mode='HTML'
             )
         else:
-            await _reply(update, context, plans_text, reply_markup=reply_markup, parse_mode='Markdown')
+            await _reply(update, context, plans_text, reply_markup=reply_markup, parse_mode='HTML')
 
     except Exception as e:
         logger.error(f"Ошибка при показе планов: {e}")
@@ -208,35 +215,41 @@ async def initiate_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, p
     """Инициирует процесс оплаты для выбранного плана."""
     try:
         logger.info(f"Инициируем оплату для плана: {plan_id}")
+        log_step(update, "payments:initiate", {"plan": plan_id})
 
+        enum_value = None
         try:
-            plan_type = getattr(PlanType, plan_id.upper())
+            enum_value = getattr(PlanType, plan_id.upper())
         except AttributeError:
-            logger.warning(f"Неизвестный план: {plan_id}")
-            await update.callback_query.edit_message_text(f"❌ Неизвестный тарифный план: {plan_id}")
+            enum_value = None
+
+        session = SessionLocal()
+        try:
+            plan_obj = session.query(Plan).filter(Plan.name == (enum_value.value if enum_value else plan_id)).first()
+        finally:
+            session.close()
+
+        if not plan_obj:
+            logger.warning(f"План не найден: {plan_id}")
+            await update.callback_query.edit_message_text("❌ Тариф временно недоступен")
             return
 
-        stars_price = PLAN_PRICES_STARS.get(plan_type)
+        stars_price = _get_stars_price(plan_obj, enum_value)
         if not stars_price:
             logger.warning(f"План {plan_id} недоступен для оплаты Stars")
             await update.callback_query.edit_message_text("❌ Этот план недоступен для оплаты через Telegram Stars")
             return
 
-        session = SessionLocal()
-        try:
-            plan_obj = session.query(Plan).filter(Plan.name == plan_type.value).first()
-        finally:
-            session.close()
-
-        meta = PLAN_DESCRIPTIONS.get(plan_type, {})
-        display_name = plan_obj.display_name if plan_obj else meta.get("title", plan_type.value.upper())
+        meta = _resolve_plan_meta(enum_value, plan_obj.name)
+        display_name = plan_obj.display_name or meta.get("title", plan_obj.name.upper())
         description = meta.get("description", "")
-        if plan_obj and plan_obj.description:
+        if plan_obj.description:
             description = plan_obj.description
 
         # Создаем invoice для оплаты через Telegram Stars
         prices = [LabeledPrice(label=f"План {display_name}", amount=stars_price)]
 
+        log_step(update, "payments:invoice_sent", {"plan": plan_obj.name, "stars": stars_price})
         await context.bot.send_invoice(
             chat_id=update.effective_chat.id,
             title=f"Подписка {display_name} - CyberKitty Transkribator",
@@ -258,31 +271,37 @@ async def initiate_yukassa_payment(update: Update, context: ContextTypes.DEFAULT
     """Инициирует процесс оплаты через ЮКассу для выбранного плана."""
     try:
         logger.info(f"Инициируем оплату через ЮКассу для плана: {plan_id}")
+        log_step(update, "payments:yukassa_init", {"plan": plan_id})
 
+        # Разрешаем планы, отсутствующие в enum, используя БД как источник истины
+        enum_value = None
+        plan_type = None
         try:
             plan_type = getattr(PlanType, plan_id.upper())
+            enum_value = plan_type
         except AttributeError:
-            logger.warning(f"Неизвестный план для ЮКассы: {plan_id}")
-            await update.callback_query.edit_message_text(f"❌ Неизвестный тарифный план: {plan_id}")
-            return
-
-        rub_price = PLAN_PRICES_RUB.get(plan_type, 0.0)
-        if rub_price <= 0:
-            logger.warning(f"План {plan_id} недоступен для ЮКассы")
-            await update.callback_query.edit_message_text("❌ Этот план недоступен для оплаты через ЮКассу")
-            return
+            plan_type = None  # DB-only plan (e.g., unlimited_year)
 
         session = SessionLocal()
         try:
-            plan_obj = session.query(Plan).filter(Plan.name == plan_type.value).first()
+            plan_obj = session.query(Plan).filter(Plan.name == (plan_type.value if plan_type else plan_id)).first()
         finally:
             session.close()
 
-        meta = PLAN_DESCRIPTIONS.get(plan_type, {})
-        display_name = plan_obj.display_name if plan_obj else meta.get("title", plan_type.value.upper())
-        description = meta.get("description", "")
-        if plan_obj and plan_obj.description:
-            description = plan_obj.description
+        if not plan_obj:
+            logger.warning(f"План не найден в БД: {plan_id}")
+            await update.callback_query.edit_message_text(f"❌ Неизвестный тарифный план: {plan_id}")
+            return
+
+        rub_price = float(plan_obj.price_rub or 0.0) if plan_obj else float(PLAN_PRICES_RUB.get(enum_value, 0.0))
+        if rub_price <= 0:
+            logger.warning(f"План {plan_id} недоступен для ЮКассы (price_rub <= 0)")
+            await update.callback_query.edit_message_text("❌ Этот план недоступен для оплаты через ЮКассу")
+            return
+
+        meta = PLAN_DESCRIPTIONS.get(enum_value, {}) if enum_value else {}
+        display_name = plan_obj.display_name if plan_obj else meta.get("title", (plan_type.value if plan_type else plan_id).upper())
+        description = (plan_obj.description or meta.get("description", "")) if plan_obj else meta.get("description", "")
 
         plan_display_price = f"{rub_price:.0f} ₽"
 
@@ -291,7 +310,7 @@ async def initiate_yukassa_payment(update: Update, context: ContextTypes.DEFAULT
             yukassa_service = YukassaPaymentService()
             payment_result = yukassa_service.create_payment(
                 user_id=update.effective_user.id,
-                plan_type=plan_id,
+                plan_type=(plan_type.value if plan_type else plan_id),
                 amount=rub_price,
                 description=f"Подписка {display_name} - CyberKitty Transkribator"
             )
@@ -324,15 +343,21 @@ async def initiate_yukassa_payment(update: Update, context: ContextTypes.DEFAULT
             )
 
             logger.info(f"Платеж ЮКассы для плана {plan_id} создан: {payment_result['payment_id']}")
+            log_step(update, "payments:yukassa_link_sent", {
+                "plan": plan_id,
+                "payment_id": payment_result['payment_id'],
+            })
 
         except Exception as yukassa_error:
             logger.error(f"Ошибка создания платежа ЮКассы: {yukassa_error}")
+            log_step(update, "payments:yukassa_error", {"plan": plan_id, "error": str(yukassa_error)})
             await update.callback_query.edit_message_text(
                 "❌ Ошибка при создании платежа через ЮКассу. Попробуйте оплатить через Telegram Stars."
             )
 
     except Exception as e:
         logger.error(f"Ошибка при инициации платежа ЮКассы: {e}")
+        log_step(update, "payments:yukassa_error", {"plan": plan_id, "error": str(e)})
         await update.callback_query.edit_message_text("❌ Ошибка при создании платежа")
 
 async def handle_pre_checkout_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -340,15 +365,11 @@ async def handle_pre_checkout_query(update: Update, context: ContextTypes.DEFAUL
     try:
         query = update.pre_checkout_query
         
-        # Логируем pre-checkout
-        try:
-            log_event(query.from_user.id, "payment_pre_checkout", {
-                "invoice_payload": query.invoice_payload,
-                "total_amount": query.total_amount,
-                "currency": query.currency,
-            })
-        except Exception:
-            logger.debug("Failed to log pre-checkout event", exc_info=True)
+        log_step(update, "payments:pre_checkout", {
+            "invoice_payload": query.invoice_payload,
+            "total_amount": query.total_amount,
+            "currency": query.currency,
+        })
 
         # Здесь можно добавить дополнительные проверки
         # Например, проверить доступность товара, валидность цены и т.д.
@@ -358,6 +379,7 @@ async def handle_pre_checkout_query(update: Update, context: ContextTypes.DEFAUL
 
     except Exception as e:
         logger.error(f"Ошибка в pre-checkout query: {e}")
+        log_step(update, "payments:pre_checkout_error", {"error": str(e)})
         await query.answer(ok=False, error_message="Произошла ошибка при обработке платежа")
 
 
@@ -372,17 +394,13 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
         # Определяем план по payload
         plan_name = payment.invoice_payload.replace("plan_", "") if payment.invoice_payload.startswith("plan_") else "pro"
         
-        # Логируем успешный платеж
-        try:
-            log_event(user_id, "payment_success", {
-                "plan": plan_name,
-                "amount": payment.total_amount,
-                "currency": payment.currency,
-                "provider": payment.provider_payment_charge_id,
-                "telegram_charge_id": payment.telegram_payment_charge_id,
-            })
-        except Exception:
-            logger.debug("Failed to log payment success event", exc_info=True)
+        log_step(update, "payments:success", {
+            "plan": plan_name,
+            "amount": payment.total_amount,
+            "currency": payment.currency,
+            "provider": payment.provider_payment_charge_id,
+            "telegram_charge_id": payment.telegram_payment_charge_id,
+        })
 
         # Обновляем подписку пользователя в базе данных
         db = SessionLocal()
@@ -404,7 +422,10 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
                 plan_type=plan_name,
                 amount_rub=amount_rub or 0.0,
                 amount_stars=amount_stars or 0,
-                payment_method="telegram_stars" if payment.currency == "XTR" else "telegram_payments"
+                payment_method="telegram_stars" if payment.currency == "XTR" else "telegram_payments",
+                currency=payment.currency,
+                provider_payment_charge_id=payment.provider_payment_charge_id,
+                telegram_payment_charge_id=payment.telegram_payment_charge_id,
             )
 
             # Обновляем план пользователя
@@ -442,9 +463,11 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await _reply(update, context, success_text, reply_markup=reply_markup)
+        log_step(update, "payments:success_delivered", {"plan": plan_name})
 
     except Exception as e:
         logger.error(f"Ошибка при обработке успешного платежа: {e}")
+        log_step(update, "payments:success_error", {"error": str(e)})
         await _reply(update, context, "❌ Произошла ошибка при активации подписки")
 
 async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -454,12 +477,7 @@ async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_
         data = query.data
         
         # Логируем payment callback
-        try:
-            log_event(update.effective_user.id, "payment_callback", {
-                "callback_data": data,
-            })
-        except Exception:
-            logger.debug("Failed to log payment callback event", exc_info=True)
+        log_step(update, "payments:callback", {"data": data})
 
         if data == "show_payment_plans":
             await show_payment_plans(update, context)
@@ -477,6 +495,7 @@ async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_
                 plan_id = data.replace("buy_plan_", "")
                 await initiate_payment(update, context, plan_id)
         elif data == "stay_basic":
+            log_step(update, "payments:stay_basic")
             await query.edit_message_text(
                 "👍 Вы остаетесь на базовом тарифе!\n\n"
                 "В любой момент можете перейти на PRO или UNLIMITED план "
@@ -487,4 +506,5 @@ async def handle_payment_callback(update: Update, context: ContextTypes.DEFAULT_
 
     except Exception as e:
         logger.error(f"Ошибка в payment callback: {e}")
+        log_step(update, "payments:callback_error", {"error": str(e)})
         await query.edit_message_text("❌ Ошибка при обработке запроса")

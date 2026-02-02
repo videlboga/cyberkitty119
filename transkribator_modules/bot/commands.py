@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from transkribator_modules.config import logger, FEATURE_BETA_MODE
+from transkribator_modules.config import logger, FEATURE_BETA_MODE, MINIAPP_EFFECTIVE_URL
 from transkribator_modules.db.database import (
     SessionLocal,
     UserService,
@@ -19,6 +19,7 @@ from transkribator_modules.db.database import (
 from transkribator_modules.beta.reminders import REMINDER_KEYBOARD
 from transkribator_modules.db.models import ApiKey, PlanType
 from transkribator_modules.utils.event_logging import log_user_action
+from transkribator_modules.bot.logging_utils import trace_handler, log_step
 
 
 def _get_target_message(update: Update):
@@ -38,6 +39,7 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, 
     return None
 
 @log_user_action("bot_command_start")
+@trace_handler("command:/start")
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start: показываем нужное главное меню (как по кнопке Назад)."""
     db = SessionLocal()
@@ -179,6 +181,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "💌 Ты пришёл по реферальной ссылке — подарок уже активирован: 14 дней плана «Реферал». Наслаждайся расширенными возможностями!",
         )
 
+@trace_handler("command:/help")
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /help"""
     help_text = """📖 **Справка по CyberKitty Transkribator**
@@ -219,6 +222,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await _reply(update, context, help_text, parse_mode='Markdown')
 
+@trace_handler("command:/status")
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /status"""
     status_text = """✅ **Статус CyberKitty Transkribator**
@@ -241,6 +245,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await _reply(update, context, status_text, parse_mode='Markdown')
 
+@trace_handler("command:/raw_transcript")
 async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /rawtranscript"""
     help_text = """📝 **Получение сырой транскрипции**
@@ -263,6 +268,7 @@ async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_T
 
     await _reply(update, context, help_text, parse_mode='Markdown')
 
+@trace_handler("command:/plans")
 async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /plans"""
     try:
@@ -275,6 +281,7 @@ async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     from transkribator_modules.bot.payments import show_payment_plans
     await show_payment_plans(update, context)
 
+@trace_handler("command:/buy")
 async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /buy — быстрый переход к покупке."""
     try:
@@ -287,6 +294,7 @@ async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     from transkribator_modules.bot.payments import show_payment_plans
     await show_payment_plans(update, context)
 
+@trace_handler("command:/stats")
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /stats"""
     try:
@@ -326,6 +334,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _reply(update, context, "❌ Не удалось получить статистику. Попробуйте позже.")
 
 
+@trace_handler("command:/timezone")
 async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         log_event(update.effective_user.id, "bot_command_timezone", {
@@ -375,6 +384,7 @@ async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         db.close()
 
 
+@trace_handler("command:/backlog")
 async def backlog_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показать пользователю заметки из бэклога и предложить разобрать их."""
     try:
@@ -422,6 +432,7 @@ async def backlog_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     finally:
         db.close()
 
+@trace_handler("command:/api")
 async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /api"""
     try:
@@ -451,6 +462,7 @@ async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await _reply(update, context, api_text, parse_mode='Markdown')
 
+@trace_handler("command:/promo")
 async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /promo"""
     try:
@@ -510,6 +522,7 @@ async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "❌ Не удалось активировать промокод. Попробуйте позже."
         )
 
+@trace_handler("command:/personal_cabinet")
 async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Личный кабинет пользователя"""
     try:
@@ -606,6 +619,13 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
             keyboard.append([InlineKeyboardButton("🔑 API ключи", callback_data="show_api_keys")])
 
         keyboard.append([InlineKeyboardButton("💡 Помощь", callback_data="show_help")])
+
+        # MiniApp доступен всегда (даём прямую ссылку)
+        try:
+            if MINIAPP_EFFECTIVE_URL:
+                keyboard.append([InlineKeyboardButton("🗂 Открыть MiniApp", url=MINIAPP_EFFECTIVE_URL)])
+        except Exception:
+            logger.debug("Не удалось добавить кнопку MiniApp в личный кабинет", exc_info=True)
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 

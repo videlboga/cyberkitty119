@@ -123,6 +123,17 @@ async def process_text(
 ) -> None:
     """Process incoming text with the conversational agent."""
 
+    try:
+        logger.info(
+            "beta.process_text: start",
+            extra={
+                "update_id": getattr(update, "update_id", None),
+                "user_id": getattr(getattr(update, "effective_user", None), "id", None),
+                "source": source,
+            },
+        )
+    except Exception:
+        pass
     user = update.effective_user
     if not user:
         return
@@ -178,6 +189,21 @@ async def process_text(
                 existing_note,
                 create_artifacts=create_artifacts,
             )
+            # Debug: log snapshot / active note context to help trace why later queries may not match
+            try:
+                logger.info(
+                    "DEBUG: process_text created/updated note",
+                    extra={
+                        "user_id": user.id,
+                        "note_id": getattr(snapshot.note, "id", None),
+                        "created": bool(snapshot.created),
+                        "source": source,
+                        "note_ts": getattr(snapshot.note, "ts", None).isoformat() if getattr(snapshot.note, "ts", None) else None,
+                        "note_summary_len": len((snapshot.note.summary or "")[:200]),
+                    },
+                )
+            except Exception:
+                logger.debug("Failed to log process_text snapshot info", exc_info=True)
             if snapshot.note and (snapshot.created or not (snapshot.note.summary and snapshot.note.summary.strip())):
                 updated_note = await auto_finalize_note(snapshot.note.id)
                 if updated_note:
@@ -257,7 +283,16 @@ async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text = message.text or message.caption
     if not text:
         return
-
+    try:
+        logger.info(
+            "beta.handle_update: route",
+            extra={
+                "update_id": getattr(update, "update_id", None),
+                "user_id": getattr(getattr(update, "effective_user", None), "id", None),
+            },
+        )
+    except Exception:
+        pass
     await process_text(update, context, text, source="message")
 
 
@@ -339,6 +374,17 @@ async def _start_progress_message(
             if not user:
                 return None
             message = await context.bot.send_message(chat_id=user.id, text=text, disable_notification=True)
+        try:
+            logger.info(
+                "beta.progress: created",
+                extra={
+                    "update_id": getattr(update, "update_id", None),
+                    "msg_id": getattr(message, "message_id", None),
+                    "chat_id": getattr(getattr(message, "chat", None), "id", None),
+                },
+            )
+        except Exception:
+            pass
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to send progress message", extra={"error": str(exc)})
         return None

@@ -782,19 +782,74 @@ async def _tool_search_notes(session: "AgentSession", db, args: dict[str, Any]) 
         return ToolResult(message="Нет запроса для поиска.")
 
     index = IndexService()
-    results = await index.search(session.user_db_id, query.strip(), k=int(args.get("k") or 3))
+    k_value = int(args.get("k") or 3)
+    results = await index.search(session.user_db_id, query.strip(), k=k_value)
+    # If there's an active note in the session, prefer it: prepend it to
+    # the results if it's not already present. This biases summaries and
+    # search-based answers toward the note the user currently has open.
+    try:
+        if session.active_note_id:
+            note_service = NoteService(db)
+            active_note = note_service.get_note(session.active_note_id)
+            if active_note and active_note.user_id == session.user_db_id:
+                active_note_id = active_note.id
+                # Build a lightweight result entry compatible with IndexService.search
+                active_entry = {
+                    "note_id": active_note_id,
+                    "chunk_index": 0,
+                    "chunk": (active_note.text or "")[:1200],
+                    "score": 1.0,
+                    "note": {
+                        "id": active_note.id,
+                        "ts": active_note.ts.isoformat() if getattr(active_note, "ts", None) else None,
+                        "type_hint": active_note.type_hint or "other",
+                        "summary": active_note.summary or "",
+                        "text": active_note.text or "",
+                        "tags": _coerce_tags(getattr(active_note, "tags", [])),
+                        "links": _coerce_links(getattr(active_note, "links", {})),
+                    },
+                }
+                if not any((item.get("note", {}) or {}).get("id") == active_note_id for item in (results or [])):
+                    results = [active_entry] + (results or [])
+    except Exception:
+        # Never fail the tool because of this biasing step
+        logger.debug("Failed to prepend active note to search results", exc_info=True)
+    # Debug: log search invocation and basic results metadata to help diagnose missing-note cases
+    try:
+        note_ids = [item.get("note", {}).get("id") for item in (results or [])][:5]
+        logger.info(
+            "DEBUG: search_notes executed",
+            extra={
+                "user_id": session.user_db_id,
+                "query": query.strip(),
+                "k": k_value,
+                "result_count": len(results or []),
+                "top_note_ids": note_ids,
+            },
+        )
+    except Exception:
+        # Don't let logging break the tool
+        logger.debug("Failed to log search_notes debug info", exc_info=True)
     if not results:
         return ToolResult(message="По запросу ничего не нашлось.")
 
     lines: list[str] = []
     notes_payload: list[dict[str, Any]] = []
     link_entries: list[dict[str, Any]] = []
-    for item in results[:5]:
+    seen: set[int] = set()
+    for item in results[: max(5, len(results))]:
         note = item.get("note", {})
         # Берём первые 120 символов summary или text
         raw_summary = note.get("summary") or note.get("text") or ""
         summary = raw_summary[:120] if raw_summary else ""
         note_id = note.get("id")
+        # Skip duplicate notes (multiple chunks from same note)
+        try:
+            if note_id in seen:
+                continue
+            seen.add(note_id)
+        except Exception:
+            pass
         if not note_id:
             continue
         clean_summary = " ".join(str(summary).split())

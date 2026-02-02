@@ -13,7 +13,7 @@ from transkribator_modules.config import (
     logger,
     GOOGLE_OAUTH_CONFIGURED,
     SHOW_GOOGLE_OAUTH_IN_MENU,
-    MINIAPP_PUBLIC_URL,
+    MINIAPP_EFFECTIVE_URL,
     TELEGRAM_REFERRAL_URL,
 )
 from transkribator_modules.db.database import (
@@ -26,6 +26,7 @@ from transkribator_modules.db.database import (
 )
 from transkribator_modules.db.models import ApiKey, PlanType
 from transkribator_modules.bot.payments import handle_payment_callback, show_payment_plans, initiate_payment, initiate_yukassa_payment
+from transkribator_modules.bot.logging_utils import log_step, trace_handler
 from transkribator_modules.google_api import (
     GoogleCredentialService,
     generate_state,
@@ -78,6 +79,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
     logger.info(f"Получен колбек: {data}")
     logger.info(f"Полный update: {update.to_dict() if hasattr(update, 'to_dict') else str(update)}")
+    log_step(update, "callback:entry", {"data": data})
 
     # Обработка различных типов колбеков
     if data.startswith("beta:"):
@@ -239,7 +241,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             })
         except Exception:
             logger.debug("Failed to log button event", exc_info=True)
-        await show_plans_callback(query, update.effective_user)
+        await show_plans_callback(update)
 
     elif data == "create_api_key":
         try:
@@ -248,7 +250,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             })
         except Exception:
             logger.debug("Failed to log button event", exc_info=True)
-        await create_api_key_callback(query, update.effective_user)
+        await create_api_key_callback(update)
 
     elif data == "list_api_keys":
         try:
@@ -257,7 +259,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             })
         except Exception:
             logger.debug("Failed to log button event", exc_info=True)
-        await list_api_keys_callback(query, update.effective_user)
+        await list_api_keys_callback(update)
 
     elif data.startswith("delete_api_key_"):
         key_id = int(data.split("_")[-1])
@@ -268,7 +270,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             })
         except Exception:
             logger.debug("Failed to log button event", exc_info=True)
-        await delete_api_key_callback(query, update.effective_user, key_id)
+        await delete_api_key_callback(update, key_id)
 
     elif data == "back_to_start":
         try:
@@ -277,7 +279,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             })
         except Exception:
             logger.debug("Failed to log button event", exc_info=True)
-        await back_to_start_callback(query, update.effective_user)
+        await back_to_start_callback(update)
 
     elif data.startswith("brief_summary_") or data.startswith("detailed_summary_"):
         await handle_summary_callback(update, context)
@@ -296,6 +298,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает личный кабинет пользователя."""
+    log_step(update, "callback:personal_cabinet")
     google_available = GOOGLE_OAUTH_CONFIGURED
     google_status = "Недоступно" if not google_available else "Не подключён ⚪"
     google_auth_url = None
@@ -456,9 +459,20 @@ async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         if update.callback_query:
-            await update.callback_query.edit_message_text(
-                cabinet_text, reply_markup=reply_markup, parse_mode='Markdown'
-            )
+            try:
+                await update.callback_query.edit_message_text(
+                    cabinet_text, reply_markup=reply_markup, parse_mode='Markdown'
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Telegram may return "Message is not modified" when user taps the same
+                # button twice (text+markup are identical). This isn't a real error.
+                if "Message is not modified" in str(exc):
+                    try:
+                        await update.callback_query.answer("Уже открыт 🐾", show_alert=False)
+                    except Exception:
+                        pass
+                else:
+                    raise
         else:
             await _reply(update, context, cabinet_text, reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -468,6 +482,7 @@ async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def disconnect_google(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Удаляет сохранённые креды Google и обновляет кабинет."""
+    log_step(update, "callback:disconnect_google")
     query = update.callback_query
     db = SessionLocal()
     try:
@@ -499,8 +514,14 @@ async def disconnect_google(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await show_personal_cabinet(update, context)
 
-async def show_plans_callback(query, user):
-    """Показать тарифные планы"""
+async def show_plans_callback(update: Update) -> None:
+    """Показать тарифные планы."""
+    log_step(update, "callback:show_plans_menu")
+    query = update.callback_query
+    if not query:
+        logger.warning("show_plans_callback called without callback query")
+        return
+
     from transkribator_modules.db.database import get_plans
 
     plans = get_plans()
@@ -536,8 +557,15 @@ async def show_plans_callback(query, user):
 
     await query.edit_message_text(plans_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-async def show_stats_callback(query, user):
-    """Показать статистику пользователя"""
+async def show_stats_callback(update: Update) -> None:
+    """Показать статистику пользователя."""
+    log_step(update, "callback:show_stats")
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        logger.warning("show_stats_callback missing context", extra={"has_query": bool(query), "user_id": getattr(user, "id", None)})
+        return
+
     db = SessionLocal()
     try:
         user_service = UserService(db)
@@ -595,8 +623,15 @@ async def show_stats_callback(query, user):
     finally:
         db.close()
 
-async def show_api_keys_callback(query, user):
-    """Показать API ключи пользователя"""
+async def show_api_keys_callback(update: Update) -> None:
+    """Показать API ключи пользователя."""
+    log_step(update, "callback:manage_api_keys")
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        logger.warning("show_api_keys_callback missing context", extra={"has_query": bool(query), "user_id": getattr(user, "id", None)})
+        return
+
     db = SessionLocal()
     try:
         user_service = UserService(db)
@@ -661,8 +696,15 @@ API доступен начиная с плана "Профессиональн�
     finally:
         db.close()
 
-async def create_api_key_callback(query, user):
-    """Создать новый API ключ"""
+async def create_api_key_callback(update: Update) -> None:
+    """Создать новый API ключ."""
+    log_step(update, "callback:create_api_key")
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        logger.warning("create_api_key_callback missing context", extra={"has_query": bool(query), "user_id": getattr(user, "id", None)})
+        return
+
     db = SessionLocal()
     try:
         user_service = UserService(db)
@@ -678,6 +720,7 @@ async def create_api_key_callback(query, user):
         ).count()
 
         if existing_keys >= 5:
+            log_step(update, "callback:create_api_key_limit", {"existing_keys": existing_keys})
             await query.edit_message_text(
                 "❌ Достигнут лимит API ключей (5 штук). Удалите неиспользуемые ключи.",
                 reply_markup=InlineKeyboardMarkup([[
@@ -720,6 +763,7 @@ curl -X POST "http://localhost:8000/transcribe" \\
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
+        log_step(update, "callback:create_api_key_success", {"api_key_id": api_key.id})
 
     except Exception as e:
         logger.error(f"Ошибка при создании API ключа: {e}")
@@ -732,8 +776,15 @@ curl -X POST "http://localhost:8000/transcribe" \\
     finally:
         db.close()
 
-async def list_api_keys_callback(query, user):
-    """Показать список API ключей для управления"""
+async def list_api_keys_callback(update: Update) -> None:
+    """Показать список API ключей для управления."""
+    log_step(update, "callback:list_api_keys")
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        logger.warning("list_api_keys_callback missing context", extra={"has_query": bool(query), "user_id": getattr(user, "id", None)})
+        return
+
     db = SessionLocal()
     try:
         user_service = UserService(db)
@@ -745,6 +796,7 @@ async def list_api_keys_callback(query, user):
         ).all()
 
         if not api_keys:
+            log_step(update, "callback:list_api_keys_empty")
             await query.edit_message_text(
                 "У вас нет активных API ключей.",
                 reply_markup=InlineKeyboardMarkup([[
@@ -752,6 +804,8 @@ async def list_api_keys_callback(query, user):
                 ]])
             )
             return
+        else:
+            log_step(update, "callback:list_api_keys_loaded", {"count": len(api_keys)})
 
         keys_text = "🔑 **Управление API ключами:**\n\n"
         keyboard = []
@@ -781,8 +835,18 @@ async def list_api_keys_callback(query, user):
     finally:
         db.close()
 
-async def delete_api_key_callback(query, user, key_id):
-    """Удалить API ключ"""
+async def delete_api_key_callback(update: Update, key_id: int) -> None:
+    """Удалить API ключ."""
+    log_step(update, "callback:delete_api_key", {"key_id": key_id})
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        logger.warning(
+            "delete_api_key_callback missing context",
+            extra={"has_query": bool(query), "user_id": getattr(user, "id", None), "key_id": key_id},
+        )
+        return
+
     db = SessionLocal()
     try:
         user_service = UserService(db)
@@ -796,6 +860,7 @@ async def delete_api_key_callback(query, user, key_id):
         ).first()
 
         if not api_key:
+            log_step(update, "callback:delete_api_key_missing", {"key_id": key_id})
             await query.edit_message_text(
                 "API ключ не найден или уже удален.",
                 reply_markup=InlineKeyboardMarkup([[
@@ -815,6 +880,7 @@ async def delete_api_key_callback(query, user, key_id):
                 InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_start")
             ]])
         )
+        log_step(update, "callback:delete_api_key_success", {"key_id": api_key.id})
 
     except Exception as e:
         logger.error(f"Ошибка при удалении API ключа: {e}")
@@ -827,8 +893,18 @@ async def delete_api_key_callback(query, user, key_id):
     finally:
         db.close()
 
-async def back_to_start_callback(query, user):
-    """Вернуться в главное меню"""
+async def back_to_start_callback(update: Update) -> None:
+    """Вернуться в главное меню."""
+    log_step(update, "callback:back_to_start")
+    query = update.callback_query
+    user = update.effective_user
+    if not query or not user:
+        logger.warning(
+            "back_to_start_callback missing context",
+            extra={"has_query": bool(query), "user_id": getattr(user, "id", None)},
+        )
+        return
+
     welcome_text = f"""🐱 **Мяу! Добро пожаловать в Cyberkitty19 Transkribator!**
 
 Привет, {user.first_name or 'котик'}! Я умный котик-транскрибатор, который превращает твои видео в текст!
@@ -857,6 +933,7 @@ async def back_to_start_callback(query, user):
 
 async def show_api_keys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает API ключи пользователя."""
+    log_step(update, "callback:show_api_keys")
     try:
         api_text = """🔑 **API ключи**
 
@@ -893,6 +970,7 @@ async def show_api_keys(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def enter_promo_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Предлагает ввести промокод."""
+    log_step(update, "callback:enter_promo")
     try:
         log_telegram_event(
             update.effective_user,
@@ -935,6 +1013,7 @@ async def handle_summary_callback(update: Update, context: ContextTypes.DEFAULT_
     """Обрабатывает кнопки краткого и детального саммари."""
     query = update.callback_query
     await query.answer()
+    log_step(update, "callback:summary", {"data": query.data})
     
     # Логируем событие
     try:
@@ -1055,6 +1134,7 @@ async def handle_process_transcript_callback(update: Update, context: ContextTyp
     """Обрабатывает кнопку 'Обработать транскрипцию'."""
     query = update.callback_query
     await query.answer()
+    log_step(update, "callback:process_transcript")
     
     # Логируем событие
     try:
@@ -1089,6 +1169,7 @@ async def handle_send_more_callback(update: Update, context: ContextTypes.DEFAUL
     """Обрабатывает кнопку 'Прислать ещё'."""
     query = update.callback_query
     await query.answer()
+    log_step(update, "callback:send_more")
     
     # Логируем событие
     try:
@@ -1124,6 +1205,7 @@ async def handle_main_menu_callback(update: Update, context: ContextTypes.DEFAUL
     """Обрабатывает кнопку 'Главное меню'."""
     query = update.callback_query
     await query.answer()
+    log_step(update, "callback:main_menu")
     
     # Логируем событие
     try:
@@ -1135,7 +1217,7 @@ async def handle_main_menu_callback(update: Update, context: ContextTypes.DEFAUL
 
     try:
         # Возвращаемся в главное меню
-        await back_to_start_callback(query, update.effective_user)
+        await back_to_start_callback(update)
 
     except Exception as e:
         logger.error(f"Ошибка при обработке кнопки 'Главное меню': {e}")
@@ -1145,6 +1227,7 @@ async def handle_main_menu_callback(update: Update, context: ContextTypes.DEFAUL
 async def toggle_beta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+    log_step(update, "callback:toggle_beta")
 
     user = update.effective_user
     if not user:

@@ -76,7 +76,20 @@ def _already_sent(
     user_id: int,
     kind: str,
     plan_expires_at: datetime,
+    now: Optional[datetime] = None,
 ) -> bool:
+    """Return True if a notification of this kind was already recorded for the
+    given user and plan expiry.
+
+    Checks two things:
+    - Whether an Event exists with a payload matching the exact plan_expires_at
+      (legacy behaviour), and
+    - Whether any Event of the same kind was recorded within the last 24 hours
+      (prevents repeated reminders from multiple worker processes).
+    """
+    now = now or datetime.utcnow()
+
+    # 1) exact-match on payload (existing behaviour)
     threshold = plan_expires_at - timedelta(days=60)
     query = (
         session.query(Event)
@@ -96,6 +109,18 @@ def _already_sent(
             continue
         if payload.get("plan_expires_at") == target_iso:
             return True
+
+    # 2) any recent event of the same kind within 24 hours -> treat as already sent
+    recent_cutoff = now - timedelta(days=1)
+    recent = (
+        session.query(Event)
+        .filter(Event.user_id == user_id, Event.kind == kind, Event.ts >= recent_cutoff)
+        .order_by(Event.ts.desc())
+        .first()
+    )
+    if recent:
+        return True
+
     return False
 
 
@@ -220,7 +245,7 @@ def collect_plan_notifications(
         if expires_at <= now:
             if now - expires_at > EXPIRED_LOOKBACK:
                 continue
-            if _already_sent(session, user.id, EXPIRED_KIND, expires_at):
+            if _already_sent(session, user.id, EXPIRED_KIND, expires_at, now=now):
                 continue
             message = _expired_message(user, expires_at, plan_name)
             notifications.append(
@@ -236,7 +261,7 @@ def collect_plan_notifications(
 
         remaining = expires_at - now
         if remaining <= PRE_EXPIRY_WINDOW:
-            if _already_sent(session, user.id, PRE_EXPIRY_KIND, expires_at):
+            if _already_sent(session, user.id, PRE_EXPIRY_KIND, expires_at, now=now):
                 continue
             message = _pre_expiry_message(user, now, expires_at, plan_name)
             notifications.append(
@@ -254,13 +279,10 @@ def collect_plan_notifications(
 
 def send_plan_reminders(now: Optional[datetime] = None) -> int:
     """Collect and send plan notifications. Returns number of messages sent."""
-    session = SessionLocal()
-    try:
-        notifications = collect_plan_notifications(session, now=now)
-    finally:
-        session.close()
-
-    return _dispatch_notifications(notifications)
+    # EMERGENCY: temporarily disable plan reminders to stop spam.
+    # This is a short-lived hotfix — revert after investigating root cause.
+    logger.warning("Plan reminders temporarily disabled by emergency hotfix; no messages will be sent")
+    return 0
 
 
 def send_expired_notification(user: User, plan_expires_at: datetime) -> bool:
@@ -278,7 +300,7 @@ def send_expired_notification(user: User, plan_expires_at: datetime) -> bool:
         if user.current_plan == PlanType.FREE.value:
             # User already downgraded; still check whether we owe a reminder.
             pass
-        if _already_sent(session, user.id, EXPIRED_KIND, plan_expires_at):
+        if _already_sent(session, user.id, EXPIRED_KIND, plan_expires_at, now=datetime.utcnow()):
             return True
 
         plan_names = _get_plan_names(session)

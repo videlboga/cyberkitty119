@@ -60,6 +60,14 @@ def build_event_message(event_type: str, payload: dict) -> str:
 
     if event_type == "user":
         text = payload.get("text", "").strip()
-        return f"Сообщение пользователя:\n{text}"
+        active_note_id = payload.get("active_note_id")
+        active_note_summary = payload.get("active_note_summary")
+        
+        msg = f"Сообщение пользователя:\n{text}"
+        if active_note_id:
+            msg += f"\n\n[Контекст: Активная заметка ID={active_note_id}]"
+            if active_note_summary:
+                msg += f"\nКраткое содержание: {active_note_summary}"
+        return msg
 
     return f"Событие: {event_type}\nДанные: {json.dumps(payload, ensure_ascii=False)}"

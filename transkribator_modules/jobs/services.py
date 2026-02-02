@@ -76,9 +76,38 @@ def default_download_media(context: "MediaPipelineContext") -> str:
 def default_transcribe_media(context: "MediaPipelineContext", media_path: str) -> str:
     """Stub transcription that returns placeholder text."""
     logger.info(
-        "Pretend transcribing media",
+        "Transcribe media (default hook)",
         extra={"job_id": context.job.id, "media_path": media_path},
     )
+
+    # Optional: use new transcribe_client abstraction if enabled via env.
+    use_client = False
+    try:
+        val = os.environ.get("TRANSCRIBE_CLIENT_ENABLED", "0").lower()
+        use_client = val in ("1", "true", "yes")
+    except Exception:
+        use_client = False
+
+    if use_client:
+        try:
+            from transcribe_client import TranscribeClient
+
+            mode = os.environ.get("TRANSCRIBE_DEFAULT_MODE", "stub")
+            client = TranscribeClient(default_mode=mode)
+            result = client.transcribe(media_path, mode=mode)
+            if result.get("status") == "ok":
+                text = result.get("text", "")
+                context.artifacts["transcription_meta"] = result.get("meta")
+                return text
+            else:
+                logger.warning(
+                    "Transcribe client returned error",
+                    extra={"job_id": context.job.id, "meta": result.get("meta")},
+                )
+        except Exception as exc:  # pragma: no cover - fallback
+            logger.exception("Transcribe client invocation failed", extra={"job_id": context.job.id})
+
+    # Fallback stub behaviour
     return "TRANSCRIPTION_PLACEHOLDER"
 
 

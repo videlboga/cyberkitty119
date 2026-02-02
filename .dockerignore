@@ -1,0 +1,20 @@
+# Ignore local audio test files and other large artifacts from Docker build context
+audio/
+*.mp3
+*.wav
+*.ogg
+telegram-bot-api-data/
+
+# Ignore local data/test artifacts
+data/
+videos/
+server_dbs_*/
+backups/
+*.dump
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Git
+.git

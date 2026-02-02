@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Protocol
 import re
 from zoneinfo import ZoneInfo
 
-from transkribator_modules.config import logger
+from transkribator_modules.config import logger, ENABLE_STRUCT_LOGS
 from transkribator_modules.db.database import SessionLocal, UserService, NoteService
 from transkribator_modules.db.models import Note, User
 
@@ -184,7 +184,35 @@ class AgentSession:
             await _progress_safe_update(progress, "⚠️ LLM сейчас недоступна. Попробуем ещё раз позже.", mark_error=True)
             return AgentResponse(text="LLM сейчас недоступна. Попробуем ещё раз позже.")
 
+        # Structured logging of raw LLM response (controlled by ENABLE_STRUCT_LOGS)
+        try:
+            if ENABLE_STRUCT_LOGS:
+                logger.info(
+                    "Agent LLM raw response",
+                    extra={
+                        "user_id": self.user.telegram_id,
+                        "active_note_id": self.active_note_id,
+                        "raw_response_preview": (raw_response or "")[:2000],
+                    },
+                )
+        except Exception:
+            # never fail due to logging
+            pass
+
         parsed = _parse_agent_json(raw_response)
+        try:
+            if ENABLE_STRUCT_LOGS:
+                logger.info(
+                    "Agent parsed response",
+                    extra={
+                        "user_id": self.user.telegram_id,
+                        "active_note_id": self.active_note_id,
+                        "parsed_actions": parsed.get("actions") if isinstance(parsed, dict) else None,
+                        "response_preview": (parsed.get("response") or "")[:1000] if isinstance(parsed, dict) else None,
+                    },
+                )
+        except Exception:
+            pass
         response_text = parsed.get("response")
         actions = parsed.get("actions") or []
         suggestions = parsed.get("suggestions") or []
@@ -203,6 +231,28 @@ class AgentSession:
                 and original_query
                 and question_like
             ):
+                # If the model suggests updating note text but we already have an
+                # active note selected in the session, prefer updating the
+                # active note instead of searching across all notes. Only run a
+                # global search if there is no active note.
+                if self.active_note_id:
+                    # Ensure note_id is passed to the update tool
+                    update_args = dict(args or {})
+                    if not update_args.get("note_id"):
+                        update_args["note_id"] = self.active_note_id
+                    await _progress_safe_update(progress, "✍️ Обновляю текущую активную заметку…")
+                    result = await self._invoke_tool("update_note_text", update_args, None)
+                    if result:
+                        tool_results.append(result)
+                        status = (result.status or "").lower()
+                        if status in {"error", "blocked"}:
+                            await _progress_safe_update(progress, _shorten_progress(result.message or "Обновление не удалось"), mark_error=True)
+                        else:
+                            await _progress_safe_update(progress, "✅ Обновил активную заметку")
+                    else:
+                        await _progress_safe_update(progress, "⚠️ Инструмент обновления недоступен.", mark_error=True)
+                    continue
+
                 await _progress_safe_update(progress, "🔍 Вместо правки ищу ответ в заметках…")
                 try:
                     k_value = int(args.get("k", 3))
@@ -232,6 +282,49 @@ class AgentSession:
             tool_obj = resolve_tool(str(tool_name))
             description = comment or (tool_obj.description if tool_obj else f"Выполняю {tool_name}")
             await _progress_safe_update(progress, f"🔧 {description}")
+            # Fallback: if the model requested update_note_text but forgot to
+            # include the actual content (no 'text' or 'append'), try to
+            # populate 'append' from the LLM 'response' field or the action
+            # comment. This helps when the model returns the generated text
+            # in the top-level response but omits tool args.
+            if tool_name == "update_note_text":
+                try:
+                    has_text = bool(args.get("text") or args.get("append"))
+                except Exception:
+                    has_text = False
+                if not has_text:
+                    candidate = None
+                    # Prefer the top-level response text if available
+                    if response_text and isinstance(response_text, str) and response_text.strip():
+                        candidate = response_text.strip()
+                        # Clear base response to avoid duplicating the same
+                        # content in both base and tool results; dedup logic
+                        # also guards against duplication, but clearing here
+                        # keeps the final message cleaner.
+                        response_text = ""
+                    # If no top-level response, fall back to the action comment
+                    if not candidate and comment:
+                        candidate = comment
+                    if candidate:
+                        args = dict(args or {})
+                        args["append"] = candidate
+                        try:
+                            # Log a short audit entry so we can later search logs
+                            # for cases where generated content was taken from
+                            # the top-level response and applied to a note.
+                            snippet = candidate.strip().splitlines()[0][:200]
+                            logger.info(
+                                "Agent fallback: populated update_note_text.append",
+                                extra={
+                                    "user_id": self.user.telegram_id,
+                                    "active_note_id": self.active_note_id,
+                                    "snippet": snippet,
+                                    "len": len(candidate),
+                                },
+                            )
+                        except Exception:
+                            pass
+
             result = await self._invoke_tool(tool_name, args, comment if comment else None)
             if not result:
                 await _progress_safe_update(progress, f"⚠️ Инструмент {tool_name} недоступен.", mark_error=True)
@@ -297,11 +390,48 @@ class AgentSession:
     async def _execute_tool(self, tool: AgentTool, args: dict[str, Any]) -> ToolResult:
         if tool.requires_note and not (args.get("note_id") or self.active_note_id):
             return ToolResult(message=f"Инструмент {tool.name} требует активную заметку, но она не установлена.", status="blocked")
+        # Log invocation details when structured logging is enabled
+        try:
+            if ENABLE_STRUCT_LOGS:
+                # Show keys and short lengths to avoid dumping sensitive content by default
+                arg_keys = list(args.keys()) if isinstance(args, dict) else None
+                arg_sizes = {k: (len(str(args.get(k))) if args.get(k) is not None else 0) for k in (arg_keys or [])}
+                logger.info(
+                    "Agent executing tool",
+                    extra={
+                        "user_id": self.user.telegram_id,
+                        "tool": tool.name,
+                        "note_id": args.get("note_id") or self.active_note_id,
+                        "arg_keys": arg_keys,
+                        "arg_sizes": arg_sizes,
+                    },
+                )
+        except Exception:
+            pass
 
         maybe_coro = tool.func(self, args)
         if asyncio.iscoroutine(maybe_coro):
-            return await maybe_coro
-        return maybe_coro  # type: ignore[return-value]
+            result = await maybe_coro
+        else:
+            result = maybe_coro  # type: ignore[return-value]
+
+        try:
+            if ENABLE_STRUCT_LOGS:
+                logger.info(
+                    "Agent tool result",
+                    extra={
+                        "user_id": self.user.telegram_id,
+                        "tool": tool.name,
+                        "note_id": args.get("note_id") or self.active_note_id,
+                        "result_preview": (result.message or "")[:1000],
+                        "result_len": len(result.message or ""),
+                        "status": result.status,
+                    },
+                )
+        except Exception:
+            pass
+
+        return result
 
     async def _invoke_tool(self, tool_name: str, args: dict[str, Any], comment: Optional[str] = None) -> Optional[ToolResult]:
         tool = resolve_tool(str(tool_name))
@@ -312,7 +442,8 @@ class AgentSession:
         try:
             result = await self._execute_tool(tool, args)
         except Exception as exc:  # noqa: BLE001
-            logger.error(
+            # Log full exception with traceback to help diagnose tool failures
+            logger.exception(
                 "Agent tool failed",
                 extra={"tool": tool.name, "error": str(exc)},
             )
@@ -505,6 +636,22 @@ def _render_final_message(
             continue
         if note_ids:
             seen_note_ids.update(note_ids)
+        # Skip tool results that are duplicates of the base response text.
+        # The LLM base response may already contain a formatted note summary;
+        # avoid appending the same content again (exact or subsumed).
+        try:
+            base_norm = normalized_base.strip() if normalized_base else ""
+            msg_norm = message.strip()
+            if base_norm:
+                lower_base = base_norm.casefold()
+                lower_msg = msg_norm.casefold()
+                if lower_msg in lower_base or lower_base in lower_msg:
+                    # consider this duplicate and skip
+                    continue
+        except Exception:
+            # Don't let dedup logic break the flow - fall back to appending
+            pass
+
         parts.append(message)
     if suggestions:
         inline_suggestions = [item.strip() for item in suggestions if item and item.strip()]
@@ -539,6 +686,20 @@ async def _progress_safe_update(
     if not progress or not text:
         return
     try:
+        # Optionally log progress updates
+        try:
+            if ENABLE_STRUCT_LOGS:
+                logger.info(
+                    "Agent progress update",
+                    extra={
+                        "user_id": getattr(progress, "_message", None) and getattr(progress._message, "chat", None),
+                        "text_preview": (text or "")[:400],
+                        "mark_error": mark_error,
+                    },
+                )
+        except Exception:
+            pass
+
         await progress.update(
             text,
             mark_error=mark_error,

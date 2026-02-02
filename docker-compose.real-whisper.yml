@@ -1,0 +1,15 @@
+services:
+  real-whisper:
+    build: ./tools/real_whisper
+    image: cyberkitty119-whisper:latest
+    runtime: nvidia
+    deploy: {}
+    environment:
+      - WHISPER_MODEL=medium
+      - WHISPER_DEVICE=cuda
+      - WHISPER_COMPUTE=float16
+    ports:
+      - "8001:8000"
+    volumes:
+      - "/home/cyberkitty/Загрузки:/data:ro"
+    restart: no

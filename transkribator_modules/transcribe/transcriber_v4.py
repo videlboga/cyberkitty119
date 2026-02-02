@@ -6,13 +6,19 @@ import re
 from pathlib import Path
 from transkribator_modules.config import logger, OPENROUTER_API_KEY, OPENROUTER_MODEL, DEEPINFRA_API_KEY
 
-GEMINI_MAX_CHUNK_DURATION = 15 * 60  # 15 минут — безопасный размер для 4k токенов
+# Параметры Gemini, согласованные по результатам экспериментального скрипта
+GEMINI_MAX_CHUNK_DURATION = 10 * 60  # 10 минут — базовый размер чанка для стабильной транскрибации
 GEMINI_MIN_CHUNK_DURATION = 5 * 60   # не дробим меньше 5 минут, чтобы не плодить лишние запросы
 GEMINI_CHAR_RETRY_THRESHOLD = 18_000  # если в single-shot получили столько символов, почти уперлись в лимит
-GEMINI_COMPLETION_TOKEN_LIMIT = 8000  # просим больше токенов у Gemini, если модель позволит
+GEMINI_COMPLETION_TOKEN_LIMIT = 4000  # целевой лимит токенов для 10-минутного чанка
+
+# Температуры, которые хорошо показали себя на 10-минутных чанках:
+# базовый прогон с лёгкой стохастикой + два запасных варианта.
+GEMINI_TEMPERATURE_SCHEDULE = [0.2, 0.0, 0.4]
 
 CHUNK_RETRY_ATTEMPTS = 3
 MIN_CHUNK_TEXT_LENGTH = 24  # минимальная длина текста чанка, иначе повторяем попытку
+LLM_FORMAT_RETRY_ATTEMPTS = int(os.getenv("LLM_FORMAT_RETRY_ATTEMPTS", "3"))
 
 async def compress_audio_for_api(audio_path):
     """Сжимает аудиофайл для отправки в API, уменьшая размер."""
@@ -61,7 +67,7 @@ async def compress_audio_for_api(audio_path):
         return str(audio_path)  # Возвращаем оригинальный файл при ошибке
 
 async def transcribe_audio(audio_path, model_name="base"):
-    """Транскрибирует аудио с помощью OpenRouter Gemini через чанки по 30 минут."""
+    """Транскрибирует аудио с помощью OpenRouter Gemini через чанки до 10 минут."""
 
     # Временно закомментирована логика DeepInfra - используем Gemini как основной метод
     # if DEEPINFRA_API_KEY:
@@ -148,7 +154,11 @@ def _detect_repeating_phrase(text: str) -> str | None:
     if not text:
         return None
 
-    normalized = re.sub(r"\s+", " ", text.lower()).strip()
+    # Нормализуем текст: понижаем регистр, убираем пунктуацию (включая дефисы),
+    # чтобы паттерны вида "та-та-та" или "та-та, та-та" тоже сворачивались.
+    normalized = text.lower()
+    normalized = re.sub(r"[^\w\s]+", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
     if len(normalized) < 30:
         return None
 
@@ -211,13 +221,93 @@ def _strip_technical_markers(text: str) -> str:
     return cleaned
 
 
+def _dedupe_transcript_text(text: str) -> str:
+    """Убирает явные повторы в транскрипции, сохраняя структуру.
+    - Удаляет подряд идущие идентичные строки (с учётом нормализации пробелов/регистра)
+    - Сворачивает «заедающие» короткие фразы, повторённые много раз подряд
+    - Удаляет повторяющиеся длинные абзацы и предложения, которые появились из‑за склейки чанков или сбоев LLM
+    """
+    if not text:
+        return text
+
+    # 1) Удаляем подряд идущие дубликаты строк
+    out_lines: list[str] = []
+    prev_key: str | None = None
+    for line in (text.splitlines()):
+        norm = re.sub(r"\s+", " ", line).strip().casefold()
+        if norm and norm == prev_key:
+            continue
+        out_lines.append(line.rstrip())
+        prev_key = norm if norm else None
+
+    deduped = "\n".join(out_lines)
+
+    # 2) Сворачиваем повторяющуюся короткую фразу (если найдена)
+    phrase = _detect_repeating_phrase(deduped)
+    if phrase:
+        try:
+            logger.warning(
+                "Postprocess: collapsing repeating phrase in formatted transcript",
+                extra={"repeating_phrase": phrase},
+            )
+        except Exception:
+        # Логирование не должно ломать постобработку, если extra не сериализуется
+            logger.warning("Postprocess: collapsing repeating phrase in formatted transcript")
+        # Заменяем длинные последовательности повторов этой фразы на один экземпляр
+        safe_phrase = re.escape(phrase)
+        pattern = re.compile(rf"(?:\b{safe_phrase}\b[\s,.;:!\-–—]*){3,}", re.IGNORECASE)
+        deduped = pattern.sub(phrase, deduped)
+
+    # 3) Удаляем повторяющиеся длинные абзацы (часто появляются при склейке чанков)
+    paragraphs = deduped.split("\n\n")
+    seen_para_keys: set[str] = set()
+    unique_paragraphs: list[str] = []
+    for para in paragraphs:
+        para_stripped = para.strip()
+        if not para_stripped:
+            unique_paragraphs.append(para)
+            continue
+
+        key = re.sub(r"\s+", " ", para_stripped).casefold()
+
+        # Считаем только достаточно длинные абзацы, чтобы не трогать короткие реплики
+        if len(key) >= 120:
+            if key in seen_para_keys:
+                # Повторный длинный абзац — считаем артефактом и пропускаем
+                continue
+            seen_para_keys.add(key)
+
+        unique_paragraphs.append(para)
+
+    deduped = "\n\n".join(unique_paragraphs)
+
+    # 4) Дополнительно убираем повторяющиеся длинные предложения внутри текста
+    sentences = re.split(r"(?<=[\.!?])\s+", deduped)
+    seen_sent_keys: dict[str, int] = {}
+    filtered_sentences: list[str] = []
+    for sent in sentences:
+        s = sent.strip()
+        if not s:
+            continue
+        key = re.sub(r"\s+", " ", s).casefold()
+        if len(key) >= 80:
+            count = seen_sent_keys.get(key, 0)
+            seen_sent_keys[key] = count + 1
+            # Первые два появления оставляем, начиная с третьего — считаем шумом
+            if count >= 2:
+                continue
+        filtered_sentences.append(s)
+
+    return " ".join(filtered_sentences)
+
+
 async def _postprocess_full_transcript(text: str) -> str:
     """Удаляет тех. строки и форматирует транскрипт через LLM/локальный fallback."""
     cleaned = _strip_technical_markers(text)
     formatted = await format_transcript_with_llm(cleaned)
     if formatted:
-        return formatted
-    return _basic_local_format(cleaned)
+        return _dedupe_transcript_text(formatted)
+    return _dedupe_transcript_text(_basic_local_format(cleaned))
 
 _FORMAT_CACHE: dict[str, tuple[float, str]] = {}
 _FORMAT_CACHE_TTL = 30 * 60  # 30 минут
@@ -241,157 +331,193 @@ def _hash_text(value: str) -> str:
 
 
 async def format_transcript_with_llm(raw_transcript: str) -> str | None:
-    """Форматирует транскрипцию с использованием языковой модели.
-    Возвращает строку при успехе, None при неуспехе (чтобы вызывать локальный fallback)."""
+    """Форматирует транскрипцию без обращения к LLM.
+
+    Исторически здесь вызывался OpenRouter для «умного» форматирования текста,
+    но это приводило к артефактам вроде бесконечных повторов фраз.
+    Сейчас шаг LLM полностью отключён: мы применяем только локальное
+    базовое форматирование, сохраняя API функции для совместимости.
+    """
+    text = raw_transcript or ""
+    stripped = text.strip()
+    if not stripped:
+        logger.warning("format_transcript_with_llm: пустая транскрипция, возвращаю как есть")
+        return text
+
+    logger.info(
+        "format_transcript_with_llm: LLM форматирование отключено, использую только локальное форматирование"
+    )
     try:
-        # Проверяем, не пустая ли транскрипция
-        if not raw_transcript or len(raw_transcript.strip()) < 10:
-            logger.warning("Транскрипция слишком короткая для форматирования")
-            return None
-
-        # Проверяем кэш идемпотентности, чтобы не дергать LLM повторно для того же текста
-        cleaned_for_cache = raw_transcript.strip()
-        if cleaned_for_cache:
-            key = _hash_text(cleaned_for_cache)
-            cached = _FORMAT_CACHE.get(key)
-            if cached and _now_ts() - cached[0] <= _FORMAT_CACHE_TTL:
-                return cached[1]
-
-        # Используем OpenRouter API для форматирования
-        if OPENROUTER_API_KEY:
-            logger.info("Пробую форматировать через OpenRouter/DeepSeek")
-
-            # Отправляем всю транскрипцию целиком без разбиения на чанки
-            logger.info(f"Отправляю транскрипцию целиком ({len(raw_transcript)} символов) для форматирования")
-            formatted = await format_transcript_with_openrouter(raw_transcript)
-            if formatted:
-                # Сохраняем в кэш
-                try:
-                    if cleaned_for_cache:
-                        _cleanup_format_cache()
-                        _FORMAT_CACHE[_hash_text(cleaned_for_cache)] = (_now_ts(), formatted)
-                except Exception:
-                    pass
-                return _ensure_paragraphs(formatted)
-            else:
-                logger.warning("API не смог обработать транскрипцию, использую локальное форматирование")
-                return _basic_local_format(raw_transcript)
-
-        # Не удалось отформатировать через LLM, используем локальное форматирование
-        logger.warning("Не удалось отформатировать через LLM, использую локальное форматирование")
-        return _basic_local_format(raw_transcript)
-
-    except Exception as e:
-        logger.error(f"Ошибка при форматировании транскрипции: {e}")
-        logger.warning("Использую локальное форматирование как fallback")
-        return _basic_local_format(raw_transcript)
+        return _basic_local_format(text)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Ошибка локального форматирования транскрипции: {e}")
+        return text
 
 async def format_transcript_with_openrouter(raw_transcript: str) -> str | None:
     """Форматирует сырую транскрипцию с помощью OpenRouter API."""
     if not OPENROUTER_API_KEY or not OPENROUTER_MODEL:
         logger.warning("OpenRouter API ключ или модель не настроены")
         return None
+    logger.info(
+        "Форматирование транскрипции с помощью OpenRouter API, модель: %s",
+        OPENROUTER_MODEL,
+    )
 
-    try:
-        logger.info(f"Форматирование транскрипции с помощью OpenRouter API, модель: {OPENROUTER_MODEL}")
+    system_prompt = (
+        "Ты редактор транскрипций. ТВОЯ ГЛАВНАЯ ЗАДАЧА - СОХРАНИТЬ ВЕСЬ ТЕКСТ БЕЗ ПОТЕРИ ИНФОРМАЦИИ. "
+        "КРИТИЧЕСКИ ВАЖНО: НЕ УБИРАЙ НИ ОДНОГО СЛОВА из оригинального текста. "
+        "Только добавляй пунктуацию, исправляй очевидные опечатки и делай переносы строк. "
+        "НЕ СОКРАЩАЙ, НЕ ПЕРЕФРАЗИРУЙ, НЕ УПРОЩАЙ текст. "
+        "Если исходный текст длинный - верни его полностью, только с улучшенным форматированием. "
+        "Отвечай ТОЛЬКО отформатированным текстом без дополнительных комментариев."
+    )
 
-        # Улучшенный промт: акцент на сохранении всего содержания
-        system_prompt = (
-            "Ты редактор транскрипций. ТВОЯ ГЛАВНАЯ ЗАДАЧА - СОХРАНИТЬ ВЕСЬ ТЕКСТ БЕЗ ПОТЕРИ ИНФОРМАЦИИ. "
-            "КРИТИЧЕСКИ ВАЖНО: НЕ УБИРАЙ НИ ОДНОГО СЛОВА из оригинального текста. "
-            "Только добавляй пунктуацию, исправляй очевидные опечатки и делай переносы строк. "
-            "НЕ СОКРАЩАЙ, НЕ ПЕРЕФРАЗИРУЙ, НЕ УПРОЩАЙ текст. "
-            "Если исходный текст длинный - верни его полностью, только с улучшенным форматированием. "
-            "Отвечай ТОЛЬКО отформатированным текстом без дополнительных комментариев."
-        )
+    user_prompt = (
+        "Пожалуйста, отформатируй эту транскрипцию, сохранив ВЕСЬ текст:\n\n"
+        "ВАЖНО:\n"
+        "- Сохрани каждое слово из оригинала\n"
+        "- Добавь только пунктуацию и переносы строк\n"
+        "- Исправь только явные опечатки\n"
+        "- НЕ сокращай и НЕ убирай никакую информацию\n"
+        "- Верни текст той же длины или длиннее\n\n"
+        f"Транскрипция для форматирования:\n{raw_transcript}\n\nОтформатированный текст:"
+    )
 
-        user_prompt = f"""Пожалуйста, отформатируй эту транскрипцию, сохранив ВЕСЬ текст:
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": os.getenv("OPENROUTER_REFERER", "https://transkribator.local"),
+        "X-Title": os.getenv("OPENROUTER_APP_NAME", "Transkribator"),
+    }
 
-ВАЖНО:
-- Сохрани каждое слово из оригинала
-- Добавь только пунктуацию и переносы строк
-- Исправь только явные опечатки
-- НЕ сокращай и НЕ убирай никакую информацию
-- Верни текст той же длины или длиннее
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.15,
+        "max_tokens": 32768,
+    }
 
-Транскрипция для форматирования:
-{raw_transcript}
+    transient_statuses = {408, 409, 429, 500, 502, 503, 504}
+    last_error: str | None = None
 
-Отформатированный текст:"""
+    for attempt in range(1, LLM_FORMAT_RETRY_ATTEMPTS + 1):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=180),
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        choices = data.get("choices") or []
+                        if not choices:
+                            raise ValueError("OpenRouter вернул пустой список choices")
+                        message = choices[0].get("message") or {}
+                        formatted_text = (message.get("content") or "").strip()
+                        if not formatted_text:
+                            raise ValueError("OpenRouter вернул пустой content")
 
-        # Формируем запрос к API
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": os.getenv("OPENROUTER_REFERER", "https://transkribator.local"),
-            "X-Title": os.getenv("OPENROUTER_APP_NAME", "Transkribator"),
-        }
-
-        payload = {
-            "model": OPENROUTER_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": 0.15,  # чуть мягче, но детерминированно
-            "max_tokens": 32768  # Увеличиваем лимит токенов для длинных транскрипций
-        }
-
-        # Отправляем запрос
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=payload
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    formatted_text = data["choices"][0]["message"]["content"]
-                    # Если модель вернула текст без изменений, считаем форматирование неуспешным,
-                    # чтобы применился локальный абзацный fallback выше по стеку
-                    if formatted_text.strip() == raw_transcript.strip():
-                        logger.info("LLM вернул текст без изменений — отклоняю как неуспешное форматирование")
-                        return None
-
-                    # Проверяем качество форматирования
-                    original_length = len(raw_transcript)
-                    formatted_length = len(formatted_text)
-                    length_ratio = formatted_length / original_length if original_length > 0 else 1
-
-                    if length_ratio > 1.2:  # Если текст увеличился более чем на 20%
-                        logger.warning(f"⚠️ Модель добавила много лишнего: {length_ratio:.1f}x от оригинала")
-                        is_valid, reason = _is_formatted_transcript_valid(raw_transcript, formatted_text)
-                        if not is_valid:
-                            logger.error(f"❌ Отклоняю форматирование: {reason}")
+                        if formatted_text.strip() == raw_transcript.strip():
+                            logger.info(
+                                "LLM вернул текст без изменений — отклоняю как неуспешное форматирование"
+                            )
                             return None
-                        return _ensure_paragraphs(formatted_text)  # Принимаем результат
-                    elif length_ratio < 0.7:  # Если текст сократился более чем на 30%
-                        logger.error(f"❌ Модель КРИТИЧЕСКИ сократила текст: {length_ratio:.1f}x от оригинала - ОТКЛОНЯЕМ")
-                        return None  # Отклоняем результат и используем локальное форматирование
-                    elif length_ratio < 0.8:  # Если текст сократился более чем на 20%
-                        logger.warning(f"⚠️ Модель сократила текст: {length_ratio:.1f}x от оригинала - принимаем с предупреждением")
-                        is_valid, reason = _is_formatted_transcript_valid(raw_transcript, formatted_text)
-                        if not is_valid:
-                            logger.error(f"❌ Отклоняю форматирование: {reason}")
+
+                        original_length = len(raw_transcript)
+                        formatted_length = len(formatted_text)
+                        length_ratio = (
+                            formatted_length / original_length if original_length > 0 else 1
+                        )
+
+                        if length_ratio > 1.2:
+                            logger.warning(
+                                "⚠️ Модель добавила много лишнего: %.1fx от оригинала",
+                                length_ratio,
+                            )
+                            is_valid, reason = _is_formatted_transcript_valid(
+                                raw_transcript, formatted_text
+                            )
+                            if not is_valid:
+                                logger.error("❌ Отклоняю форматирование: %s", reason)
+                                return None
+                            return _ensure_paragraphs(formatted_text)
+
+                        if length_ratio < 0.7:
+                            logger.error(
+                                "❌ Модель КРИТИЧЕСКИ сократила текст: %.1fx от оригинала - ОТКЛОНЯЕМ",
+                                length_ratio,
+                            )
                             return None
-                        return _ensure_paragraphs(formatted_text)  # Принимаем, но с предупреждением
-                    else:
-                        logger.info(f"✅ Форматирование прошло успешно: {length_ratio:.1f}x от оригинала")
-                        is_valid, reason = _is_formatted_transcript_valid(raw_transcript, formatted_text)
+
+                        if length_ratio < 0.8:
+                            logger.warning(
+                                "⚠️ Модель сократила текст: %.1fx от оригинала - принимаем с предупреждением",
+                                length_ratio,
+                            )
+                            is_valid, reason = _is_formatted_transcript_valid(
+                                raw_transcript, formatted_text
+                            )
+                            if not is_valid:
+                                logger.error("❌ Отклоняю форматирование: %s", reason)
+                                return None
+                            return _ensure_paragraphs(formatted_text)
+
+                        logger.info(
+                            "✅ Форматирование прошло успешно: %.1fx от оригинала",
+                            length_ratio,
+                        )
+                        is_valid, reason = _is_formatted_transcript_valid(
+                            raw_transcript, formatted_text
+                        )
                         if not is_valid:
-                            logger.error(f"❌ Отклоняю форматирование: {reason}")
+                            logger.error("❌ Отклоняю форматирование: %s", reason)
                             return None
                         return _ensure_paragraphs(formatted_text)
-                else:
-                    error_text = await response.text()
-                    logger.error(f"Ошибка от OpenRouter API: {response.status}, {error_text}")
-                    return None
 
-    except Exception as e:
-        logger.error(f"Ошибка при форматировании транскрипции через OpenRouter API: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
+                    error_text = await response.text()
+                    last_error = f"HTTP {response.status}: {error_text[:200]}"
+                    if response.status in transient_statuses:
+                        logger.warning(
+                            "⚠️ Временная ошибка OpenRouter (%s), попытка %s/%s",
+                            last_error,
+                            attempt,
+                            LLM_FORMAT_RETRY_ATTEMPTS,
+                        )
+                    else:
+                        logger.error("Ошибка от OpenRouter API: %s", last_error)
+                        return None
+
+        except asyncio.TimeoutError:
+            last_error = "timeout"
+            logger.warning(
+                "⏱️ Таймаут OpenRouter при форматировании, попытка %s/%s",
+                attempt,
+                LLM_FORMAT_RETRY_ATTEMPTS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.error(
+                "Ошибка при форматировании транскрипции через OpenRouter API (попытка %s/%s): %s",
+                attempt,
+                LLM_FORMAT_RETRY_ATTEMPTS,
+                last_error,
+            )
+
+        if attempt < LLM_FORMAT_RETRY_ATTEMPTS:
+            delay = min(10, 2 ** attempt)
+            await asyncio.sleep(delay)
+
+    logger.error(
+        "OpenRouter форматирование не удалось после %s попыток. Последняя ошибка: %s",
+        LLM_FORMAT_RETRY_ATTEMPTS,
+        last_error or "unknown",
+    )
+    return None
 
 async def generate_title_with_llm(transcript: str) -> str | None:
     """Генерирует краткое умное название для транскрипции с помощью LLM.
@@ -403,11 +529,17 @@ async def generate_title_with_llm(transcript: str) -> str | None:
         Краткое название (2-5 слов) или None если не удалось сгенерировать
     """
     if not OPENROUTER_API_KEY or not OPENROUTER_MODEL:
+        logger.warning("generate_title_with_llm: OpenRouter API ключ или модель не настроены")
         return None
-    
+
     try:
         # Берём только начало транскрипции для экономии токенов
         sample = transcript[:1000] if len(transcript) > 1000 else transcript
+        logger.debug(
+            "generate_title_with_llm: sample length=%s, sample preview=%r",
+            len(sample),
+            sample[:500],
+        )
         
         system_prompt = (
             "Ты эксперт по созданию кратких и ёмких заголовков. "
@@ -454,7 +586,13 @@ async def generate_title_with_llm(transcript: str) -> str | None:
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    title = data["choices"][0]["message"]["content"].strip()
+                    raw_content = data["choices"][0]["message"]["content"]
+                    logger.debug(
+                        "generate_title_with_llm: raw LLM title response (len=%s): %r",
+                        len(raw_content or ""),
+                        raw_content,
+                    )
+                    title = (raw_content or "").strip()
                     
                     # Очищаем название от лишних символов и маркеров
                     title = title.strip('"\'«»""''').replace('Название:', '').strip()
@@ -587,17 +725,28 @@ async def request_llm_response(system_prompt: str, user_prompt: str) -> str | No
             "max_tokens": 32768  # Увеличиваем лимит токенов для длинных саммари
         }
 
+        logger.debug(
+            "request_llm_response: system_prompt=%r, user_prompt_preview=%r",
+            system_prompt,
+            (user_prompt[:1000] + "…") if len(user_prompt) > 1000 else user_prompt,
+        )
+
         # Отправляем запрос
         async with aiohttp.ClientSession() as session:
             async with session.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=payload
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=payload
             ) as response:
                 if response.status == 200:
                     data = await response.json()
                     result_text = data["choices"][0]["message"]["content"]
                     logger.info("Успешно получен ответ от LLM через OpenRouter API")
+                    logger.debug(
+                        "request_llm_response: raw LLM response length=%s, content=%r",
+                        len(result_text or ""),
+                        result_text,
+                    )
                     return result_text
                 else:
                     error_text = await response.text()
@@ -676,8 +825,6 @@ async def transcribe_whole_audio_with_gemini(audio_path):
         logger.info(f"Длительность аудио: {duration:.1f} секунд ({duration/60:.1f} минут)")
 
         chunk_duration = GEMINI_MAX_CHUNK_DURATION
-        
-        used_chunk_mode = False
 
         if duration <= chunk_duration:
             # Короткий файл — транскрибируем целиком, но контролируем лимит символов
@@ -701,7 +848,6 @@ async def transcribe_whole_audio_with_gemini(audio_path):
                 )
                 if chunked:
                     transcript_text = chunked
-                    used_chunk_mode = True
         else:
             # Длинный файл - разбиваем на чанки и обрабатываем параллельно
             logger.info(
@@ -714,7 +860,6 @@ async def transcribe_whole_audio_with_gemini(audio_path):
                 duration,
                 chunk_duration,
             )
-            used_chunk_mode = True
 
         if transcript_text:
             logger.info(f"Транскрибация завершена, получено {len(transcript_text)} символов")
@@ -725,9 +870,12 @@ async def transcribe_whole_audio_with_gemini(audio_path):
                     Path(compressed_audio_path).unlink()
             except:
                 pass
-
-            if not used_chunk_mode:
-                transcript_text = await _postprocess_full_transcript(transcript_text)
+            
+            # Всегда прогоняем через общий постпроцессинг:
+            # - убираем тех. метки
+            # - локально форматируем текст
+            # - сворачиваем заедающие повторы фраз
+            transcript_text = await _postprocess_full_transcript(transcript_text)
             return transcript_text
         else:
             logger.error("Не удалось транскрибировать аудио")
@@ -742,6 +890,27 @@ async def transcribe_whole_audio_with_gemini(audio_path):
 
 async def _transcribe_chunk_with_retry_gemini(chunk_path: Path, chunk_num: int, max_attempts: int = CHUNK_RETRY_ATTEMPTS) -> str | None:
     """Повторяет транскрибацию чанка до получения непустого текста."""
+    # Быстрая защита от заведомо пустых/почти пустых чанков (длительная тишина).
+    try:
+        non_silence = _estimate_non_silence_duration(chunk_path)
+        if non_silence < 5.0:
+            logger.info(
+                "Чанк %s (%s) содержит менее 5 секунд звучащего сигнала (%.1fs), "
+                "пропускаю отправку в OpenRouter",
+                chunk_num,
+                chunk_path.name,
+                non_silence,
+            )
+            return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Не удалось оценить тишину для чанка %s (%s): %s: %s",
+            chunk_num,
+            chunk_path,
+            type(exc).__name__,
+            exc,
+        )
+
     last_issue = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -755,14 +924,62 @@ async def _transcribe_chunk_with_retry_gemini(chunk_path: Path, chunk_num: int, 
 
         if result and result.strip():
             cleaned = result.strip()
+
+            # 1) Слишком короткий ответ для 10‑минутного чанка — считаем неудачной попыткой
             if len(cleaned) < MIN_CHUNK_TEXT_LENGTH and attempt < max_attempts:
                 last_issue = f"too_short({len(cleaned)})"
                 logger.warning(
                     f"⚠️ Чанк {chunk_num} дал подозрительно короткий текст ({len(cleaned)} симв.). "
                     f"Повторяю попытку {attempt + 1}/{max_attempts}"
                 )
+
             else:
-                return cleaned
+                # 2) Фильтрация «битых» ответов: зацикленные фразы, очень низкое разнообразие слов
+                bad_reason: str | None = None
+                lower = cleaned.lower()
+                if "аудиофайл пуст" in lower or "не могу выполнить этот запрос" in lower:
+                    bad_reason = "llm_declared_empty_audio"
+                else:
+                    rep_phrase = _detect_repeating_phrase(cleaned)
+                    if rep_phrase:
+                        bad_reason = f"repeating_phrase:{rep_phrase}"
+                    else:
+                        tokens = _tokenize_for_quality(cleaned)
+                        if len(tokens) >= 80:
+                            unique_tokens = set(tokens)
+                            diversity = len(unique_tokens) / len(tokens)
+                            # Для реального разговора ожидаем куда большую вариативность,
+                            # чем для «та-та-та» и похожих паттернов.
+                            if diversity < 0.15:
+                                bad_reason = f"low_diversity({diversity:.3f})"
+
+                if bad_reason:
+                    last_issue = bad_reason
+                    if attempt < max_attempts:
+                        logger.warning(
+                            "⚠️ Чанк %s: отбрасываю ответ Gemini как некачественный (%s), "
+                            "повторяю попытку %s/%s",
+                            chunk_num,
+                            bad_reason,
+                            attempt + 1,
+                            max_attempts,
+                        )
+                    else:
+                        logger.error(
+                            "❌ Чанк %s: все попытки дали некачественный текст "
+                            "(последняя причина: %s)",
+                            chunk_num,
+                            bad_reason,
+                        )
+                        return None
+                else:
+                    logger.debug(
+                        "Gemini chunk %s transcript accepted (len=%s): %r",
+                        chunk_num,
+                        len(cleaned),
+                        cleaned,
+                    )
+                    return cleaned
         else:
             last_issue = "empty"
             logger.warning(
@@ -979,6 +1196,99 @@ async def get_audio_duration(audio_path):
     except Exception as e:
         logger.error(f"Ошибка при получении длительности: {e}")
         return 0
+
+
+def _estimate_non_silence_duration(audio_path, *, silence_threshold_db: float = -40.0, min_silence_sec: float = 0.5) -> float:
+    """Оценивает длительность звучащих (не тишина) участков аудио в секундах.
+
+    Использует ffmpeg с фильтром silencedetect. При ошибке осторожно
+    возвращает 0, чтобы не ломать основной пайплайн.
+    """
+    import subprocess
+    import re
+
+    try:
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(audio_path),
+            "-af",
+            f"silencedetect=noise={silence_threshold_db}dB:d={min_silence_sec}",
+            "-f",
+            "null",
+            "-",
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Не удалось оценить тишину в аудио {audio_path}: {type(exc).__name__}: {exc}")
+        return 0.0
+
+    stderr = result.stderr or ""
+
+    # Собираем интервалы тишины по сообщениям вида:
+    # silence_start: 0
+    # silence_end: 5.3 | silence_duration: 5.3
+    start_re = re.compile(r"silence_start:\s*([0-9.]+)")
+    end_re = re.compile(r"silence_end:\s*([0-9.]+)")
+
+    starts: list[float] = [float(m.group(1)) for m in start_re.finditer(stderr)]
+    ends: list[float] = [float(m.group(1)) for m in end_re.finditer(stderr)]
+
+    # Грубая оценка: суммируем пары (start, end); если их число не совпадает,
+    # просто обрезаем по минимальной длине списков.
+    silence_total = 0.0
+    for s, e in zip(starts, ends):
+        if e > s:
+            silence_total += e - s
+
+    # Получаем общую длительность файла отдельным ffprobe-вызовом,
+    # чтобы не зависеть от асинхронной get_audio_duration.
+    duration = 0.0
+    try:
+        dur_cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(audio_path),
+        ]
+        dur_res = subprocess.run(
+            dur_cmd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if dur_res.returncode == 0:
+            duration = float((dur_res.stdout or "0").strip() or "0")
+        else:
+            logger.warning(
+                "Не удалось получить длительность аудио через ffprobe: %s",
+                dur_res.stderr,
+            )
+            duration = 0.0
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Ошибка при получении длительности аудио в _estimate_non_silence_duration: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        duration = 0.0
+
+    if duration <= 0:
+        return 0.0
+
+    non_silence = max(0.0, duration - silence_total)
+    return non_silence
 
 
 async def split_audio_into_chunks(audio_path, chunk_duration):
@@ -1265,7 +1575,19 @@ async def transcribe_segment_with_openrouter_gemini(segment_path, max_retries=3)
     logger.info(f"OpenRouter Gemini транскрипция начата: {file_name}, размер={file_size} байт")
     
     url = "https://openrouter.ai/api/v1/chat/completions"
-    model = "google/gemini-2.5-flash-lite-preview-09-2025"
+
+    # Prefer an explicitly configured OpenRouter model if it looks like a Gemini model;
+    # otherwise fall back to a known-good audio-capable Gemini variant.
+    configured_model = (OPENROUTER_MODEL or "").strip()
+    model_candidates = []
+    if configured_model and "gemini" in configured_model.lower():
+        model_candidates.append(configured_model)
+    model_candidates.append("google/gemini-2.5-flash-lite-preview-09-2025")
+
+    # A second candidate helps when the primary model intermittently returns empty content.
+    # (Kept conservative to avoid unexpected costs.)
+    if "google/gemini-2.5-flash" not in " ".join(model_candidates):
+        model_candidates.append("google/gemini-2.5-flash")
     
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -1301,15 +1623,30 @@ async def transcribe_segment_with_openrouter_gemini(segment_path, max_retries=3)
             }
             audio_format = audio_formats.get(file_ext, 'mp3')
             
+            model_to_use = model_candidates[min(attempt, len(model_candidates) - 1)]
+            # Базовый промпт + явный запрет на длинные повторы
+            base_prompt = (
+                "Транскрибируй это аудио на русском. Верни чистый текст без разметки, времени и комментариев. "
+                "Сохрани все детали, имена, цифры. Не повторяй слова и фразы, не дублируй предложения."
+            )
+            strict_suffix = (
+                " ВАЖНО: если ты начинаешь повторять одно и то же слово или фразу подряд много раз, "
+                "немедленно остановись и заверши ответ. Текст не должен содержать длинных последовательностей "
+                "одинаковых слов или фраз."
+            )
+            prompt_text = base_prompt + strict_suffix
+
+            temperature = GEMINI_TEMPERATURE_SCHEDULE[min(attempt, len(GEMINI_TEMPERATURE_SCHEDULE) - 1)]
+
             payload = {
-                "model": model,
+                "model": model_to_use,
                 "messages": [
                     {
                         "role": "user",
                         "content": [
                             {
                                 "type": "text",
-                                "text": "Транскрибируй это аудио на русском. Верни чистый текст без разметки, времени и комментариев. Сохрани все детали, имена, цифры."
+                                "text": prompt_text,
                             },
                             {
                                 "type": "input_audio",
@@ -1321,7 +1658,7 @@ async def transcribe_segment_with_openrouter_gemini(segment_path, max_retries=3)
                         ]
                     }
                 ],
-                "temperature": 0.0,
+                "temperature": temperature,
                 "max_tokens": GEMINI_COMPLETION_TOKEN_LIMIT,
                 "max_output_tokens": GEMINI_COMPLETION_TOKEN_LIMIT,
             }
@@ -1332,12 +1669,26 @@ async def transcribe_segment_with_openrouter_gemini(segment_path, max_retries=3)
                 async with session.post(url, headers=headers, json=payload) as response:
                     if response.status == 200:
                         result = await response.json()
-                        transcript_text = result.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
+
+                        # OpenRouter providers sometimes return text in different shapes.
+                        choice0 = (result.get("choices") or [{}])[0] or {}
+                        msg = choice0.get("message") or {}
+                        transcript_text = (msg.get("content") or "").strip()
+
+                        if not transcript_text:
+                            # Some backends use `text` instead of `message.content`.
+                            transcript_text = (choice0.get("text") or "").strip()
                         
                         if transcript_text:
                             logger.info(
                                 f"✅ Сегмент {file_name} транскрибирован через Gemini "
-                                f"(попытка {attempt + 1}/{max_retries}): {len(transcript_text)} символов"
+                                f"(модель: {model_to_use}, попытка {attempt + 1}/{max_retries}): {len(transcript_text)} символов"
+                            )
+                            logger.debug(
+                                "Gemini segment %s transcript (len=%s): %r",
+                                file_name,
+                                len(transcript_text),
+                                transcript_text,
                             )
                             return transcript_text
                         else:

@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  mock-whisper:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./:/app:ro
+    command: ["python3", "tools/mock_whisper_server.py", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    restart: "no"

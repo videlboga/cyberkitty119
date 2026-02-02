@@ -1,0 +1,60 @@
+user_id,kind,ts,created_at,time_diff_ms,cost_total,model_permaslug,provider_name
+25,video_transcription_saved,2025-11-06 15:44:38.975297+00:00,2025-11-06 15:44:39.199000+00:00,223.703,5.3e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+268,audio_transcription_saved,2025-11-07 14:55:38.589580+00:00,2025-11-07 14:55:38.753000+00:00,163.42000000000002,2.7e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-11-10 01:55:39.699413+00:00,2025-11-10 01:55:39.939000+00:00,239.587,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-11-10 02:01:58.783525+00:00,2025-11-10 02:01:59.001000+00:00,217.475,5.8e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+18,video_transcription_saved,2025-11-10 12:22:19.779267+00:00,2025-11-10 12:22:19.925000+00:00,145.733,5.8e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+18,video_transcription_saved,2025-11-10 12:22:43.749754+00:00,2025-11-10 12:22:43.898000+00:00,148.24599999999998,5.8e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+43,video_transcription_saved,2025-11-10 16:07:46.112691+00:00,2025-11-10 16:07:46.352000+00:00,239.309,5.7e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+25,video_transcription_saved,2025-11-11 06:27:59.741065+00:00,2025-11-11 06:27:59.880000+00:00,138.935,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+133,miniapp_agent_message,2025-11-11 10:10:28.669609+00:00,2025-11-11 10:10:28.839000+00:00,169.39100000000002,1.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+21,miniapp_agent_message,2025-11-11 12:41:16.317727+00:00,2025-11-11 12:41:16.838000+00:00,520.273,1.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+63,audio_transcription_saved,2025-11-11 15:06:19.286130+00:00,2025-11-11 15:06:19.571000+00:00,284.87,5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+16,video_transcription_saved,2025-11-11 15:08:59.299509+00:00,2025-11-11 15:08:59.463000+00:00,163.49099999999999,5.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-11-11 19:44:50.714068+00:00,2025-11-11 19:44:50.979000+00:00,264.932,5.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+57,video_transcription_saved,2025-11-12 07:19:01.176890+00:00,2025-11-12 07:19:01.320000+00:00,143.10999999999999,5.2e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+12,audio_transcription_saved,2025-11-14 07:57:14.785063+00:00,2025-11-14 07:57:15.083000+00:00,297.937,5.9e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+331,miniapp_agent_message,2025-11-15 09:45:04.662861+00:00,2025-11-15 09:45:04.849000+00:00,186.139,1.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+331,miniapp_agent_message,2025-11-15 09:45:30.576672+00:00,2025-11-15 09:45:30.740000+00:00,163.328,1.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+331,miniapp_agent_message,2025-11-15 09:46:31.818711+00:00,2025-11-15 09:46:31.982000+00:00,163.289,1.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+331,miniapp_agent_message,2025-11-15 09:46:54.868185+00:00,2025-11-15 09:46:55.029000+00:00,160.81500000000003,1.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+331,miniapp_agent_message,2025-11-15 09:47:08.583415+00:00,2025-11-15 09:47:08.729000+00:00,145.58499999999998,1.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+331,miniapp_agent_message,2025-11-15 09:47:17.831285+00:00,2025-11-15 09:47:17.984000+00:00,152.715,1.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+331,miniapp_agent_message,2025-11-15 09:47:38.067831+00:00,2025-11-15 09:47:38.216000+00:00,148.16899999999998,1.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+55,video_transcription_saved,2025-11-15 15:11:36.197987+00:00,2025-11-15 15:11:36.413000+00:00,215.013,5.3e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+22,video_transcription_saved,2025-11-16 00:13:52.923914+00:00,2025-11-16 00:13:53.132000+00:00,208.08599999999998,5.7e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-11-16 00:29:57.337080+00:00,2025-11-16 00:29:57.655000+00:00,317.91999999999996,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+57,video_transcription_saved,2025-11-17 12:07:23.241916+00:00,2025-11-17 12:07:23.399000+00:00,157.084,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+17,video_transcription_saved,2025-11-18 03:20:45.414823+00:00,2025-11-18 03:20:45.640000+00:00,225.177,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+57,video_transcription_saved,2025-11-18 08:37:35.164832+00:00,2025-11-18 08:37:35.319000+00:00,154.168,5.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+1,video_transcription_saved,2025-11-19 13:14:28.845021+00:00,2025-11-19 13:14:29.025000+00:00,179.979,5.1e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+23,audio_transcription_saved,2025-11-21 09:41:42.639470+00:00,2025-11-21 09:41:42.940000+00:00,300.53000000000003,5.9e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+16,video_transcription_saved,2025-11-21 12:00:02.878639+00:00,2025-11-21 12:00:03.097000+00:00,218.361,5.3e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-11-24 01:42:52.420248+00:00,2025-11-24 01:42:52.649000+00:00,228.752,5.6e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-11-26 20:29:28.592769+00:00,2025-11-26 20:29:28.923000+00:00,330.231,5.6e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+57,video_transcription_saved,2025-11-27 07:20:13.717330+00:00,2025-11-27 07:20:13.863000+00:00,145.67,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+28,miniapp_agent_session_fetch,2025-11-28 14:26:05.457993+00:00,2025-11-28 14:26:05.414000+00:00,-43.992999999999995,0.000381,google/gemini-2.5-flash-lite-preview-09-2025,Google
+28,miniapp_agent_session_fetch,2025-11-28 14:26:12.661873+00:00,2025-11-28 14:26:12.357000+00:00,-304.873,0.00078,google/gemini-2.5-flash-lite-preview-09-2025,Google
+252,miniapp_agent_session_fetch,2025-11-29 09:34:15.241771+00:00,2025-11-29 09:34:15.768000+00:00,526.2289999999999,0.000261,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+252,miniapp_agent_session_fetch,2025-11-29 09:34:18.967799+00:00,2025-11-29 09:34:18.277000+00:00,-690.7990000000001,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+252,miniapp_agent_message,2025-11-29 09:34:24.738574+00:00,2025-11-29 09:34:24.906000+00:00,167.426,1.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+252,miniapp_agent_message,2025-11-29 09:34:46.023762+00:00,2025-11-29 09:34:46.166000+00:00,142.238,1.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-11-30 14:34:32.126306+00:00,2025-11-30 14:34:32.412000+00:00,285.694,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+976,miniapp_agent_message,2025-11-30 14:42:17.202009+00:00,2025-11-30 14:42:17.345000+00:00,142.991,1.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-11-30 15:16:18.773999+00:00,2025-11-30 15:16:19.010000+00:00,236.00099999999998,5.3e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-11-30 15:19:53.611187+00:00,2025-11-30 15:19:53.867000+00:00,255.81300000000002,5.6e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-11-30 15:26:32.639686+00:00,2025-11-30 15:26:32.880000+00:00,240.314,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+16,audio_transcription_saved,2025-12-01 12:12:37.554633+00:00,2025-12-01 12:12:37.732000+00:00,177.367,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+18,video_transcription_saved,2025-12-01 12:20:03.029070+00:00,2025-12-01 12:20:03.242000+00:00,212.93,5.6e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+16,audio_transcription_saved,2025-12-02 09:18:06.528018+00:00,2025-12-02 09:18:06.422000+00:00,-106.018,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+57,audio_transcription_saved,2025-12-02 09:34:36.038875+00:00,2025-12-02 09:34:36.156000+00:00,117.125,4.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+57,audio_transcription_saved,2025-12-02 09:35:59.230290+00:00,2025-12-02 09:35:59.377000+00:00,146.71,4.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+16,audio_transcription_saved,2025-12-02 10:08:05.230600+00:00,2025-12-02 10:08:05.377000+00:00,146.4,5.3e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio
+57,audio_transcription_saved,2025-12-02 11:23:45.026090+00:00,2025-12-02 11:23:45.236000+00:00,209.91000000000003,5.2e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+1468,miniapp_agent_message,2025-12-03 02:39:26.886398+00:00,2025-12-03 02:39:27.093000+00:00,206.602,1.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+1468,miniapp_agent_message,2025-12-03 02:39:58.301829+00:00,2025-12-03 02:39:58.438000+00:00,136.171,1.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+1468,miniapp_agent_message,2025-12-03 02:40:46.454848+00:00,2025-12-03 02:40:46.588000+00:00,133.152,1.4e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+1468,miniapp_agent_message,2025-12-03 02:42:06.120011+00:00,2025-12-03 02:42:06.266000+00:00,145.989,1.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+57,audio_transcription_saved,2025-12-03 08:35:26.556321+00:00,2025-12-03 08:35:26.590000+00:00,33.679,5.5e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+16,audio_transcription_saved,2025-12-03 11:55:18.357332+00:00,2025-12-03 11:55:18.561000+00:00,203.66799999999998,5.1e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google
+22,video_transcription_saved,2025-12-04 18:25:51.684520+00:00,2025-12-04 18:25:52.014000+00:00,329.48,5.6e-05,google/gemini-2.5-flash-lite-preview-09-2025,Google AI Studio

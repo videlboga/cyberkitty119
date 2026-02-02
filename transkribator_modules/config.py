@@ -146,6 +146,11 @@ if FEATURE_GOOGLE_CALENDAR:
     GOOGLE_SCOPES.append('https://www.googleapis.com/auth/calendar.events')
 
 MINIAPP_PUBLIC_URL = os.getenv('MINIAPP_PUBLIC_URL', 'https://cyberkitty.ru/miniapp').rstrip("/")
+# Dev override for MiniApp URL (typically a HTTPS tunnel such as cloudflared/ngrok).
+# If set, the bot will use this URL for MiniApp buttons.
+MINIAPP_DEV_TUNNEL_URL = os.getenv('MINIAPP_DEV_TUNNEL_URL', '').strip().rstrip("/")
+# Effective URL used by bot UI.
+MINIAPP_EFFECTIVE_URL = (MINIAPP_DEV_TUNNEL_URL or MINIAPP_PUBLIC_URL).rstrip("/")
 MINIAPP_PROXY_URL = os.getenv('MINIAPP_PROXY_URL', 'https://t.me/CyberKitty19_bot/journal').rstrip('/')
 MINIAPP_PROXY_QUERY_PARAM = os.getenv('MINIAPP_PROXY_QUERY_PARAM', 'startapp').strip() or 'startapp'
 MINIAPP_NOTE_LINK_TEMPLATE = os.getenv('MINIAPP_NOTE_LINK_TEMPLATE', '').strip()
@@ -162,6 +167,11 @@ logger.info(f"⏱️ Максимальная длительность: {MAX_AUD
 logger.info(f"🧪 Бета-режим включен по умолчанию: {FEATURE_BETA_MODE}")
 logger.info(f"🧭 Router модель: {ROUTER_MODEL}")
 logger.info(f"📂 Google Drive интеграция включена: {GOOGLE_OAUTH_CONFIGURED}")
+
+# Управление пользовательскими уведомлениями об ошибках
+SUPPRESS_FAILURE_MESSAGES = os.getenv('SUPPRESS_FAILURE_MESSAGES', 'true').lower() in ('1', 'true', 'yes')
+if SUPPRESS_FAILURE_MESSAGES:
+    logger.info("🔇 Пользовательские сообщения об ошибках обработки медиa отключены (SUPPRESS_FAILURE_MESSAGES=true)")
 
 
 def load_media_service_overrides() -> Optional[Mapping[str, Any]]:
@@ -225,5 +235,6 @@ __all__ = [
     "DATABASE_URL",
     "IN_CONTAINER",
     "logger",
+    "SUPPRESS_FAILURE_MESSAGES",
     "load_media_service_overrides",
 ]

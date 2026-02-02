@@ -12,6 +12,7 @@ from sqlalchemy import delete, select, func, text
 from sqlalchemy.orm import Session
 
 from transkribator_modules.db.database import SessionLocal
+from transkribator_modules.config import logger
 from transkribator_modules.db.models import NoteChunk, Note, NoteEmbedding
 from transkribator_modules.search.embeddings import embed_texts_async, _hash_embeddings, EMBEDDING_DIM
 from transkribator_modules.search.reranker import rerank_results, ENABLE_RERANKING, RERANK_TOP_K
@@ -390,6 +391,22 @@ class IndexService:
                         }
                     )
                 
+                # Collapse multiple chunks per note -> keep best chunk per note
+                # For vector_matches 'score' is a distance (lower is better), so choose minimal.
+                if vector_matches:
+                    best_per_note = {}
+                    for m in vector_matches:
+                        nid = m['note_id']
+                        if nid not in best_per_note or m['score'] < best_per_note[nid]['score']:
+                            best_per_note[nid] = m
+                    vector_matches = list(best_per_note.values())
+
+                # Log vector candidates (for diagnostics)
+                try:
+                    logger.info('IndexService.vector_candidates', extra={'user_id': user_id, 'candidates': [{ 'note_id': m['note_id'], 'score': m['score'] } for m in (vector_matches or [])][:10]})
+                except Exception:
+                    pass
+
                 # Hybrid search: combine vector + full-text
                 if ENABLE_HYBRID_SEARCH and vector_matches:
                     fulltext_matches = self._fulltext_search(session, user_id, query, k=fetch_k * 2)
@@ -433,9 +450,14 @@ class IndexService:
                                 HYBRID_FULLTEXT_WEIGHT * ft_score
                             )
                         
-                        # Sort by hybrid score
-                        matches = sorted(combined.values(), key=lambda x: x['score'], reverse=True)
-                        matches = matches[:fetch_k]
+                        # Keep best chunk per note by hybrid score (higher is better)
+                        best_combined = {}
+                        for v in combined.values():
+                            nid = v['note_id']
+                            if nid not in best_combined or v['score'] > best_combined[nid]['score']:
+                                best_combined[nid] = v
+
+                        matches = sorted(best_combined.values(), key=lambda x: x['score'], reverse=True)[:fetch_k]
                     else:
                         matches = vector_matches
                 else:
@@ -443,7 +465,9 @@ class IndexService:
                 
                 # Apply reranking if enabled
                 if ENABLE_RERANKING and len(matches) > 1:
+                    logger.debug('IndexService.before_rerank', extra={'user_id': user_id, 'top_note_ids': [m.get('note_id') for m in matches][:8]})
                     matches = await rerank_results(query, matches, top_k=k)
+                    logger.debug('IndexService.after_rerank', extra={'user_id': user_id, 'top_note_ids': [m.get('note_id') for m in matches][:8]})
                 
                 return matches[:k]
 
@@ -481,9 +505,25 @@ class IndexService:
             )
 
         scored.sort(key=lambda item: item["score"])
-        
+        # Collapse to best chunk per note (distance: lower better)
+        if scored:
+            best_per_note = {}
+            for m in scored:
+                nid = m['note_id']
+                if nid not in best_per_note or m['score'] < best_per_note[nid]['score']:
+                    best_per_note[nid] = m
+            scored = list(best_per_note.values())
+
+        # Sort again after dedupe
+        scored.sort(key=lambda item: item['score'])
+
+        try:
+            logger.info('IndexService.fallback_candidates', extra={'user_id': user_id, 'candidates': [{ 'note_id': s['note_id'], 'score': s['score'] } for s in scored][:10]})
+        except Exception:
+            pass
+
         # Apply reranking if enabled (fallback mode without pgvector)
         if ENABLE_RERANKING and len(scored) > 1:
             scored = await rerank_results(query, scored[:fetch_k], top_k=k)
-        
+
         return scored[:k]

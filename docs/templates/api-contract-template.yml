@@ -1,0 +1,22 @@
+openapi: 3.0.3
+info:
+  title: Example API
+  version: "0.1.0"
+  description: "Шаблон OpenAPI для описания контракта сервиса."
+servers:
+  - url: https://api.example.com/v1
+paths:
+  /example:
+    post:
+      summary: Example endpoint
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                example:
+                  type: string
+      responses:
+        '200':
+          description: OK

@@ -898,13 +898,15 @@ def authenticate(
         logger.debug("Failed to log miniapp auth", exc_info=True)
 
     token = MiniAppTokenManager.sign({"user_id": user.id, "telegram_id": user.telegram_id})
+    # Для совместимости — показываем миниапп как доступный даже если флаг в БД выключен.
+    # Это отключает требование ручного включения бета-режима в UI.
     response_user = AuthResponseUser(
         id=user.id,
         telegramId=user.telegram_id,
         username=user.username,
         firstName=user.first_name,
         lastName=user.last_name,
-        betaEnabled=bool(user.beta_enabled),
+        betaEnabled=True,
         timezone=user.timezone,
         plan=user.current_plan,
     )
@@ -915,7 +917,9 @@ def authenticate(
 def get_beta_status(
     current_user: User = Depends(get_current_user),
 ) -> BetaStatusResponse:
-    enabled = bool(current_user.beta_enabled)
+    # Временно принудительно разрешаем MiniApp независимо от флага в БД —
+    # это убирает требование вручную включать бета-режим в UI.
+    enabled = True
     logger.info(
         "MiniApp beta status fetched",
         extra={

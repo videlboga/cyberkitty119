@@ -36,7 +36,11 @@ from transkribator_modules.config import (
 )
 from transkribator_modules.db.database import SessionLocal, UserService, log_telegram_event, log_event
 from transkribator_modules.bot.commands import promo_codes_command
-from transkribator_modules.transcribe.transcriber_v4 import transcribe_audio, format_transcript_with_llm, _basic_local_format
+from transkribator_modules.transcribe.transcriber_v4 import (
+    transcribe_audio,
+    _postprocess_full_transcript,
+    _basic_local_format,
+)
 from transkribator_modules.utils.large_file_downloader import download_large_file, get_file_info
 
 
@@ -565,16 +569,13 @@ async def process_video_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             return
 
         # Форматируем транскрипт для читаемости (OpenRouter/DeepSeek) с локальным fallback
-        logger.info("Запускаю LLM-форматирование транскрипта (video)")
-        formatted_transcript = None
-        try:
-            if transcript:
-                formatted_transcript = await format_transcript_with_llm(transcript)
-        except Exception as e:
-            logger.warning(f"LLM-форматирование (video) исключение: {e}")
-        if not formatted_transcript and transcript:
-            logger.info("LLM недоступен/неверный ключ — применяю локальное форматирование")
-            formatted_transcript = _basic_local_format(transcript)
+            logger.info("Запускаю постобработку транскрипта (video)")
+            formatted_transcript = None
+            try:
+                if transcript:
+                    formatted_transcript = await _postprocess_full_transcript(transcript)
+            except Exception as e:
+                logger.warning(f"Постобработка транскрипта (video) исключение: {e}")
 
         # Проверяем результат до сохранения и отправки
         if formatted_transcript and formatted_transcript.strip():
@@ -883,16 +884,13 @@ async def process_audio_file(update: Update, context: ContextTypes.DEFAULT_TYPE,
             return
 
         # Форматируем транскрипт для читаемости (OpenRouter/DeepSeek) с локальным fallback
-        logger.info("Запускаю LLM-форматирование транскрипта (audio)")
-        formatted_transcript = None
-        try:
-            if transcript:
-                formatted_transcript = await format_transcript_with_llm(transcript)
-        except Exception as e:
-            logger.warning(f"LLM-форматирование (audio) исключение: {e}")
-        if not formatted_transcript and transcript:
-            logger.info("LLM недоступен/неверный ключ — применяю локальное форматирование")
-            formatted_transcript = _basic_local_format(transcript)
+            logger.info("Запускаю постобработку транскрипта (audio)")
+            formatted_transcript = None
+            try:
+                if transcript:
+                    formatted_transcript = await _postprocess_full_transcript(transcript)
+            except Exception as e:
+                logger.warning(f"Постобработка транскрипта (audio) исключение: {e}")
 
         if formatted_transcript and formatted_transcript.strip():
             # Сохраняем транскрипцию (уже отформатированную)
@@ -1122,15 +1120,12 @@ async def _handle_youtube_link(
             await beta_process_text(update, context, transcript, source='video')
             return
 
-        logger.info("Запускаю LLM-форматирование транскрипта (youtube)")
+        logger.info("Запускаю постобработку транскрипта (youtube)")
         formatted_transcript = None
         try:
-            formatted_transcript = await format_transcript_with_llm(transcript)
+            formatted_transcript = await _postprocess_full_transcript(transcript)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("LLM-форматирование (youtube) исключение: %s", exc)
-        if not formatted_transcript:
-            logger.info("LLM недоступен/неверный ключ — применяю локальное форматирование для YouTube")
-            formatted_transcript = _basic_local_format(transcript)
+            logger.warning("Постобработка транскрипта (youtube) исключение: %s", exc)
 
         if formatted_transcript and formatted_transcript.strip():
             transcript_path = TRANSCRIPTIONS_DIR / f"youtube_transcript_{artifacts.video_id}.txt"

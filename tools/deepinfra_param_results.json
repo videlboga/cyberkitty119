@@ -1,0 +1,106 @@
+[
+  {
+    "status_code": null,
+    "ok": false,
+    "error": "ConnectionError: ('Connection aborted.', TimeoutError('The write operation timed out'))",
+    "elapsed": 300.7512924671173,
+    "params": {
+      "task": "transcribe",
+      "chunk_level": "segment",
+      "chunk_length_s": 15,
+      "temperature": 0,
+      "language": "ru"
+    }
+  },
+  {
+    "status_code": null,
+    "ok": false,
+    "error": "ConnectionError: ('Connection aborted.', TimeoutError('The write operation timed out'))",
+    "elapsed": 300.81394052505493,
+    "params": {
+      "task": "transcribe",
+      "chunk_level": "segment",
+      "chunk_length_s": 15,
+      "temperature": 0.2,
+      "language": "ru"
+    }
+  },
+  {
+    "status_code": null,
+    "ok": false,
+    "error": "ConnectionError: ('Connection aborted.', TimeoutError('The write operation timed out'))",
+    "elapsed": 300.7515375614166,
+    "params": {
+      "task": "transcribe",
+      "chunk_level": "segment",
+      "chunk_length_s": 30,
+      "temperature": 0,
+      "language": "ru"
+    }
+  },
+  {
+    "status_code": null,
+    "ok": false,
+    "error": "ConnectionError: ('Connection aborted.', TimeoutError('The write operation timed out'))",
+    "elapsed": 300.74875020980835,
+    "params": {
+      "task": "transcribe",
+      "chunk_level": "segment",
+      "chunk_length_s": 30,
+      "temperature": 0.2,
+      "language": "ru"
+    }
+  },
+  {
+    "status_code": null,
+    "ok": false,
+    "error": "ConnectionError: ('Connection aborted.', TimeoutError('The write operation timed out'))",
+    "elapsed": 300.76154375076294,
+    "params": {
+      "task": "transcribe",
+      "chunk_level": "word",
+      "chunk_length_s": 15,
+      "temperature": 0,
+      "language": "ru"
+    }
+  },
+  {
+    "status_code": null,
+    "ok": false,
+    "error": "ConnectionError: ('Connection aborted.', TimeoutError('The write operation timed out'))",
+    "elapsed": 300.8154492378235,
+    "params": {
+      "task": "transcribe",
+      "chunk_level": "word",
+      "chunk_length_s": 15,
+      "temperature": 0.2,
+      "language": "ru"
+    }
+  },
+  {
+    "status_code": null,
+    "ok": false,
+    "error": "ConnectionError: ('Connection aborted.', TimeoutError('The write operation timed out'))",
+    "elapsed": 300.7916216850281,
+    "params": {
+      "task": "transcribe",
+      "chunk_level": "word",
+      "chunk_length_s": 30,
+      "temperature": 0,
+      "language": "ru"
+    }
+  },
+  {
+    "status_code": null,
+    "ok": false,
+    "error": "ConnectionError: ('Connection aborted.', TimeoutError('The write operation timed out'))",
+    "elapsed": 300.6486916542053,
+    "params": {
+      "task": "transcribe",
+      "chunk_level": "word",
+      "chunk_length_s": 30,
+      "temperature": 0.2,
+      "language": "ru"
+    }
+  }
+]

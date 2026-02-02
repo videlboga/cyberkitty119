@@ -1521,6 +1521,18 @@ async def transcribe_video(
             formatting_service=formatting_service or "none"
         )
 
+        # Логируем событие сохранения для аналитики
+        try:
+            from transkribator_modules.db.database import log_event as _log_event
+            _log_event(user.id, "api_transcription_saved", {
+                "filename": file.filename,
+                "duration_min": actual_duration,
+                "text_len": len(formatted_transcript or raw_transcript or ""),
+                "formatting_service": formatting_service or "none",
+            })
+        except Exception:
+            pass
+
         # Обновляем использование (минуты или генерации)
         user_service.add_usage(user, actual_duration)
 

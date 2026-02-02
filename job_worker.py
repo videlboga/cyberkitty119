@@ -47,7 +47,10 @@ class WorkerConfig:
     backoff_min: float = 1.0
     backoff_max: float = 30.0
     plan_reminder_interval: float = 1800.0
-    enable_plan_reminders: bool = True
+    # Default to disabled to avoid accidental reminder spam in local/dev runs.
+    # Use --disable-plan-reminders flag or DISABLE_PLAN_REMINDERS env to control
+    # reminder behavior. In production, set the env/flag explicitly when needed.
+    enable_plan_reminders: bool = False
 
 
 class JobWorker:

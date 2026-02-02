@@ -1,0 +1,6 @@
+fastapi==0.95.2
+uvicorn[standard]==0.22.0
+# Use OpenAI's whisper package which relies on torch and ffmpeg (avoids PyAV build issues)
+# The PyPI name is `openai-whisper` to avoid conflicts with other packages named 'whisper'
+openai-whisper==20250625
+torch>=2.2.0
