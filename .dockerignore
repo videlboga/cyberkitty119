@@ -17,7 +17,6 @@ telegram-bot-api-data/
 videos/
 audio/
 transcriptions/
-wheelhouse/
 *.sqlite
 *.db
 
