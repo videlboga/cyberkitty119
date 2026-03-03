@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import aiohttp
 import json
 import os
 import asyncio
 import re
 from pathlib import Path
+from typing import Any, Optional, Dict, List
 from transkribator_modules.config import logger, OPENROUTER_API_KEY, OPENROUTER_MODEL, DEEPINFRA_API_KEY
 
 # Параметры Gemini, согласованные по результатам экспериментального скрипта
@@ -19,6 +22,46 @@ GEMINI_TEMPERATURE_SCHEDULE = [0.2, 0.0, 0.4]
 CHUNK_RETRY_ATTEMPTS = 3
 MIN_CHUNK_TEXT_LENGTH = 24  # минимальная длина текста чанка, иначе повторяем попытку
 LLM_FORMAT_RETRY_ATTEMPTS = int(os.getenv("LLM_FORMAT_RETRY_ATTEMPTS", "3"))
+TRANSCRIBE_CLIENT_ENABLED = os.getenv("TRANSCRIBE_CLIENT_ENABLED", "0").lower() in ("1", "true", "yes")
+TRANSCRIBE_CLIENT_MODE = os.getenv("TRANSCRIBE_DEFAULT_MODE", "auto")
+_SEGMENT_CACHE_SUFFIX = ".segments.json"
+
+
+def _segments_cache_path(audio_path: Path) -> Path:
+    """Возвращает путь для кэша сегментов рядом с аудиофайлом."""
+    return audio_path.with_suffix(f"{audio_path.suffix}{_SEGMENT_CACHE_SUFFIX}")
+
+
+def _save_segments_cache(audio_path: Path, segments: List[Dict[str, Any]], transcript: Optional[str]) -> None:
+    try:
+        cache_path = _segments_cache_path(audio_path)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "segments": segments or [],
+                    "text": transcript or "",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Не удалось записать кэш сегментов", extra={"error": str(exc)})
+
+
+def _load_segments_cache(audio_path: Path) -> Optional[tuple[List[Dict[str, Any]], Optional[str]]]:
+    try:
+        cache_path = _segments_cache_path(audio_path)
+        if not cache_path.exists():
+            return None
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        segments = data.get("segments") if isinstance(data.get("segments"), list) else []
+        text = data.get("text")
+        return segments, text
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Не удалось прочитать кэш сегментов", extra={"error": str(exc)})
+        return None
 
 async def compress_audio_for_api(audio_path):
     """Сжимает аудиофайл для отправки в API, уменьшая размер."""
@@ -66,21 +109,109 @@ async def compress_audio_for_api(audio_path):
         logger.error(f"Ошибка при сжатии аудио: {e}")
         return str(audio_path)  # Возвращаем оригинальный файл при ошибке
 
+
+def _extract_text_from_client_result(result):
+    if not isinstance(result, dict):
+        return None
+
+    status = result.get("status")
+    if isinstance(status, str) and status.lower() not in ("ok", "success", "done", ""):
+        logger.warning(
+            "Transcribe client returned non-OK status",
+            extra={"status": status, "meta": result.get("meta")},
+        )
+
+    text = result.get("text")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    segments = result.get("segments")
+    if isinstance(segments, (list, tuple)):
+        pieces = []
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            snippet = segment.get("text")
+            if isinstance(snippet, str) and snippet.strip():
+                pieces.append(snippet.strip())
+        if pieces:
+            return " ".join(pieces)
+
+    for key in ("results", "choices"):
+        items = result.get(key)
+        if isinstance(items, (list, tuple)):
+            for entry in items:
+                extracted = _extract_text_from_client_result(entry)
+                if extracted:
+                    return extracted
+
+    return None
+
+
+async def _try_transcribe_with_client(audio_path):
+    if not TRANSCRIBE_CLIENT_ENABLED:
+        return None
+
+    cached = _load_segments_cache(Path(audio_path))
+    if cached and cached[1]:
+        logger.info("Использую кэш транскрипции из transcribe_client")
+        return cached[1]
+
+    try:
+        from transcribe_client import TranscribeClient
+    except ImportError:
+        logger.warning("TRANSCRIBE_CLIENT_ENABLED set but transcribe_client package missing")
+        return None
+
+    client = TranscribeClient(default_mode=TRANSCRIBE_CLIENT_MODE)
+    try:
+        result = await asyncio.to_thread(client.transcribe, str(audio_path), TRANSCRIBE_CLIENT_MODE)
+    except Exception as exc:
+        logger.warning(
+            "Transcribe client invocation failed",
+            extra={"error": str(exc), "mode": TRANSCRIBE_CLIENT_MODE},
+        )
+        return None
+
+    extracted = _extract_text_from_client_result(result)
+    segments = result.get("segments") or []
+    transcript = extracted
+    if transcript or segments:
+        _save_segments_cache(Path(audio_path), segments, transcript)
+
+    if transcript:
+        logger.info(
+            "Transcription produced by transcribe_client",
+            extra={"chars": len(transcript), "mode": TRANSCRIBE_CLIENT_MODE},
+        )
+        return transcript
+
+    logger.warning(
+        "Transcribe client returned no usable text",
+        extra={"meta": result.get("meta") if isinstance(result, dict) else None},
+    )
+    return None
+
 async def transcribe_audio(audio_path, model_name="base"):
     """Транскрибирует аудио с помощью OpenRouter Gemini через чанки до 10 минут."""
 
+    client_result = await _try_transcribe_with_client(audio_path)
+    if client_result:
+        return client_result
+
     # Временно закомментирована логика DeepInfra - используем Gemini как основной метод
-    # if DEEPINFRA_API_KEY:
-    #     logger.info("Использую DeepInfra API для транскрибации целиком...")
-    #     result = await transcribe_whole_audio_with_deepinfra(audio_path)
-    #     if result:
-    #         return result
-    #     else:
-    #         logger.warning("DeepInfra API не сработал")
-    #         return None
-    # else:
-    #     logger.error("DeepInfra API ключ не настроен")
-    #     return None
+        if DEEPINFRA_API_KEY:
+            logger.info("Использую DeepInfra API для транскрибации целиком...")
+            try:
+                result = await transcribe_whole_audio_with_deepinfra(audio_path)
+                if result:
+                    return result
+                else:
+                    logger.warning("DeepInfra API не вернул результат")
+            except Exception as exc:
+                logger.warning("DeepInfra transcription failed", extra={"error": str(exc)})
+        else:
+            logger.debug("DEEPINFRA_API_KEY не настроен — пропускаем DeepInfra")
 
     # Используем Gemini через OpenRouter как основной метод
     if OPENROUTER_API_KEY:
@@ -153,6 +284,16 @@ def _detect_repeating_phrase(text: str) -> str | None:
     """Находит короткую фразу (до 4 слов), которая повторяется слишком часто подряд."""
     if not text:
         return None
+
+    # First, try to detect hyphenated repeating tokens (e.g. "та-та-та")
+    # without normalizing away hyphens — tests sometimes expect hyphen form.
+    try:
+        hyphen_match = re.search(r"(\b\w+(?:-\w+){1,3}\b)(?:\s+\1\b){5,}", text, re.IGNORECASE)
+        if hyphen_match:
+            return hyphen_match.group(1).strip()
+    except Exception:
+        # ignore regex issues and fall back to general detection
+        pass
 
     # Нормализуем текст: понижаем регистр, убираем пунктуацию (включая дефисы),
     # чтобы паттерны вида "та-та-та" или "та-та, та-та" тоже сворачивались.
