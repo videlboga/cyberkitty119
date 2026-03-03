@@ -4,6 +4,22 @@ audio/
 *.wav
 *.ogg
 telegram-bot-api-data/
+*.mp4
+*.mkv
+
+# Additional large directories/output artifacts
+archive/
+deploy_pack.tar.gz
+miniapp/
+# miniapp_dist нужен для API/UI, поэтому не исключаем его из контекста
+# Exclude heavy runtime directories from build context to avoid copying large files into image
+telegram-bot-api-data/
+videos/
+audio/
+transcriptions/
+wheelhouse/
+*.sqlite
+*.db
 
 # Ignore local data/test artifacts
 data/
@@ -11,10 +27,30 @@ videos/
 server_dbs_*/
 backups/
 *.dump
+.backups/
+
+# Python virtual environments (CRITICAL - can be 1GB+ each!)
+.venv
+.venv_*
+venv/
+env/
+.env.local
 
 # Python caches
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
 
 # Git
 .git
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
