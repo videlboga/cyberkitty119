@@ -9,7 +9,7 @@ from transkribator_modules.config import logger
 from transkribator_modules.db.models import ProcessingJob
 
 from .progress import JobNotifier
-from .stages import MediaPipelineStage, default_media_stages
+from .stages import MediaPipelineStage, default_media_stages, default_media_gpu_stages
 from .services import MediaPipelineServices, default_media_services
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -61,6 +61,9 @@ def run_media_pipeline(
 
     try:
         for stage in stage_sequence:
+            stage_name = getattr(stage, "name", stage.__class__.__name__)
+            stage_label = stage.describe()
+            context.notifier.set_stage(stage_name, progress=0, label=stage_label)
             context.notifier.notify(stage.describe())
             try:
                 result = stage.run(context)
@@ -69,7 +72,7 @@ def run_media_pipeline(
                     "Media pipeline stage failed",
                     extra={
                         "job_id": context.job.id,
-                        "stage": getattr(stage, "name", stage.__class__.__name__),
+                        "stage": stage_name,
                     },
                 )
                 raise
@@ -77,6 +80,7 @@ def run_media_pipeline(
                 context.artifacts.update(result)
             if getattr(stage, "name", "").lower() == "cleanup":
                 cleanup_executed = True
+            context.notifier.set_stage(stage_name, progress=100, label=stage_label)
             accumulated_weight += max(stage.weight, 1)
             progress_value = int(accumulated_weight / total_weight * 100)
             context.notifier.set_progress(progress_value)

@@ -132,13 +132,46 @@ def _fetch_job_for_update(
     return result
 
 
-def mark_job_progress(job_id: int, *, progress: Optional[int] = None) -> None:
+def mark_job_progress(
+    job_id: int,
+    *,
+    progress: Optional[int] = None,
+    stage: Optional[str] = None,
+    stage_progress: Optional[int] = None,
+    stage_label: Optional[str] = None,
+) -> None:
     with _session_scope() as session:
         job = session.get(ProcessingJob, job_id)
         if not job:
             logger.warning("Progress update skipped; job missing", extra={"job_id": job_id})
             return
         job.progress = progress
+        payload = dict(job.payload or {})
+        status_blob = dict(payload.get("_status") or {})
+
+        def _maybe_update(key: str, value: Optional[Any]) -> bool:
+            if value is None:
+                return False
+            if status_blob.get(key) == value:
+                return False
+            status_blob[key] = value
+            return True
+
+        changed = False
+        if stage_progress is not None:
+            normalized_stage = max(0, min(100, int(stage_progress)))
+            if status_blob.get("stage_progress") != normalized_stage:
+                status_blob["stage_progress"] = normalized_stage
+                changed = True
+        if _maybe_update("stage", stage):
+            changed = True
+        if _maybe_update("stage_label", stage_label):
+            changed = True
+
+        if changed:
+            payload["_status"] = status_blob
+            job.payload = payload
+
         job.locked_at = _utcnow()
         session.flush()
 

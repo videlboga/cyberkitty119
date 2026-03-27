@@ -111,24 +111,32 @@ def _progress_bar(progress: Optional[int], width: int = 12) -> str:
 def _build_progress_text(
     status: str,
     progress: Optional[int],
-    stage_hint: Optional[str],
+    stage_name: Optional[str],
+    stage_label: Optional[str],
+    stage_progress: Optional[int],
     filename: str,
     elapsed: float,
 ) -> str:
     status_label = PROGRESS_LABELS.get(status, status)
     bar = _progress_bar(progress)
     pct = f"{progress}%" if progress is not None else "—"
-    stage_emoji = STAGE_EMOJIS.get(stage_hint or "", "•") if stage_hint else "•"
     elapsed_str = f"{int(elapsed)}с"
 
     lines = [
         f"📂 *{filename}*",
         "",
         f"{status_label}",
-        f"`[{bar}]` {pct}",
-        "",
-        f"{stage_emoji} {stage_hint or ''}  ·  ⏱ {elapsed_str}",
+        f"`[{bar}]` {pct} · ⏱ {elapsed_str}",
     ]
+
+    stage_title = stage_label or stage_name
+    if stage_title:
+        stage_emoji = STAGE_EMOJIS.get(stage_name or "", "•")
+        lines.append("")
+        lines.append(f"{stage_emoji} {stage_title}")
+        stage_pct = f"{stage_progress}%" if stage_progress is not None else "—"
+        lines.append(f"`[{_progress_bar(stage_progress)}]` {stage_pct}")
+
     return "\n".join(lines)
 
 
@@ -202,7 +210,7 @@ async def handle_media_file(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     await status_msg.edit_text(
-        _build_progress_text("queued", 0, None, filename, 0),
+        _build_progress_text("queued", 0, None, None, None, filename, 0),
         parse_mode="Markdown",
     )
 
@@ -233,6 +241,7 @@ async def _poll_and_deliver(
     started = time.monotonic()
     last_text: Optional[str] = None
     last_stage: Optional[str] = None
+    last_stage_label: Optional[str] = None
 
     while True:
         elapsed = time.monotonic() - started
@@ -250,10 +259,23 @@ async def _poll_and_deliver(
         progress = row.get("progress")
         error = row.get("error")
 
-        # Попытаться вытащить текущий stage из error/artifacts (воркер пишет stage name в notifier)
-        stage_hint = last_stage  # сохраняем между итерациями
+        stage_name = row.get("stage") or last_stage
+        stage_label = row.get("stage_label") or last_stage_label
+        stage_progress = row.get("stage_progress")
+        if row.get("stage"):
+            last_stage = row["stage"]
+        if row.get("stage_label"):
+            last_stage_label = row["stage_label"]
 
-        new_text = _build_progress_text(status, progress, stage_hint, filename, elapsed)
+        new_text = _build_progress_text(
+            status,
+            progress,
+            stage_name,
+            stage_label,
+            stage_progress,
+            filename,
+            elapsed,
+        )
         if new_text != last_text:
             await _safe_edit(status_msg, new_text, parse_mode="Markdown")
             last_text = new_text
