@@ -20,6 +20,40 @@ from transkribator_modules.config import (
 
 
 API_BASE = "https://api.telegram.org"
+LOCAL_BOT_API_DATA_DIR_HOST = os.getenv("LOCAL_BOT_API_DATA_DIR_HOST", "/var/lib/telegram-bot-api").rstrip("/")
+
+
+def _storage_roots() -> list[Path]:
+    """Return candidate directories that may contain cached Bot API files."""
+    def _iter_candidates() -> list[str]:
+        env_names = (
+            "TELEGRAM_BOT_API_LOCAL_DIR",
+            "LOCAL_BOT_API_DATA_DIR",
+            "LOCAL_BOT_API_DATA_DIR_HOST",
+        )
+        for name in env_names:
+            value = os.getenv(name, "").strip()
+            if value:
+                yield value
+        if LOCAL_BOT_API_DATA_DIR_HOST:
+            yield LOCAL_BOT_API_DATA_DIR_HOST
+        # Common mount points (containers mount /vpn-api-data; local dev keeps /app/telegram-bot-api-data).
+        yield "/vpn-api-data"
+        yield "/app/telegram-bot-api-data"
+        yield "/var/lib/telegram-bot-api-vpn"
+        yield "/var/lib/telegram-bot-api"
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for candidate in _iter_candidates():
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        key = str(path)
+        if key and key not in seen:
+            seen.add(key)
+            roots.append(path)
+    return roots
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +70,26 @@ _TRANSIENT_MARKERS = (
     "wrong file_id",
     "need to retry",
 )
+
+
+def _strip_host_prefix(raw_path: str) -> str:
+    """Remove /var/lib/telegram-bot-api* prefix if present."""
+    normalized = raw_path.lstrip("/")
+    if not LOCAL_BOT_API_DATA_DIR_HOST:
+        return normalized
+    host = LOCAL_BOT_API_DATA_DIR_HOST.lstrip("/")
+    if host and normalized.startswith(host):
+        normalized = normalized[len(host):].lstrip("/")
+    return normalized
+
+
+def normalize_bot_api_file_path(raw_path: str, bot_token: str) -> str:
+    """Normalize file_path returned by Bot API for use in HTTP downloads."""
+    without_host = _strip_host_prefix(raw_path)
+    token_prefix = f"{bot_token}/"
+    if without_host.startswith(token_prefix):
+        return without_host[len(token_prefix):]
+    return without_host
 
 
 async def _sleep_for_attempt(attempt: int, cfg: _RetryConfig) -> None:
@@ -75,10 +129,9 @@ async def get_file_info(
     *,
     # Increase default timeout: local bot API may need extra time to fetch
     # large files from Telegram and return file_path.
-    # Для локального Bot API НЕ держим соединение слишком долго:
-    # если getFile не отвечает за ~60 секунд, считаем попытку неуспешной
-    # и переходим к следующей/кеш‑фолбэку, чтобы не блокировать пользователя.
-    timeout: float = 180.0 if not USE_LOCAL_BOT_API else 60.0,
+    # Для локального Bot API даём больше времени на подготовку file_path,
+    # особенно для больших файлов. Увеличено до 600 сек (10 минут).
+    timeout: float = 180.0 if not USE_LOCAL_BOT_API else 600.0,
     retry_cfg: _RetryConfig | None = None,
 ) -> Optional[dict[str, Any]]:
     """Fetch Telegram file metadata, retrying on transient failures."""
@@ -88,14 +141,14 @@ async def get_file_info(
     )
     if retry_cfg is None:
         retry_cfg = _RetryConfig()
-        # Для локального API даём немного времени подготовить file_path
+        # Для локального API даём больше времени подготовить file_path
         if USE_LOCAL_BOT_API:
-            # REDUCED: Local Bot API appears to have hard ~2 min timeout on getFile for large files.
-            # Only try 6 times (instead of 12) with shorter backoffs to fail faster and allow
-            # cache probing as fallback. Total time: ~30 seconds vs ~120 seconds before.
-            object.__setattr__(retry_cfg, 'attempts', 6)
+            # Увеличено до 10 попыток с таймаутом 600 сек на каждую.
+            # Это позволяет локальному Bot API получить большие файлы от Telegram.
+            # Total max time: ~600 сек + retry backoff (до 10 минут).
+            object.__setattr__(retry_cfg, 'attempts', 10)
             object.__setattr__(retry_cfg, 'base_delay', 2.0)
-            object.__setattr__(retry_cfg, 'max_delay', 10.0)
+            object.__setattr__(retry_cfg, 'max_delay', 20.0)
     url = _build_api_url(bot_token, "getFile")
 
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -280,98 +333,115 @@ async def download_large_file(
     # по размеру в каталоге за недавний период времени.
     try:
         if expected_size_bytes and expected_size_bytes > 0:
-            local_root = Path(os.getenv("TELEGRAM_BOT_API_LOCAL_DIR", "/app/telegram-bot-api-data"))
-            token_dir = local_root / bot_token
-            if token_dir.exists():
-                now = time.time()
-                candidates: list[Path] = []
-                try:
-                    for p in token_dir.rglob('*'):
-                        try:
-                            if not p.is_file():
+            local_roots = _storage_roots()
+            for local_root in local_roots:
+                if not local_root.exists():
+                    continue
+                token_dir = local_root / bot_token
+                if token_dir.exists():
+                    now = time.time()
+                    candidates: list[Path] = []
+                    try:
+                        for p in token_dir.rglob('*'):
+                            try:
+                                if not p.is_file():
+                                    continue
+                                st = p.stat()
+                                if st.st_size == expected_size_bytes and (now - st.st_mtime) <= cache_mtime_window_sec:
+                                    candidates.append(p)
+                            except OSError:
                                 continue
-                            st = p.stat()
-                            if st.st_size == expected_size_bytes and (now - st.st_mtime) <= cache_mtime_window_sec:
-                                candidates.append(p)
-                        except OSError:
-                            continue
-                except Exception:
-                    # rglob can raise on permission errors; fall back to a conservative scan
-                    candidates = []
+                    except Exception:
+                        # rglob can raise on permission errors; fall back to a conservative scan
+                        candidates = []
 
-                if len(candidates) == 1:
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy(candidates[0], destination)
-                    logger.info(
-                        "Early-copied media from cache by size (recursive token scan)",
-                        extra={"source": str(candidates[0]), "destination": str(destination), "size": expected_size_bytes},
-                    )
-                    return True
+                    if len(candidates) == 1:
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy(candidates[0], destination)
+                        logger.info(
+                            "Early-copied media from cache by size (recursive token scan)",
+                            extra={"source": str(candidates[0]), "destination": str(destination), "size": expected_size_bytes, "root": str(local_root)},
+                        )
+                        return True
     except Exception as e:
         logger.warning("Early cache probe failed: %s", e)
 
     # Во время ожидания getFile дополнительно проверяем появление файла в локальном кеше
     # (ступенчатый поллинг кеша). Если найден уникальный кандидат по размеру — копируем сразу.
     async def _probe_cache_copy() -> bool:
+        """Probe local Bot API storage for a recent file and copy if uniquely matched.
+
+        Two modes:
+        - If expected_size_bytes is provided (>0) -> match by exact size and recent mtime.
+        - If expected_size_bytes is None/0 -> match by recent mtime only, but require a single candidate.
+        """
         try:
-            # If we have an expected size, prefer exact-size matching (fast and reliable).
-            local_root = Path(os.getenv("TELEGRAM_BOT_API_LOCAL_DIR", "/app/telegram-bot-api-data"))
-            token_dir = local_root / bot_token
-            if not token_dir.exists():
-                return False
-            now = time.time()
-            candidates: list[Path] = []
-            try:
-                # Two modes:
-                # 1) If expected_size_bytes provided (>0) -> match by size and recent mtime.
-                # 2) If expected_size_bytes is None/0 -> match by recent mtime only, but require unique candidate.
-                for p in token_dir.rglob('*'):
-                    try:
-                        if not p.is_file():
-                            continue
-                        st = p.stat()
-                        # Skip empty files
-                        if st.st_size == 0:
-                            continue
-                        age = now - st.st_mtime
-                        if age <= cache_mtime_window_sec:
-                            if expected_size_bytes and expected_size_bytes > 0:
-                                if st.st_size == expected_size_bytes:
+            local_roots = _storage_roots()
+            for local_root in local_roots:
+                if not local_root.exists():
+                    continue
+                token_dir = local_root / bot_token
+                if not token_dir.exists():
+                    continue
+                now = time.time()
+                candidates: list[Path] = []
+                try:
+                    for p in token_dir.rglob("*"):
+                        try:
+                            if not p.is_file():
+                                continue
+                            st = p.stat()
+                            # Skip empty files
+                            if st.st_size == 0:
+                                continue
+                            age = now - st.st_mtime
+                            if age <= cache_mtime_window_sec:
+                                if expected_size_bytes and expected_size_bytes > 0:
+                                    if st.st_size == expected_size_bytes:
+                                        candidates.append(p)
+                                else:
                                     candidates.append(p)
-                            else:
-                                # No expected size — collect any recent non-empty file as candidate
-                                candidates.append(p)
-                    except OSError:
-                        continue
-            except Exception:
-                # In case rglob fails (permissions, broken filesystem), fall back to no-op
-                candidates = []
+                        except OSError:
+                            continue
+                except Exception:
+                    # rglob can fail on some filesystems/permissions; treat as no candidates
+                    candidates = []
 
-            # If we found exactly one candidate, copy it (safe fallback for local Bot API cache)
-            if len(candidates) == 1:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(candidates[0], destination)
-                logger.info(
-                    "Early-copied media from cache during polling (recursive token scan)",
-                    extra={"source": str(candidates[0]), "destination": str(destination), "candidates": [str(c) for c in candidates]},
-                )
-                return True
-                                logger.debug("Cache probe: token_dir=%s exists=%s", str(token_dir), token_dir.exists())
+                # If exactly one candidate found, copy and return True
+                if len(candidates) == 1:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(candidates[0], destination)
+                    logger.info(
+                        "Early-copied media from cache during polling (recursive token scan)",
+                        extra={"source": str(candidates[0]), "destination": str(destination), "root": str(local_root)},
+                    )
+                    return True
 
-            # If we have multiple candidates, log and do not guess — avoid copying wrong file.
-            if len(candidates) > 1:
-                logger.info(
-                    "Cache probe found multiple recent candidates; skipping copy",
-                    extra={"candidates_count": len(candidates), "sample": [str(c) for c in candidates[:5]]},
-                )
+                # Multiple candidates -> try a best-effort selection instead of skipping.
+                # Often multiple files can have the same size (e.g. duplicates or reuploads).
+                # In that case choose the most recently modified candidate as a heuristic.
+                if len(candidates) > 1:
+                    try:
+                        candidates_sorted = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+                        chosen = candidates_sorted[0]
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy(chosen, destination)
+                        logger.info(
+                            "Early-copied media from cache by choosing most-recent candidate",
+                            extra={
+                                "chosen": str(chosen),
+                                "candidates_count": len(candidates),
+                                "sample": [str(c) for c in candidates[:5]],
+                                "root": str(local_root),
+                            },
+                        )
+                        return True
+                    except Exception as e:
+                        logger.warning("Best-effort cache copy failed: %s", e)
         except Exception as e:
-                                            scanned += 1
-                                            if scanned % 500 == 0:
-                                                logger.debug("Cache probe: scanned %s entries so far", scanned)
-            logger.warning("Stepped cache probe failed: %s", e)
+            logger.warning("Cache probe failed: %s", e)
         return False
 
-                                            logger.debug("Cache probe: checking file %s with size %s", str(p), st.st_size)
     file_info = await get_file_info(bot_token, file_id, retry_cfg=retry_cfg)
     logger.info(
         "🔄 get_file_info COMPLETED",
@@ -379,8 +449,6 @@ async def download_large_file(
     )
     if not file_info:
         # Последняя попытка: возможно файл уже появился в кеше tgapi, копируем по эвристике
-                                                        logger.debug("Cache probe: matched candidate by size: %s size=%s age=%.1fs",
-                                                                     str(p), st.st_size, now - st.st_mtime)
         logger.info(
             "get_file_info returned no file_path, attempting cache probe",
             extra={"file_id": file_id, "expected_size": expected_size_bytes}
@@ -400,7 +468,6 @@ async def download_large_file(
             "Failed to obtain file info for download (getFile returned no result or missing file_path)",
             extra={
                 "file_id": file_id,
-                                logger.debug("Cache probe finished: scanned=%s candidates_found=%s", scanned, len(candidates))
                 "has_file_info": bool(file_info),
                 "expected_size_bytes": expected_size_bytes,
                 "use_local_api": USE_LOCAL_BOT_API,
@@ -420,37 +487,39 @@ async def download_large_file(
     #    "/var/lib/telegram-bot-api/<bot_token>/videos/file_2"
     # Приведём к относительному виду "videos/<...>" и корректно обработаем
     # локальное копирование из общего тома.
-    file_path = raw_file_path.lstrip("/")
-    # Если путь абсолютный внутри Bot API, вырежем префикс
-    abs_prefix = f"var/lib/telegram-bot-api/{bot_token}/"
-    if file_path.startswith(abs_prefix):
-        file_path = file_path[len(abs_prefix):]
+    file_path = normalize_bot_api_file_path(raw_file_path, bot_token)
 
     # Попытка прямого копирования из каталога локального Bot API
     # Ожидаем путь вида /var/lib/telegram-bot-api/<bot_token>/<file_path>
     try:
-        local_root = Path(os.getenv("TELEGRAM_BOT_API_LOCAL_DIR", "/app/telegram-bot-api-data"))
-        # В локальном томе структура: /app/telegram-bot-api-data/<bot_token>/<relative_path>
-        local_source = local_root / bot_token / file_path
-        logger.info("🔍 Checking local Bot API storage: %s", local_source)
-        if local_source.exists():
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(local_source, destination)
+        host_relative = _strip_host_prefix(raw_file_path)
+        for local_root in _storage_roots():
+            if not local_root.exists():
+                continue
+            # В локальном томе структура: <root>/<bot_token>/<relative_path>
+            local_source = local_root / bot_token / file_path
             logger.info(
-                "Copied media file from local Bot API storage",
-                extra={"source": str(local_source), "destination": str(destination)},
+                "🔍 Checking local Bot API storage",
+                extra={"candidate": str(local_source), "root": str(local_root)},
             )
-            return True
-        # Иногда tgapi возвращает абсолютный raw путь — попробуем и его ветку
-        abs_candidate = local_root / (raw_file_path.lstrip("/var/lib/telegram-bot-api/") if raw_file_path.startswith("/var/lib/telegram-bot-api/") else raw_file_path)
-        if abs_candidate.exists():
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(abs_candidate, destination)
-            logger.info(
-                "Copied media file from local Bot API storage (abs path)",
-                extra={"source": str(abs_candidate), "destination": str(destination)},
-            )
-            return True
+            if local_source.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(local_source, destination)
+                logger.info(
+                    "Copied media file from local Bot API storage",
+                    extra={"source": str(local_source), "destination": str(destination)},
+                )
+                return True
+            if host_relative:
+                abs_candidate = local_root / host_relative
+                if abs_candidate.exists():
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(abs_candidate, destination)
+                    logger.info(
+                        "Copied media file from local Bot API storage (abs path)",
+                        extra={"source": str(abs_candidate), "destination": str(destination)},
+                    )
+                    return True
     except Exception as e:
         logger.warning("Local storage probe failed: %s", e)
     # Сначала пробуем локальный URL (если включён локальный API), затем глобальный
@@ -563,4 +632,4 @@ async def download_large_file(
     return False
 
 
-__all__ = ["download_large_file", "get_file_info"]
+__all__ = ["download_large_file", "get_file_info", "normalize_bot_api_file_path"]
