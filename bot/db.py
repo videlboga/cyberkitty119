@@ -62,15 +62,25 @@ def get_job_row(job_id: int) -> Optional[Dict[str, Any]]:
             return None
         payload = job.payload or {}
         status_blob = payload.get("_status") or {}
+        status_blob = job.payload.get("_status") if job.payload else {}
+        stage_window = None
+        if isinstance(status_blob, dict):
+            window_val = status_blob.get("stage_window")
+            if isinstance(window_val, (list, tuple)) and len(window_val) == 2:
+                try:
+                    stage_window = (int(window_val[0]), int(window_val[1]))
+                except (TypeError, ValueError):
+                    stage_window = None
         return {
             "id": job.id,
             "status": job.status,
             "progress": job.progress,
             "error": job.error,
             "payload": payload,
-            "stage": status_blob.get("stage"),
-            "stage_label": status_blob.get("stage_label"),
-            "stage_progress": status_blob.get("stage_progress"),
+            "stage": status_blob.get("stage") if isinstance(status_blob, dict) else None,
+            "stage_label": status_blob.get("stage_label") if isinstance(status_blob, dict) else None,
+            "stage_progress": status_blob.get("stage_progress") if isinstance(status_blob, dict) else None,
+            "stage_window": stage_window,
         }
     finally:
         db.close()

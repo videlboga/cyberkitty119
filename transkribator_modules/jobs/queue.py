@@ -139,13 +139,15 @@ def mark_job_progress(
     stage: Optional[str] = None,
     stage_progress: Optional[int] = None,
     stage_label: Optional[str] = None,
+    stage_window: Optional[tuple[int, int]] = None,
 ) -> None:
     with _session_scope() as session:
         job = session.get(ProcessingJob, job_id)
         if not job:
             logger.warning("Progress update skipped; job missing", extra={"job_id": job_id})
             return
-        job.progress = progress
+        if progress is not None:
+            job.progress = progress
         payload = dict(job.payload or {})
         status_blob = dict(payload.get("_status") or {})
 
@@ -160,13 +162,12 @@ def mark_job_progress(
         changed = False
         if stage_progress is not None:
             normalized_stage = max(0, min(100, int(stage_progress)))
-            if status_blob.get("stage_progress") != normalized_stage:
-                status_blob["stage_progress"] = normalized_stage
-                changed = True
-        if _maybe_update("stage", stage):
-            changed = True
-        if _maybe_update("stage_label", stage_label):
-            changed = True
+            changed |= _maybe_update("stage_progress", normalized_stage)
+        changed |= _maybe_update("stage", stage)
+        changed |= _maybe_update("stage_label", stage_label)
+        if stage_window is not None:
+            window = [int(stage_window[0]), int(stage_window[1])]
+            changed |= _maybe_update("stage_window", window)
 
         if changed:
             payload["_status"] = status_blob

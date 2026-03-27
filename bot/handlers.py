@@ -262,10 +262,24 @@ async def _poll_and_deliver(
         stage_name = row.get("stage") or last_stage
         stage_label = row.get("stage_label") or last_stage_label
         stage_progress = row.get("stage_progress")
+        stage_window = row.get("stage_window")
         if row.get("stage"):
             last_stage = row["stage"]
         if row.get("stage_label"):
             last_stage_label = row["stage_label"]
+        if (
+            stage_progress is None
+            and stage_window
+            and progress is not None
+        ):
+            start, end = stage_window
+            span = max(end - start, 1)
+            if progress <= start:
+                stage_progress = 0
+            elif progress >= end:
+                stage_progress = 100
+            else:
+                stage_progress = int((progress - start) / span * 100)
 
         new_text = _build_progress_text(
             status,
