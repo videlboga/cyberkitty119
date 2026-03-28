@@ -52,6 +52,7 @@ from transkribator_modules.beta.llm import (
     AgentLLMError,
     call_agent_llm_with_retry,
 )
+from transkribator_modules.search.service import NoteSearchError, run_note_search
 from transkribator_modules.utils.large_file_downloader import download_large_file
 
 # ── Текстовые шаблоны ────────────────────────────────────────────────────────
@@ -91,14 +92,16 @@ STAGE_EMOJIS = {
 _GLITCH_SYMBOLS = ["", "░", "▓"]
 NOTE_QA_SESSIONS_KEY = "note_qa_sessions"
 NOTE_QA_ACTIVE_KEY = "note_qa_active"
+NOTE_SEARCH_BUTTON = "🔎 Поиск по заметкам"
 MAX_QA_HISTORY_MESSAGES = 30
 MAX_TRANSCRIPT_CHARS = 12000
 MAIN_MENU_BUTTON = "🐱 Главное меню"
 _ACTIVE_QA_SESSIONS: dict[int, dict[str, int]] = {}
+_ACTIVE_SEARCH_USERS: set[int] = set()
+_ACTIVE_SEARCH_USERS: set[int] = set()
 MENU_RESPONSES = {
     "💎 Подписка": "Скоро здесь появятся тарифы и возможности на подписке. Пока просто отправь файл или ссылку — обработаю как обычно.",
     "🎁 Реферальная программа": "Готовим новую реферальную программу. А пока можно делиться ботом: чем больше файлов — тем лучше тестируем.",
-    "🔎 Поиск по заметкам": "Я уже умею искать по заметкам. Эта кнопка скоро откроет удобный интерфейс, а пока просто напиши запрос в чат, и я подскажу команду.",
     "⚙️ Настройки": "Настройки в разработке. Если нужно что-то сменить (например формат выхлопа) — напиши и помогу вручную.",
     "❓ Помощь": "Просто отправь файл — и я расскажу, что происходит. Если что-то пойдет не так, можно написать сюда же и я помогу разобраться.",
 }
@@ -656,6 +659,7 @@ def _set_active_note_session(
             "note_id": note_id,
             "session_id": session_id,
         }
+        _set_search_active(telegram_id, False)
         logger.debug(
             "QA session activated telegram_id=%s note_id=%s session_id=%s",
             telegram_id,
@@ -668,6 +672,23 @@ def _get_active_note_session(telegram_id: Optional[int]) -> Optional[dict]:
     if not telegram_id:
         return None
     return _ACTIVE_QA_SESSIONS.get(telegram_id)
+
+
+def _set_search_active(telegram_id: Optional[int], active: bool) -> None:
+    if not telegram_id:
+        return
+    if active:
+        _ACTIVE_SEARCH_USERS.add(telegram_id)
+        logger.debug("Search session activated telegram_id=%s", telegram_id)
+    else:
+        _ACTIVE_SEARCH_USERS.discard(telegram_id)
+        logger.debug("Search session cleared telegram_id=%s", telegram_id)
+
+
+def _is_search_active(telegram_id: Optional[int]) -> bool:
+    if not telegram_id:
+        return False
+    return telegram_id in _ACTIVE_SEARCH_USERS
 
 
 async def handle_note_qa_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -757,28 +778,82 @@ async def handle_note_qa_message(update: Update, context: ContextTypes.DEFAULT_T
     await update.message.reply_text(answer, reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True))
 
 
+async def handle_note_search_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text:
+        return
+    telegram_id = update.message.from_user.id if update.message.from_user else None
+    if not _is_search_active(telegram_id):
+        return
+
+    text = update.message.text.strip()
+    if text == MAIN_MENU_BUTTON:
+        _set_search_active(telegram_id, False)
+        await update.message.reply_text(
+            "🐱 Завершил поиск. Возвращаю меню.",
+            reply_markup=_main_menu_keyboard(),
+        )
+        return
+
+    if not telegram_id:
+        await update.message.reply_text("⚠️ Не удалось определить пользователя для поиска.")
+        return
+
+    user_id = get_user_id_by_telegram_id(telegram_id)
+    if not user_id:
+        user_id = await ensure_user(telegram_id)
+
+    await update.message.chat.send_action(ChatAction.TYPING)
+    try:
+        result = await run_note_search(user_id=user_id, query=text)
+    except NoteSearchError as exc:
+        await update.message.reply_text(
+            f"⚠️ Не удалось выполнить поиск: {exc}",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True),
+        )
+        return
+
+    await update.message.reply_text(
+        result["response"],
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True),
+    )
+
+
 async def handle_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Placeholder responses for menu buttons."""
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip()
+    if text == NOTE_SEARCH_BUTTON:
+        telegram_id = update.message.from_user.id if update.message.from_user else None
+        _set_active_note_session(telegram_id=telegram_id, note_id=None, session_id=None)
+        _set_search_active(telegram_id, True)
+        await update.message.reply_text(
+            "🔎 Напиши, что найти в заметках. Я поищу по содержимому и тегам.",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton(MAIN_MENU_BUTTON)]],
+                resize_keyboard=True,
+                one_time_keyboard=False,
+            ),
+        )
+        return
+
     if text not in MENU_RESPONSES and text != MAIN_MENU_BUTTON:
         return
 
     if text == MAIN_MENU_BUTTON:
         telegram_id = update.message.from_user.id if update.message.from_user else None
-        if _get_active_note_session(telegram_id) is not None:
+        active_qa = _get_active_note_session(telegram_id) is not None
+        active_search = _is_search_active(telegram_id)
+        if active_qa:
             _set_active_note_session(telegram_id=telegram_id, note_id=None, session_id=None)
-            await update.message.reply_text(
-                "🐱 Завершил диалог с заметкой. Возвращаю главное меню.",
-                reply_markup=_main_menu_keyboard(),
-            )
-        else:
-            await update.message.reply_text(
-                START_TEXT,
-                parse_mode="Markdown",
-                reply_markup=_main_menu_keyboard(),
-            )
+        if active_search:
+            _set_search_active(telegram_id, False)
+
+        await update.message.reply_text(
+            START_TEXT if not (active_qa or active_search) else "🐱 Вернулся в главное меню.",
+            parse_mode="Markdown",
+            reply_markup=_main_menu_keyboard(),
+        )
         return
 
     response = MENU_RESPONSES.get(text)
