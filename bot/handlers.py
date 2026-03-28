@@ -98,7 +98,6 @@ MAX_TRANSCRIPT_CHARS = 12000
 MAIN_MENU_BUTTON = "🐱 Главное меню"
 _ACTIVE_QA_SESSIONS: dict[int, dict[str, int]] = {}
 _ACTIVE_SEARCH_USERS: set[int] = set()
-_ACTIVE_SEARCH_USERS: set[int] = set()
 MENU_RESPONSES = {
     "💎 Подписка": "Скоро здесь появятся тарифы и возможности на подписке. Пока просто отправь файл или ссылку — обработаю как обычно.",
     "🎁 Реферальная программа": "Готовим новую реферальную программу. А пока можно делиться ботом: чем больше файлов — тем лучше тестируем.",
@@ -824,6 +823,7 @@ async def handle_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip()
+    logger.debug("Menu action received text=%r", text)
     if text == NOTE_SEARCH_BUTTON:
         telegram_id = update.message.from_user.id if update.message.from_user else None
         logger.info("🔎 Search mode requested by %s", telegram_id)
