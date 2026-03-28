@@ -782,6 +782,7 @@ async def handle_note_search_message(update: Update, context: ContextTypes.DEFAU
     if not update.message or not update.message.text:
         return
     telegram_id = update.message.from_user.id if update.message.from_user else None
+    logger.debug("Search message from %s active=%s", telegram_id, _is_search_active(telegram_id))
     if not _is_search_active(telegram_id):
         return
 
@@ -825,6 +826,7 @@ async def handle_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
     text = update.message.text.strip()
     if text == NOTE_SEARCH_BUTTON:
         telegram_id = update.message.from_user.id if update.message.from_user else None
+        logger.info("🔎 Search mode requested by %s", telegram_id)
         _set_active_note_session(telegram_id=telegram_id, note_id=None, session_id=None)
         _set_search_active(telegram_id, True)
         await update.message.reply_text(
