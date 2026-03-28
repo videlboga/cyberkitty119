@@ -26,6 +26,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    ConversationHandler,
     MessageHandler,
     filters,
 )
@@ -45,7 +46,13 @@ from bot.handlers import (
     handle_note_qa_callback,
     handle_note_qa_message,
     handle_note_search_message,
+    handle_note_search_start,
     handle_start,
+    MAIN_MENU_BUTTON,
+    NOTE_SEARCH_BUTTON,
+    MENU_STATE,
+    NOTE_QA_STATE,
+    NOTE_SEARCH_STATE,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -73,10 +80,6 @@ def build_app() -> Application:
 def register_handlers(app: Application) -> None:
     """Регистрировать обработчики."""
 
-    # Команды
-    app.add_handler(CommandHandler("start", handle_start))
-    app.add_handler(CommandHandler("help", handle_start))
-
     # Медиа: аудио, видео, голосовые, видеосообщения, документы
     media_filter = (
         filters.AUDIO
@@ -90,11 +93,39 @@ def register_handlers(app: Application) -> None:
 
     app.add_handler(MessageHandler(media_filter, handle_media_file))
 
-    # Чат с заметкой
-    app.add_handler(CallbackQueryHandler(handle_note_qa_callback, pattern=r"^noteqa:"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_qa_message, block=False))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_search_message, block=False))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_action, block=False))
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", handle_start),
+            CommandHandler("help", handle_start),
+            MessageHandler(filters.Regex(f"^{NOTE_SEARCH_BUTTON}$"), handle_note_search_start),
+            CallbackQueryHandler(handle_note_qa_callback, pattern=r"^noteqa:"),
+        ],
+        states={
+            MENU_STATE: [
+                MessageHandler(filters.Regex(f"^{NOTE_SEARCH_BUTTON}$"), handle_note_search_start),
+                CallbackQueryHandler(handle_note_qa_callback, pattern=r"^noteqa:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_action),
+            ],
+            NOTE_QA_STATE: [
+                MessageHandler(filters.Regex(f"^{NOTE_SEARCH_BUTTON}$"), handle_note_search_start),
+                CallbackQueryHandler(handle_note_qa_callback, pattern=r"^noteqa:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_qa_message),
+            ],
+            NOTE_SEARCH_STATE: [
+                MessageHandler(filters.Regex(f"^{NOTE_SEARCH_BUTTON}$"), handle_note_search_start),
+                CallbackQueryHandler(handle_note_qa_callback, pattern=r"^noteqa:"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_search_message),
+            ],
+        },
+        fallbacks=[
+            MessageHandler(filters.Regex(f"^{MAIN_MENU_BUTTON}$"), handle_menu_action),
+            CommandHandler("start", handle_start),
+        ],
+        allow_reentry=True,
+        per_message=False,
+    )
+
+    app.add_handler(conv_handler)
 
 
 def main() -> None:

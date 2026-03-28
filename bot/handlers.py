@@ -27,7 +27,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, ConversationHandler
 
 from bot.config import (
     BOT_TOKEN,
@@ -305,6 +305,7 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         reply_markup=_main_menu_keyboard(),
     )
     logger.info(f"✅ Отправлено главное меню пользователю {update.message.from_user.id}")
+    return MENU_STATE
 
 
 async def handle_media_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -728,34 +729,35 @@ async def handle_note_qa_callback(update: Update, context: ContextTypes.DEFAULT_
             one_time_keyboard=False,
         ),
     )
+    return NOTE_QA_STATE
 
 
 async def handle_note_qa_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
-        return
+        return NOTE_QA_STATE
     telegram_id = update.message.from_user.id if update.message.from_user else None
     state = _get_active_note_session(telegram_id)
     logger.debug(
         "QA message received telegram_id=%s state_exists=%s", telegram_id, bool(state)
     )
     if not state:
-        return
+        return MENU_STATE
     active_note_id = state.get("note_id")
     session_id = state.get("session_id")
     if not active_note_id or not session_id:
-        return
+        return MENU_STATE
 
     text = update.message.text.strip()
     if text == MAIN_MENU_BUTTON:
         _set_active_note_session(telegram_id=telegram_id, note_id=None, session_id=None)
         await update.message.reply_text("🐱 Вернулся в главное меню.", reply_markup=_main_menu_keyboard())
-        return
+        return MENU_STATE
 
     session_payload = fetch_note_qa_session_payload(session_id, history_limit=MAX_QA_HISTORY_MESSAGES)
     if not session_payload:
         await update.message.reply_text("⚠️ Контекст заметки недоступен. Попробуй отправить файл заново.", reply_markup=ReplyKeyboardRemove())
         _set_active_note_session(telegram_id=telegram_id, note_id=None, session_id=None)
-        return
+        return MENU_STATE
 
     record_note_qa_message(session_id, "user", text)
     session_payload["messages"].append({"role": "user", "content": text})
@@ -767,7 +769,7 @@ async def handle_note_qa_message(update: Update, context: ContextTypes.DEFAULT_T
         answer = await _run_note_agent(session_payload)
     except AgentLLMError as exc:
         await update.message.reply_text(f"⚠️ LLM сейчас недоступна: {exc}", reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True))
-        return
+        return NOTE_QA_STATE
 
     record_note_qa_message(session_id, "assistant", answer)
     session_payload["messages"].append({"role": "assistant", "content": answer})
@@ -775,15 +777,16 @@ async def handle_note_qa_message(update: Update, context: ContextTypes.DEFAULT_T
         session_payload["messages"] = session_payload["messages"][-MAX_QA_HISTORY_MESSAGES :]
 
     await update.message.reply_text(answer, reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True))
+    return NOTE_QA_STATE
 
 
 async def handle_note_search_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
-        return
+        return NOTE_SEARCH_STATE
     telegram_id = update.message.from_user.id if update.message.from_user else None
     logger.debug("Search message from %s active=%s", telegram_id, _is_search_active(telegram_id))
     if not _is_search_active(telegram_id):
-        return
+        return MENU_STATE
 
     text = update.message.text.strip()
     if text == MAIN_MENU_BUTTON:
@@ -792,11 +795,11 @@ async def handle_note_search_message(update: Update, context: ContextTypes.DEFAU
             "🐱 Завершил поиск. Возвращаю меню.",
             reply_markup=_main_menu_keyboard(),
         )
-        return
+        return MENU_STATE
 
     if not telegram_id:
         await update.message.reply_text("⚠️ Не удалось определить пользователя для поиска.")
-        return
+        return NOTE_SEARCH_STATE
 
     user_id = get_user_id_by_telegram_id(telegram_id)
     if not user_id:
@@ -810,12 +813,29 @@ async def handle_note_search_message(update: Update, context: ContextTypes.DEFAU
             f"⚠️ Не удалось выполнить поиск: {exc}",
             reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True),
         )
-        return
+        return NOTE_SEARCH_STATE
 
     await update.message.reply_text(
         result["response"],
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True),
     )
+    return NOTE_SEARCH_STATE
+
+
+async def handle_note_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    telegram_id = update.message.from_user.id if update.message.from_user else None
+    logger.info("🔎 Search mode requested by %s", telegram_id)
+    _set_active_note_session(telegram_id=telegram_id, note_id=None, session_id=None)
+    _set_search_active(telegram_id, True)
+    await update.message.reply_text(
+        "🔎 Напиши, что найти в заметках. Я поищу по содержимому и тегам.",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton(MAIN_MENU_BUTTON)]],
+            resize_keyboard=True,
+            one_time_keyboard=False,
+        ),
+    )
+    return NOTE_SEARCH_STATE
 
 
 async def handle_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -824,21 +844,6 @@ async def handle_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     text = update.message.text.strip()
     logger.debug("Menu action received text=%r", text)
-    if text == NOTE_SEARCH_BUTTON:
-        telegram_id = update.message.from_user.id if update.message.from_user else None
-        logger.info("🔎 Search mode requested by %s", telegram_id)
-        _set_active_note_session(telegram_id=telegram_id, note_id=None, session_id=None)
-        _set_search_active(telegram_id, True)
-        await update.message.reply_text(
-            "🔎 Напиши, что найти в заметках. Я поищу по содержимому и тегам.",
-            reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton(MAIN_MENU_BUTTON)]],
-                resize_keyboard=True,
-                one_time_keyboard=False,
-            ),
-        )
-        return
-
     if text not in MENU_RESPONSES and text != MAIN_MENU_BUTTON:
         return
 
@@ -856,7 +861,7 @@ async def handle_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode="Markdown",
             reply_markup=_main_menu_keyboard(),
         )
-        return
+        return MENU_STATE
 
     response = MENU_RESPONSES.get(text)
     if response:
@@ -864,6 +869,7 @@ async def handle_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
             response,
             reply_markup=_main_menu_keyboard(),
         )
+    return MENU_STATE
 
 
 async def _run_note_agent(session_payload: dict) -> str:
@@ -893,3 +899,4 @@ async def _run_note_agent(session_payload: dict) -> str:
 
     answer = await call_agent_llm_with_retry(messages, timeout=40.0)
     return answer
+MENU_STATE, NOTE_QA_STATE, NOTE_SEARCH_STATE = range(3)
