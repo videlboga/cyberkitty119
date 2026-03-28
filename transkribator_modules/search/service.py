@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -106,6 +107,43 @@ def _parse_date(value: Optional[str], base_dt: datetime) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
+def _parse_search_payload(raw: str) -> dict[str, Any]:
+    """Parse LLM response that is *supposed* to be JSON, but may contain wrappers."""
+    text = (raw or "").strip()
+    if not text:
+        raise NoteSearchError("LLM вернул некорректный JSON для поиска")
+
+    candidates: list[str] = []
+
+    # ```json { ... } ``` style
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+
+    # First/last brace slice
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidates.append(text[start : end + 1].strip())
+
+    # As-is fallback
+    candidates.append(text)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+    logger.warning(
+        "LLM intent parser returned invalid JSON",
+        extra={"raw_response_snippet": text[:500]},
+    )
+    raise NoteSearchError("LLM вернул некорректный JSON для поиска")
+
+
 async def _build_search_spec(query: str, now: datetime, known_tags: list[str]) -> NoteSearchSpec:
     instructions = (
         "Ты ассистент, который превращает пользовательский запрос поиска заметок "
@@ -133,10 +171,7 @@ async def _build_search_spec(query: str, now: datetime, known_tags: list[str]) -
     except AgentLLMError as exc:
         raise NoteSearchError(f"LLM intent parser unavailable: {exc}") from exc
 
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise NoteSearchError("LLM вернул некорректный JSON для поиска") from exc
+    payload = _parse_search_payload(raw)
 
     search_query = str(payload.get("search_query") or query).strip()
     tag_terms = payload.get("tag_terms") or []
