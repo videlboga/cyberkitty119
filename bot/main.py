@@ -92,8 +92,8 @@ def register_handlers(app: Application) -> None:
 
     # Чат с заметкой
     app.add_handler(CallbackQueryHandler(handle_note_qa_callback, pattern=r"^noteqa:"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_qa_message))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_search_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_qa_message, block=False))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_note_search_message, block=False))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_action, block=False))
 
 
