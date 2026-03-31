@@ -28,12 +28,13 @@ from transkribator_modules.google_api import GoogleCredentialService, ensure_tre
 from docx import Document
 
 from ..agent_runtime import AGENT_MANAGER
-from ..note_utils import auto_finalize_note
+from ..note_utils import auto_finalize_note, build_note_artifact_content
 from ..tools import (
     _ensure_google_credentials,
     _looks_like_question,
     _build_miniapp_note_link as _tools_build_note_link,
     format_note_saved_message,
+    get_note_display_title,
 )
 
 
@@ -58,6 +59,8 @@ TELEGRAM_MESSAGE_LIMIT = 3900
 _PENDING_NOTE_KEY = "pending_note"
 _PENDING_CONFIRM = "beta:note_confirm"
 _PENDING_DECLINE = "beta:note_decline"
+_RESULT_CAPTION_HTML = '<a href="https://t.me/CyberKitty19_bot">CyberKitty119 Транскрибатор</a>'
+_FILENAME_FORBIDDEN_RE = re.compile(r'[\\/:*?"<>|\r\n]+')
 
 
 @dataclass
@@ -434,10 +437,11 @@ def _ensure_note_artifact(
     note: Note,
     text: str,
 ) -> tuple[Optional[str], Optional[str]]:
-    drive_link = _upload_note_to_drive(google_service, note_service, user, note, text)
+    artifact_text = build_note_artifact_content(note, text)
+    drive_link = _upload_note_to_drive(google_service, note_service, user, note, artifact_text)
     if drive_link:
         return drive_link, None
-    local_file = _export_note_locally(note, text)
+    local_file = _export_note_locally(note, artifact_text)
     return None, local_file
 
 
@@ -729,10 +733,30 @@ def _dedupe_response_text(text: Optional[str]) -> Optional[str]:
     return "\n".join(result_lines)
 
 
+def _build_result_filename(note: Optional[Note], file_path: str) -> str:
+    """Generate a Telegram-friendly filename derived from the note title."""
+    suffix = Path(file_path).suffix or ".txt"
+    base_title = ""
+    if note is not None:
+        base_title = get_note_display_title(note)
+    if not base_title:
+        fallback_id = note.id if note and note.id else "result"
+        base_title = f"note_{fallback_id}"
+
+    normalized = _FILENAME_FORBIDDEN_RE.sub(" ", base_title).strip()
+    normalized = re.sub(r"\s+", "_", normalized, flags=re.UNICODE).strip("_")
+    if not normalized:
+        fallback_id = note.id if note and note.id else "result"
+        normalized = f"note_{fallback_id}"
+    if len(normalized) > 80:
+        normalized = normalized[:80].rstrip("_-.") or normalized[:80]
+    return f"{normalized}{suffix}"
+
+
 async def _send_local_artifact(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, note: Note) -> None:
-    caption_raw = format_note_saved_message(note=note)
-    caption_rendered, parse_mode = _prepare_telegram_message(caption_raw)
-    filename = Path(file_path).name
+    caption_rendered = _RESULT_CAPTION_HTML
+    parse_mode = ParseMode.HTML
+    filename = _build_result_filename(note, file_path)
     try:
         if update.message:
             with open(file_path, 'rb') as handle:

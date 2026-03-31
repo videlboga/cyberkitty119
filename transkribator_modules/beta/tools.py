@@ -44,6 +44,7 @@ from .note_utils import auto_finalize_note
 from .llm import call_agent_llm_with_retry, AgentLLMError
 from .timezone import timezone_required_message
 from .command_processor import _format_generation_response
+import inspect
 
 if TYPE_CHECKING:  # pragma: no cover - circular import guard
     from .agent_runtime import AgentSession
@@ -131,6 +132,21 @@ def _with_session(func: Callable[["AgentSession", SessionLocal, dict[str, Any]],
             db.close()
 
     return _sync_wrapper
+
+
+async def _maybe_await(val):
+    """Await val if it's awaitable, otherwise return val directly.
+
+    Tests sometimes monkeypatch async methods with sync functions; this
+    helper makes callers tolerant to either form.
+    """
+    try:
+        if inspect.isawaitable(val):
+            return await val
+    except Exception:
+        # If inspect fails for some exotic object, fall through and return as-is
+        pass
+    return val
 
 
 def _coerce_tags(raw: Any) -> list[str]:
@@ -512,16 +528,21 @@ def _note_preview(note: Note) -> str:
 
 def _note_title(note: Note) -> str:
     """Return human-friendly title for a note."""
-    for candidate in (note.draft_title, note.summary):
-        if candidate and candidate.strip():
+    for candidate in (getattr(note, "draft_title", None), getattr(note, "summary", None)):
+        if candidate and str(candidate).strip():
             # Для заголовков используем короткий лимит - 60 символов
             shortened = _shorten(candidate, 60)
-            return shortened or candidate.strip()
+            return shortened or str(candidate).strip()
 
-    text_snippet = _shorten(note.text, 60)
+    text_snippet = _shorten(getattr(note, "text", ""), 60)
     if text_snippet:
         return text_snippet
     return f"Заметка #{note.id}"
+
+
+def get_note_display_title(note: Note) -> str:
+    """Expose a reusable helper for deriving a note title."""
+    return _note_title(note)
 
 
 def _normalize_tags(tags: Iterable[str] | None) -> list[str]:
@@ -716,7 +737,7 @@ async def _tool_update_text(session: "AgentSession", db, args: dict[str, Any]) -
     db.refresh(note)
 
     if args.get("reindex", True):
-        await IndexService().add(note.id, session.user_db_id, note.text or "", summary=note.summary or "", type_hint=note.type_hint)
+        await _maybe_await(IndexService().add(note.id, session.user_db_id, note.text or "", summary=note.summary or "", type_hint=note.type_hint))
 
     try:
         auto_result = await auto_finalize_note(note.id)
@@ -771,7 +792,7 @@ async def _tool_create_task(session: "AgentSession", db, args: dict[str, Any]) -
         tags=tags,
         status=args.get("status") or NoteStatus.PROCESSED.value,
     )
-    await IndexService().add(note.id, session.user_db_id, note.text or "", summary=note.summary or "", type_hint="task")
+    await _maybe_await(IndexService().add(note.id, session.user_db_id, note.text or "", summary=note.summary or "", type_hint="task"))
     return ToolResult(message=format_note_saved_message(note=note))
 
 
@@ -783,7 +804,7 @@ async def _tool_search_notes(session: "AgentSession", db, args: dict[str, Any]) 
 
     index = IndexService()
     k_value = int(args.get("k") or 3)
-    results = await index.search(session.user_db_id, query.strip(), k=k_value)
+    results = await _maybe_await(index.search(session.user_db_id, query.strip(), k=k_value))
     # If there's an active note in the session, prefer it: prepend it to
     # the results if it's not already present. This biases summaries and
     # search-based answers toward the note the user currently has open.
@@ -946,7 +967,7 @@ async def _tool_add_tags(session: "AgentSession", db, args: dict[str, Any]) -> T
 
     new_tags = sorted(existing)
     note_service.update_note_metadata(note, tags=new_tags)
-    await IndexService().add(note.id, session.user_db_id, note.text or "", summary=note.summary or "", type_hint=note.type_hint)
+    await _maybe_await(IndexService().add(note.id, session.user_db_id, note.text or "", summary=note.summary or "", type_hint=note.type_hint))
     return ToolResult(message=f"Теги заметки #{note.id}: {', '.join(new_tags)}.")
 
 
@@ -969,7 +990,7 @@ async def _tool_remove_tags(session: "AgentSession", db, args: dict[str, Any]) -
         return ToolResult(message="Нужных тегов нет в заметке.")
 
     note_service.update_note_metadata(note, tags=updated)
-    await IndexService().add(note.id, session.user_db_id, note.text or "", summary=note.summary or "", type_hint=note.type_hint)
+    await _maybe_await(IndexService().add(note.id, session.user_db_id, note.text or "", summary=note.summary or "", type_hint=note.type_hint))
 
     if updated:
         return ToolResult(message=f"Оставил теги: {', '.join(sorted(updated))}.")
@@ -992,7 +1013,7 @@ async def _tool_set_status(session: "AgentSession", db, args: dict[str, Any]) ->
         return ToolResult(message=f"Статус уже {status}.")
 
     note_service.update_note_metadata(note, status=status)
-    await IndexService().add(note.id, session.user_db_id, note.text or "", summary=note.summary or "", type_hint=note.type_hint)
+    await _maybe_await(IndexService().add(note.id, session.user_db_id, note.text or "", summary=note.summary or "", type_hint=note.type_hint))
     return ToolResult(message=f"Статус заметки #{note.id} → {status}.")
 
 
@@ -1486,12 +1507,14 @@ async def _tool_create_note(session: "AgentSession", db, args: dict[str, Any]) -
         tags=tags or None,
         status=status,
     )
-    await IndexService().add(
-        note.id,
-        session.user_db_id,
-        note.text or "",
-        summary=note.summary or "",
-        type_hint=note.type_hint,
+    await _maybe_await(
+        IndexService().add(
+            note.id,
+            session.user_db_id,
+            note.text or "",
+            summary=note.summary or "",
+            type_hint=note.type_hint,
+        )
     )
 
     session.set_active_note(note, links=_coerce_links(note.links))

@@ -12,10 +12,14 @@ handle_media_file   — любой медиафайл:
 from __future__ import annotations
 
 import asyncio
+import html
+import re
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from telegram import (
     InlineKeyboardButton,
@@ -52,15 +56,18 @@ from transkribator_modules.beta.llm import (
     AgentLLMError,
     call_agent_llm_with_retry,
 )
+from transkribator_modules.bot.payments import show_payment_plans
+from transkribator_modules.bot.callbacks import (
+    show_personal_cabinet,
+    CABINET_SUPPRESS_INLINE_FLAG,
+    CABINET_REPLY_MARKUP_KEY,
+)
+from transkribator_modules.config import TELEGRAM_REFERRAL_URL
+from transkribator_modules.db.database import ReferralService, SessionLocal, UserService
 from transkribator_modules.search.service import NoteSearchError, run_note_search
 from transkribator_modules.utils.large_file_downloader import download_large_file
 
 # ── Текстовые шаблоны ────────────────────────────────────────────────────────
-
-START_TEXT = (
-    "👋 *Привет!* Я помогаю расшифровывать аудио и видео в текст, хранить заметки и искать по ним.\n\n"
-    "Просто отправь мне файл или ссылку – я остальное сделаю сам."
-)
 
 PROGRESS_LABELS = {
     "queued": "⏳ Файл принят, начинаю обработку",
@@ -90,6 +97,8 @@ STAGE_EMOJIS = {
 }
 
 _GLITCH_SYMBOLS = ["", "░", "▓"]
+_FILENAME_FORBIDDEN_RE = re.compile(r'[\\/:*?"<>|\r\n]+')
+RESULT_CAPTION_MARKDOWN = "[CyberKitty119 Транскрибатор](https://t.me/CyberKitty19_bot)"
 NOTE_QA_SESSIONS_KEY = "note_qa_sessions"
 NOTE_QA_ACTIVE_KEY = "note_qa_active"
 NOTE_SEARCH_BUTTON = "🔎 Поиск по заметкам"
@@ -99,8 +108,6 @@ MAIN_MENU_BUTTON = "🐱 Главное меню"
 _ACTIVE_QA_SESSIONS: dict[int, dict[str, int]] = {}
 _ACTIVE_SEARCH_USERS: set[int] = set()
 MENU_RESPONSES = {
-    "💎 Подписка": "Скоро здесь появятся тарифы и возможности на подписке. Пока просто отправь файл или ссылку — обработаю как обычно.",
-    "🎁 Реферальная программа": "Готовим новую реферальную программу. А пока можно делиться ботом: чем больше файлов — тем лучше тестируем.",
     "⚙️ Настройки": "Настройки в разработке. Если нужно что-то сменить (например формат выхлопа) — напиши и помогу вручную.",
     "❓ Помощь": "Просто отправь файл — и я расскажу, что происходит. Если что-то пойдет не так, можно написать сюда же и я помогу разобраться.",
 }
@@ -126,7 +133,7 @@ _LOCAL_DATA_SUBDIR: Optional[Path] = None
 
 def _main_menu_keyboard() -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton("💎 Подписка"), KeyboardButton("🎁 Реферальная программа")],
+        [KeyboardButton("💎 Подписка"), KeyboardButton("🐱 Личный кабинет")],
         [KeyboardButton("🔎 Поиск по заметкам")],
         [KeyboardButton("⚙️ Настройки"), KeyboardButton("❓ Помощь")],
     ]
@@ -210,21 +217,63 @@ def _glitch_text(text: Optional[str], elapsed: float) -> Optional[str]:
 
 
 def _format_timestamp(value) -> str:
-    if not value:
-        return "-"
+    if value is None:
+        return "—"
+
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M")
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return "—"
+        normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            dt = None
+        if dt:
+            return dt.strftime("%Y-%m-%d %H:%M")
+
     try:
-        return value.strftime("%d.%m.%Y %H:%M")
-    except Exception:  # pragma: no cover - formatting fallback
+        seconds = max(0, int(float(value)))
+    except Exception:
         return str(value)
+
+    minutes, secs = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _build_timecode_text(segments: Optional[list[dict[str, Any]]]) -> str:
+    lines: list[str] = []
+    for segment in segments or []:
+        text = (segment.get("text") or "").strip()
+        if not text:
+            continue
+        start = _format_timestamp(segment.get("start"))
+        end_val = segment.get("end")
+        if end_val is None:
+            end_val = segment.get("duration")
+            if end_val is not None and segment.get("start") is not None:
+                try:
+                    end_val = float(segment["start"]) + float(end_val)
+                except Exception:
+                    end_val = None
+        end = _format_timestamp(end_val if end_val is not None else segment.get("start"))
+        lines.append(f"[{start} - {end}] {text}")
+    return "\n".join(lines)
 
 
 def _build_note_file_content(
     note: dict,
     raw_transcript: Optional[str],
     filename: str,
+    segments: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     title = note.get("title") or Path(filename).stem
-    status = NOTE_STATUS_LABELS.get((note.get("status") or "").lower(), note.get("status", ""))
     tags = note.get("tags") or []
     tag_line = ", ".join(f"#{tag}" for tag in tags) if tags else "—"
     links = note.get("links") or {}
@@ -234,8 +283,8 @@ def _build_note_file_content(
         link_lines = "—"
 
     summary = (note.get("summary") or "").strip() or "—"
-    text_body = (note.get("text") or "").strip() or "—"
     raw_body = (raw_transcript or "").strip() or "—"
+    timecoded_body = _build_timecode_text(segments or []) or "—"
 
     sections = [
         "=== Файл ===",
@@ -244,7 +293,7 @@ def _build_note_file_content(
         "=== Метаданные ===",
         f"Note ID: {note.get('id', '—')}",
         f"Название: {title}",
-        f"Статус: {status or '—'}",
+        "",
         f"Создана: {_format_timestamp(note.get('created_at'))}",
         f"Обновлена: {_format_timestamp(note.get('updated_at'))}",
         f"Теги: {tag_line}",
@@ -254,13 +303,37 @@ def _build_note_file_content(
         "=== Summary ===",
         summary,
         "",
-        "=== Итоговая заметка ===",
-        text_body,
-        "",
-        "=== Сырая транскрипция ===",
+        "=== Транскрипция ===",
         raw_body,
+        "",
+        "=== Транскрипция с таймкодами ===",
+        timecoded_body,
     ]
     return "\n".join(sections)
+
+
+def _extract_note_title(note: dict) -> str:
+    for key in ("title", "summary", "text"):
+        value = (note.get(key) or "").strip()
+        if value:
+            return value
+    fallback = note.get("id")
+    return f"note_{fallback}" if fallback is not None else "note"
+
+
+def _build_note_filename(note: dict) -> str:
+    raw = _extract_note_title(note)
+    normalized = _FILENAME_FORBIDDEN_RE.sub(" ", raw).strip()
+    normalized = re.sub(r"\s+", "_", normalized, flags=re.UNICODE).strip("_")
+    if not normalized:
+        normalized = f"note_{note.get('id', 'result')}"
+    if len(normalized) > 80:
+        normalized = normalized[:80].rstrip("_-.") or normalized[:80]
+    return normalized
+
+
+def _build_note_delivery_caption(note: dict, filename: str) -> str:
+    return RESULT_CAPTION_MARKDOWN
 
 
 def _build_progress_text(
@@ -295,16 +368,99 @@ def _build_progress_text(
     return "\n".join(lines)
 
 
+def _build_referral_link(referral_code: str) -> str:
+    """Собрать корректный диплинк, учитывая кастомный TELEGRAM_REFERRAL_URL."""
+    parsed = urlparse(TELEGRAM_REFERRAL_URL)
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    params.setdefault("utm_source", "telegram")
+    params.setdefault("utm_medium", "bot")
+    params.setdefault("utm_campaign", "referral")
+    params["start"] = f"ref_{referral_code}"
+
+    path_segments = [segment for segment in parsed.path.split("/") if segment]
+    if (
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc.lower().endswith("t.me")
+        and path_segments
+    ):
+        bot_segment = path_segments[0]
+        base_path = f"/{bot_segment}"
+        params.pop("startapp", None)
+        return urlunparse(parsed._replace(path=base_path, query=urlencode(params)))
+
+    return urlunparse(parsed._replace(query=urlencode(params)))
+
+
+async def _send_referral_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    target_message = update.message
+    if not target_message:
+        return
+
+    user = update.effective_user
+    if not user:
+        await target_message.reply_text(
+            "⚠️ Не удалось определить пользователя для реферальной программы.",
+            reply_markup=_main_menu_keyboard(),
+        )
+        return
+
+    db = SessionLocal()
+    try:
+        user_service = UserService(db)
+        referral_service = ReferralService(db)
+        db_user = user_service.get_or_create_user(
+            telegram_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
+        )
+        referral_code = referral_service.create_or_get_referral_code(db_user)
+        referral_link = _build_referral_link(referral_code)
+        stats = referral_service.get_referral_stats_for_user(db_user)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Не удалось загрузить реферальную программу", exc_info=True, extra={"error": str(exc)})
+        await target_message.reply_text(
+            "❌ Не удалось загрузить реферальную программу. Попробуй позже.",
+            reply_markup=_main_menu_keyboard(),
+        )
+        return
+    finally:
+        db.close()
+
+    safe_code = html.escape(referral_code, quote=False)
+    safe_link = html.escape(referral_link, quote=True)
+    visits = stats.get("visits", 0)
+    paid_count = stats.get("paid_count", 0)
+    total_amount = stats.get("total_amount", 0.0) or 0.0
+    balance = stats.get("balance", 0.0) or 0.0
+
+    message = (
+        "<b>🤝 Реферальная программа</b>\n\n"
+        f"Твой код: <code>{safe_code}</code>\n"
+        f"Ссылка: {safe_link}\n\n"
+        "Статистика:\n"
+        f"• Визитов: {visits}\n"
+        f"• Оплачено: {paid_count}\n"
+        f"• Сумма оплат: {total_amount:.0f} ₽\n"
+        f"• Баланс: {balance:.0f} ₽"
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔗 Открыть ссылку", url=referral_link)],
+        ]
+    )
+    await target_message.reply_text(message, reply_markup=keyboard, parse_mode="HTML")
+
+
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"🤖 Обработка /start от пользователя {update.message.from_user.id}")
-    await update.message.reply_text(
-        START_TEXT,
-        parse_mode="Markdown",
-        reply_markup=_main_menu_keyboard(),
-    )
-    logger.info(f"✅ Отправлено главное меню пользователю {update.message.from_user.id}")
+    context.chat_data[CABINET_SUPPRESS_INLINE_FLAG] = True
+    context.chat_data[CABINET_REPLY_MARKUP_KEY] = _main_menu_keyboard()
+    await show_personal_cabinet(update, context)
+    logger.info(f"✅ Отправлен личный кабинет пользователю {update.message.from_user.id}")
     return MENU_STATE
 
 
@@ -501,28 +657,33 @@ async def _deliver_result(
     result_blob = payload.get("_result") or {}
     raw_transcript = result_blob.get("raw_transcript")
     inline_transcript = result_blob.get("final_transcript")
+    segments_blob = result_blob.get("segments")
+    segments: list[dict[str, Any]] = segments_blob if isinstance(segments_blob, list) else []
     note_owner_id = (job_row or {}).get("user_id")
 
     if note:
-        file_content = _build_note_file_content(note, raw_transcript, filename)
+        file_content = _build_note_file_content(note, raw_transcript, filename, segments)
         temp_path = None
         try:
+            normalized_title = _build_note_filename(note)
+            rendered_content = file_content
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
                 suffix=".txt",
-                prefix=f"{Path(filename).stem}_note_",
+                prefix=f"{normalized_title}_",
                 delete=False,
             ) as tmp:
-                tmp.write(file_content)
+                tmp.write(rendered_content)
                 temp_path = Path(tmp.name)
 
             with open(temp_path, "rb") as tmp_file:
                 await context.bot.send_document(
                     chat_id=chat_id,
                     document=tmp_file,
-                    filename=f"{Path(filename).stem}_note.txt",
-                    caption=f"📓 Заметка #{note.get('id', '')} готова",
+                    filename=f"{normalized_title}.txt",
+                    caption=_build_note_delivery_caption(note, normalized_title),
+                    parse_mode="Markdown",
                 )
             await _safe_edit(status_msg, "✅ Файл с заметкой отправлен!", parse_mode="Markdown")
 
@@ -750,7 +911,9 @@ async def handle_note_qa_message(update: Update, context: ContextTypes.DEFAULT_T
     text = update.message.text.strip()
     if text == MAIN_MENU_BUTTON:
         _set_active_note_session(telegram_id=telegram_id, note_id=None, session_id=None)
-        await update.message.reply_text("🐱 Вернулся в главное меню.", reply_markup=_main_menu_keyboard())
+        context.chat_data[CABINET_SUPPRESS_INLINE_FLAG] = True
+        context.chat_data[CABINET_REPLY_MARKUP_KEY] = _main_menu_keyboard()
+        await show_personal_cabinet(update, context)
         return MENU_STATE
 
     session_payload = fetch_note_qa_session_payload(session_id, history_limit=MAX_QA_HISTORY_MESSAGES)
@@ -791,10 +954,9 @@ async def handle_note_search_message(update: Update, context: ContextTypes.DEFAU
     text = update.message.text.strip()
     if text == MAIN_MENU_BUTTON:
         _set_search_active(telegram_id, False)
-        await update.message.reply_text(
-            "🐱 Завершил поиск. Возвращаю меню.",
-            reply_markup=_main_menu_keyboard(),
-        )
+        context.chat_data[CABINET_SUPPRESS_INLINE_FLAG] = True
+        context.chat_data[CABINET_REPLY_MARKUP_KEY] = _main_menu_keyboard()
+        await show_personal_cabinet(update, context)
         return MENU_STATE
 
     if not telegram_id:
@@ -844,6 +1006,17 @@ async def handle_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     text = update.message.text.strip()
     logger.debug("Menu action received text=%r", text)
+    if text == "💎 Подписка":
+        await show_payment_plans(update, context)
+        return MENU_STATE
+    if text == "🐱 Личный кабинет":
+        context.chat_data[CABINET_SUPPRESS_INLINE_FLAG] = True
+        context.chat_data[CABINET_REPLY_MARKUP_KEY] = _main_menu_keyboard()
+        await show_personal_cabinet(update, context)
+        return MENU_STATE
+    if text == "🎁 Реферальная программа":
+        await _send_referral_info(update, context)
+        return MENU_STATE
     if text not in MENU_RESPONSES and text != MAIN_MENU_BUTTON:
         return
 
@@ -856,11 +1029,11 @@ async def handle_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if active_search:
             _set_search_active(telegram_id, False)
 
-        await update.message.reply_text(
-            START_TEXT if not (active_qa or active_search) else "🐱 Вернулся в главное меню.",
-            parse_mode="Markdown",
-            reply_markup=_main_menu_keyboard(),
-        )
+        if active_qa or active_search:
+            await update.message.reply_text("🐱 Вернулся в главное меню.")
+        context.chat_data[CABINET_SUPPRESS_INLINE_FLAG] = True
+        context.chat_data[CABINET_REPLY_MARKUP_KEY] = _main_menu_keyboard()
+        await show_personal_cabinet(update, context)
         return MENU_STATE
 
     response = MENU_RESPONSES.get(text)

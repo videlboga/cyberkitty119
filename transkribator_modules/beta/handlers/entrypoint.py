@@ -28,12 +28,13 @@ from transkribator_modules.google_api import GoogleCredentialService, ensure_tre
 from docx import Document
 
 from ..agent_runtime import AGENT_MANAGER
-from ..note_utils import auto_finalize_note
+from ..note_utils import auto_finalize_note, build_note_artifact_content
 from ..tools import (
     _ensure_google_credentials,
     _looks_like_question,
     _build_miniapp_note_link as _tools_build_note_link,
     format_note_saved_message,
+    get_note_display_title,
 )
 
 
@@ -58,6 +59,8 @@ TELEGRAM_MESSAGE_LIMIT = 3900
 _PENDING_NOTE_KEY = "pending_note"
 _PENDING_CONFIRM = "beta:note_confirm"
 _PENDING_DECLINE = "beta:note_decline"
+_RESULT_CAPTION_HTML = '<a href="https://t.me/CyberKitty19_bot">CyberKitty119 Транскрибатор</a>'
+_FILENAME_FORBIDDEN_RE = re.compile(r'[\\/:*?"<>|\r\n]+')
 
 
 @dataclass
@@ -549,10 +552,11 @@ def _ensure_note_artifact(
     note: Note,
     text: str,
 ) -> tuple[Optional[str], Optional[str]]:
-    drive_link = _upload_note_to_drive(google_service, note_service, user, note, text)
+    artifact_text = build_note_artifact_content(note, text)
+    drive_link = _upload_note_to_drive(google_service, note_service, user, note, artifact_text)
     if drive_link:
         return drive_link, None
-    local_file = _export_note_locally(note, text)
+    local_file = _export_note_locally(note, artifact_text)
     return None, local_file
 
 
@@ -879,27 +883,42 @@ def _dedupe_response_text(text: Optional[str]) -> Optional[str]:
     return "\n".join(result_lines)
 
 
+def _build_result_filename(note: Optional[Note], file_path: str) -> str:
+    suffix = Path(file_path).suffix or ".txt"
+    base_title = get_note_display_title(note) if note else ""
+    if not base_title:
+        base_title = f"note_{note.id if note and note.id else 'result'}"
+
+    normalized = _FILENAME_FORBIDDEN_RE.sub(" ", base_title).strip()
+    normalized = re.sub(r"\s+", "_", normalized, flags=re.UNICODE).strip("_")
+    if not normalized:
+        base_title = f"note_{note.id if note and note.id else 'result'}"
+        normalized = base_title
+    if len(normalized) > 80:
+        normalized = normalized[:80].rstrip("_-.") or normalized[:80]
+    return f"{normalized}{suffix}"
+
+
 async def _send_local_artifact(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, note: Note) -> None:
-    # Импортируем функцию для генерации дружелюбного имени
-    from transkribator_modules.bot.handlers import generate_friendly_title_async
-    
-    # Генерируем дружелюбное имя файла из содержимого заметки с помощью LLM
-    friendly_name = await generate_friendly_title_async(note.text or "", note.ts)
-    filename = f"{friendly_name}.txt"
-    
+    caption_rendered = _RESULT_CAPTION_HTML
+    parse_mode = ParseMode.HTML
+    filename = _build_result_filename(note, file_path)
     try:
-        # Отправляем файл БЕЗ caption
         if update.message:
             with open(file_path, 'rb') as handle:
                 await update.message.reply_document(
                     handle,
                     filename=filename,
+                    caption=caption_rendered,
+                    parse_mode=parse_mode,
                 )
         elif update.callback_query and update.callback_query.message:
             with open(file_path, 'rb') as handle:
                 await update.callback_query.message.reply_document(
                     handle,
                     filename=filename,
+                    caption=caption_rendered,
+                    parse_mode=parse_mode,
                 )
         else:
             user = update.effective_user
@@ -909,6 +928,8 @@ async def _send_local_artifact(update: Update, context: ContextTypes.DEFAULT_TYP
                         chat_id=user.id,
                         document=handle,
                         filename=filename,
+                        caption=caption_rendered,
+                        parse_mode=parse_mode,
                     )
         
     except Exception as exc:  # noqa: BLE001
