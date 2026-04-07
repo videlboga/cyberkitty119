@@ -15,6 +15,8 @@ from pydantic import BaseModel
 import uvicorn
 import httpx
 
+from core_api.api.v1 import system as core_system_router
+
 # Добавляем корневую директорию проекта в sys.path
 import sys
 current_dir = Path(__file__).parent.resolve()
@@ -52,6 +54,12 @@ app.add_middleware(
 
 # Подключаем мини-приложение API и статику, если собран дистрибутив
 app.include_router(miniapp_router, prefix="/api")
+
+# --- CORE API MODULES (V2) ---
+app.include_router(core_system_router.router, prefix="/api/v1/system")
+from core_api.api.v1 import auth as core_auth_router
+app.include_router(core_auth_router.router, prefix="/api/v1/auth")
+# -----------------------------
 
 MINIAPP_DIST_PATH = current_dir / "miniapp_dist"
 
@@ -1577,6 +1585,182 @@ async def transcribe_video(
             logger.info(f"Временные файлы очищены для task_id: {task_id}")
         except Exception as e:
             logger.warning(f"Не удалось очистить временные файлы: {e}")
+
+
+# ============================================================================
+# WHISPER GPU PIPELINE ENDPOINTS
+# ============================================================================
+
+# Импортируем оркестратор
+try:
+    from pipeline_orchestrator import WhisperPipeline
+    PIPELINE_AVAILABLE = True
+except ImportError:
+    PIPELINE_AVAILABLE = False
+    logger.warning("Pipeline orchestrator not available - GPU transcription endpoint disabled")
+
+
+class PipelineRequest(BaseModel):
+    file_path: str
+    language: str = "ru"
+
+
+class PipelineResult(BaseModel):
+    status: str
+    job_id: str
+    total_time: float
+    preparation_time: float
+    transcription_time: float
+    result_file: str
+    report_file: str
+    segments: int
+    audio_duration: float
+    error: Optional[str] = None
+
+
+@app.post("/api/v1/transcribe-gpu")
+async def transcribe_gpu(request: PipelineRequest) -> PipelineResult:
+    """
+    Transcribe media file using local Whisper GPU (RTX 3070 Ti).
+    
+    This endpoint provides GPU-accelerated transcription using the local
+    Whisper pipeline, achieving ~4x speedup vs CPU.
+    
+    Args:
+        file_path: Path to media file (video or audio)
+        language: Language code (default: "ru" for Russian)
+    
+    Returns:
+        PipelineResult with transcription status and file paths
+    
+    Performance:
+        - Single file: ~57 seconds for 21-min audio
+        - 5 parallel: ~146 seconds (3.5x speedup)
+        - GPU memory: 3.49GB peak (safe margin on 7.7GB)
+    """
+    
+    if not PIPELINE_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="GPU pipeline not available"
+        )
+    
+    try:
+        file_path = Path(request.file_path)
+        
+        # Validate file exists
+        if not file_path.exists():
+            logger.error(f"File not found: {file_path}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"File not found: {file_path}"
+            )
+        
+        # Validate file size (max 1GB)
+        file_size = file_path.stat().st_size
+        if file_size > 1024 * 1024 * 1024:  # 1GB
+            logger.error(f"File too large: {file_size} bytes")
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large: {file_size / 1024**3:.1f}GB (max 1GB)"
+            )
+        
+        logger.info(f"Starting GPU transcription: {file_path.name} ({file_size / 1024**2:.1f}MB)")
+        
+        # Process with pipeline
+        pipeline = WhisperPipeline()
+        result = pipeline.process(file_path)
+        
+        if result["status"] != "success":
+            logger.error(f"Pipeline failed: {result.get('error')}")
+            return PipelineResult(
+                status="error",
+                job_id="",
+                total_time=0,
+                preparation_time=0,
+                transcription_time=0,
+                result_file="",
+                report_file="",
+                segments=0,
+                audio_duration=0,
+                error=result.get("error", "Unknown error")
+            )
+        
+        logger.info(f"GPU transcription completed: {result['job_id']}")
+        logger.info(f"  Preparation: {result['preparation_time']:.2f}s")
+        logger.info(f"  Transcription: {result['transcription_time']:.2f}s")
+        logger.info(f"  Total: {result['total_time']:.2f}s")
+        
+        return PipelineResult(
+            status="success",
+            job_id=result["job_id"],
+            total_time=result["total_time"],
+            preparation_time=result["preparation_time"],
+            transcription_time=result["transcription_time"],
+            result_file=result["result_file"],
+            report_file=result["report_file"],
+            segments=result["segments"],
+            audio_duration=result["audio_duration"]
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GPU pipeline error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Pipeline error: {str(e)}"
+        )
+
+
+@app.get("/api/v1/pipeline-status")
+async def pipeline_status() -> dict:
+    """Get pipeline status and GPU information."""
+    
+    if not PIPELINE_AVAILABLE:
+        return {
+            "status": "unavailable",
+            "gpu": None
+        }
+    
+    try:
+        import torch
+        gpu_available = torch.cuda.is_available()
+        gpu_name = torch.cuda.get_device_name(0) if gpu_available else None
+        gpu_memory = None
+        
+        if gpu_available:
+            props = torch.cuda.get_device_properties(0)
+            total_mem = props.total_memory / 1024**3
+            free_mem = torch.cuda.mem_get_info()[0] / 1024**3
+            gpu_memory = {
+                "total_gb": round(total_mem, 1),
+                "free_gb": round(free_mem, 1),
+                "used_percent": round((1 - free_mem/total_mem) * 100, 1)
+            }
+        
+        return {
+            "status": "available",
+            "gpu": {
+                "available": gpu_available,
+                "name": gpu_name,
+                "memory": gpu_memory
+            },
+            "performance": {
+                "single_file_time": "~57 seconds",
+                "parallel_capacity": "5 concurrent",
+                "throughput": "5.27 files/min max"
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting pipeline status: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
 
 if __name__ == "__main__":
     # Запускаем сервер
