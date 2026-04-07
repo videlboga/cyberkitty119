@@ -75,11 +75,13 @@ _TRANSIENT_MARKERS = (
 def _strip_host_prefix(raw_path: str) -> str:
     """Remove /var/lib/telegram-bot-api* prefix if present."""
     normalized = raw_path.lstrip("/")
-    if not LOCAL_BOT_API_DATA_DIR_HOST:
-        return normalized
-    host = LOCAL_BOT_API_DATA_DIR_HOST.lstrip("/")
-    if host and normalized.startswith(host):
-        normalized = normalized[len(host):].lstrip("/")
+    # Hardcoded Telegram API server default local directory
+    if normalized.startswith("var/lib/telegram-bot-api/"):
+        normalized = normalized[len("var/lib/telegram-bot-api/"):].lstrip("/")
+    elif LOCAL_BOT_API_DATA_DIR_HOST:
+        host = LOCAL_BOT_API_DATA_DIR_HOST.lstrip("/")
+        if host and normalized.startswith(host):
+            normalized = normalized[len(host):].lstrip("/")
     return normalized
 
 
@@ -315,6 +317,8 @@ async def download_large_file(
     expected_size_bytes: Optional[int] = None,
     # Временное окно (сек) для поиска "свежих" файлов в кешe.
     cache_mtime_window_sec: int = 1800,
+    # Опциональный прямой URL файла. Если задан, пропускаются кеши и Telegram API
+    file_url: Optional[str] = None,
 ) -> bool:
     """Download a Telegram file with retry/backoff support.
     
@@ -323,10 +327,60 @@ async def download_large_file(
     """
     logger.info(
         "🔄 download_large_file START",
-        extra={"file_id": file_id, "expected_size_bytes": expected_size_bytes, "timeout": timeout, "destination": str(destination)}
+        extra={"file_id": file_id, "expected_size_bytes": expected_size_bytes, "timeout": timeout, "destination": str(destination), "file_url": file_url}
     )
     retry_cfg = retry_cfg or _RetryConfig()
     destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if file_url:
+        logger.info(
+            "🌐 Found direct file_url, skipping Telegram getFile and cache probes.",
+            extra={"file_url": file_url}
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for attempt in range(1, retry_cfg.attempts + 1):
+                try:
+                    logger.info(
+                        "🌐 Starting HTTP download direct attempt %s for file_id=%s from %s",
+                        attempt,
+                        file_id,
+                        file_url,
+                    )
+                    async with client.stream("GET", file_url) as response:
+                        if response.status_code != 200:
+                            body = await response.aread()
+                            logger.warning(
+                                "Direct URL download HTTP error (attempt %s, status %s) from %s: %s",
+                                attempt,
+                                response.status_code,
+                                file_url,
+                                body.decode("utf-8", errors="ignore"),
+                            )
+                            if attempt < retry_cfg.attempts:
+                                await asyncio.sleep(retry_cfg.delay_s)
+                                continue
+                            return False
+
+                        downloaded = 0
+                        total_size = expected_size_bytes or int(response.headers.get("content-length", 0))
+
+                        with open(destination, "wb") as f:
+                            async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                                if not chunk:
+                                    continue
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if progress_callback and total_size > 0:
+                                    await progress_callback(downloaded, total_size)
+
+                        logger.info("✅ Direct URL download completed successfully to %s", destination)
+                        return True
+                except Exception as exc:
+                    logger.error("Direct URL file download exception (attempt %s): %s", attempt, exc)
+                    if attempt < retry_cfg.attempts:
+                        await asyncio.sleep(retry_cfg.delay_s)
+                        continue
+            return False
 
     # Попытка раннего копирования из кеша по эвристике размера
     # Делается очень аккуратно: только если есть ровно одно совпадение
