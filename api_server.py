@@ -59,6 +59,8 @@ app.include_router(miniapp_router, prefix="/api")
 app.include_router(core_system_router.router, prefix="/api/v1/system")
 from core_api.api.v1 import auth as core_auth_router
 app.include_router(core_auth_router.router, prefix="/api/v1/auth")
+from core_api.api.v1 import ingest as core_ingest_router
+app.include_router(core_ingest_router.router, prefix="/api/v1/ingest")
 # -----------------------------
 
 MINIAPP_DIST_PATH = current_dir / "miniapp_dist"
@@ -1169,49 +1171,8 @@ class TranscriptionResult(BaseModel):
     processing_time_seconds: float
     formatted_with_llm: bool
 
-# Dependency для проверки API ключа
-async def verify_api_key(
-    authorization: str = Header(None),
-    x_api_key: str = Header(None),
-    api_key: str = Query(None),
-    db = Depends(get_db)
-) -> tuple[User, Optional[ApiKey]]:
-    """Проверка API ключа и возврат пользователя"""
-
-    # Получаем ключ из разных источников
-    key = None
-    if authorization and authorization.startswith("Bearer "):
-        key = authorization[7:]
-    elif x_api_key:
-        key = x_api_key
-    elif api_key:
-        key = api_key
-
-    if not key:
-        raise HTTPException(
-            status_code=401,
-            detail="API ключ не предоставлен. Используйте заголовок Authorization: Bearer <key> или X-API-Key"
-        )
-
-    api_key_service = ApiKeyService(db)
-    api_key_obj = api_key_service.verify_api_key(key)
-
-    if not api_key_obj:
-        raise HTTPException(
-            status_code=401,
-            detail="Недействительный API ключ"
-        )
-
-    user_service = UserService(db)
-    user = db.query(User).filter(User.id == api_key_obj.user_id).first()
-
-    if not user or not user.is_active:
-        raise HTTPException(
-            status_code=401,
-            detail="Пользователь не найден или заблокирован"
-        )
-
-    return user, api_key_obj
+# Dependency импортируется из core_api.api.v1
+from core_api.api.v1.dependencies import verify_api_key
 
 @app.get("/")
 async def root():
@@ -1770,3 +1731,5 @@ if __name__ == "__main__":
         port=8000,
         log_level="info"
     )
+
+# Check if router is included properly

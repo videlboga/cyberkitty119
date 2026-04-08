@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from typing import List, Dict, Any
 from pydantic import BaseModel
+from core_api.api.v1.dependencies import verify_api_key
 
 from core_api.schemes.system import UserProfileResponse
 from core_api.domains.system.user_service import ProfileService
@@ -74,7 +75,7 @@ async def get_plans_endpoint():
 
 
 @router.get("/user/info", response_model=UserInfo, tags=["Users"])
-async def get_user_info(user_and_key: tuple = Depends()):
+async def get_user_info(user_and_key: tuple = Depends(verify_api_key)):
     """Получить информацию о пользователе и его использовании"""
     user, _ = user_and_key
     db = next(get_db())
@@ -100,3 +101,36 @@ async def get_tg_user_profile(telegram_id: int, first_name: str = "", last_name:
     db = next(get_db())
     service = ProfileService(db)
     return service.get_profile_by_telegram_id(telegram_id, first_name, last_name)
+
+from core_api.schemes.system import PromoActivationRequest, PromoActivationResponse, UserStatsResponse
+
+@router.post("/promo/activate", response_model=PromoActivationResponse, tags=["Billing"])
+async def activate_promo(request: PromoActivationRequest):
+    """Активировать промокод."""
+    from transkribator_modules.db.database import activate_promo_code
+    result = activate_promo_code(request.telegram_id, request.promo_code)
+    
+    if result.get("success"):
+        return PromoActivationResponse(
+            success=True,
+            bonus=result.get("bonus"),
+            expires=result.get("expires")
+        )
+    return PromoActivationResponse(success=False, error=result.get("error", "Unknown error"))
+
+@router.get("/stats/tg/{telegram_id}", response_model=UserStatsResponse, tags=["Users"])
+async def get_user_stats_api(telegram_id: int):
+    """Получить статистику пользователя."""
+    from transkribator_modules.db.database import get_user_stats
+    stats = get_user_stats(telegram_id)
+    return UserStatsResponse(
+        subscription_status=str(stats.get('subscription_status', 'Бесплатный')),
+        subscription_until=str(stats.get('subscription_until', 'Не ограничено')),
+        files_processed=int(stats.get('files_processed', 0)),
+        minutes_transcribed=float(stats.get('minutes_transcribed', 0)),
+        total_characters=int(stats.get('total_characters', 0)),
+        last_activity=str(stats.get('last_activity', 'Никогда')),
+        files_remaining=str(stats.get('files_remaining', '30 минут')),
+        avg_duration=float(stats.get('avg_duration', 0))
+    )
+
