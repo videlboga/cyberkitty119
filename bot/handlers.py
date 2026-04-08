@@ -64,7 +64,12 @@ from transkribator_modules.bot.callbacks import (
 )
 from transkribator_modules.config import TELEGRAM_REFERRAL_URL
 from transkribator_modules.db.database import ReferralService, SessionLocal, UserService
-from transkribator_modules.search.service import NoteSearchError, run_note_search
+
+try:
+    from transkribator_modules.search.service import NoteSearchError, run_note_search
+except ImportError:
+    pass
+
 from transkribator_modules.utils.large_file_downloader import download_large_file
 
 # ── Текстовые шаблоны ────────────────────────────────────────────────────────
@@ -509,19 +514,29 @@ async def handle_media_file(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         parse_mode="Markdown",
     )
 
-    # ── 3. Создать задачу на воркер ───────────────────────────────────────────
+    # ── 3. Создать задачу на воркер через Core API ─────────────────────────────
     try:
-        user_id = await ensure_user(telegram_id)
-        job = create_media_job(
-            user_id=user_id,
-            telegram_id=telegram_id,
-            file_id=file_id,
-            audio_path=str(dest_path),
-            message_id=msg.message_id,
-        )
-        logger.info("Job создан: id=%s user_id=%s", job.id, user_id)
+        import httpx
+        import os
+        api_url = "http://core-api:8000"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{api_url}/api/v1/ingest/media",
+                json={
+                    "telegram_id": telegram_id,
+                    "file_id": str(file_id),
+                    "audio_path": str(dest_path),
+                    "message_id": getattr(msg, "message_id", None)
+                }
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("success"):
+                raise Exception(data.get("error", "Unknown API error"))
+            job_id = data["job_id"]
+        logger.info("Job создан через API: id=%s", job_id)
     except Exception as exc:
-        logger.exception("Не удалось создать job для %s", file_id)
+        logger.exception("Не удалось создать job через API для %s", file_id)
         await status_msg.edit_text("❌ Не удалось поставить задачу в очередь. Попробуй позже.")
         return
 
@@ -535,12 +550,12 @@ async def handle_media_file(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         _poll_and_deliver(
             chat_id=msg.chat_id,
             status_msg=status_msg,
-            job_id=job.id,
+            job_id=job_id,
             filename=filename,
             dest_path=dest_path,
             context=context,
         ),
-        name=f"poll_job_{job.id}",
+        name=f"poll_job_{job_id}",
     )
 
 
