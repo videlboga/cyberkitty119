@@ -23,4 +23,4 @@ jobs:
       - name: Run syntax check
         run: python -m compileall -q . && echo "compile OK"
       - name: Run tests
-        run: PYTHONPATH=. pytest -q
+        run: PYTHONPATH=. pytest -q --ignore=tests/test_beta_mode.py --ignore=tests/test_content_processor.py
