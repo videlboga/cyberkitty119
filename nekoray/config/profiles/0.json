@@ -1,0 +1,29 @@
+{
+    "bean": {
+        "_v": 0,
+        "addr": "85.9.212.81",
+        "name": "ai-vpn-6eg3ch53",
+        "pass": "52c011fd-aa3d-4451-97fb-828f890abdfe",
+        "port": 20761,
+        "stream": {
+            "ed_len": 0,
+            "insecure": false,
+            "mux_s": 0,
+            "net": "tcp",
+            "pbk": "y1B927d86ClZtEwakQVsa_CmlqNPU4vkavJLUZ4vEBU",
+            "sec": "tls",
+            "sid": "23e8598d2c447c0f",
+            "sni": "www.nvidia.com",
+            "spx": "/",
+            "utls": "chrome"
+        }
+    },
+    "gid": 0,
+    "id": 0,
+    "traffic": {
+        "dl": 20895,
+        "ul": 9061
+    },
+    "type": "vless",
+    "yc": 64
+}

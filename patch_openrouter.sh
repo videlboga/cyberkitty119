@@ -1,0 +1,2 @@
+sed -i 's/        try:/        print(f"DEBUG: calling openrouter API with model={OPENROUTER_MODEL}, payload_len={len(payload)}", flush=True)\n        try:/g' core_api/domains/agent/core/content_processor.py
+sed -i 's/            logger.exception(f"Exception in call_openrouter: {e}")/            print(f"DEBUG: exception in call_openrouter {e}", flush=True)\n            logger.exception(f"Exception in call_openrouter: {e}")/g' core_api/domains/agent/core/content_processor.py

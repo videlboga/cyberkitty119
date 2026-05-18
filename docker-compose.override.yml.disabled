@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  bot:
+    environment:
+      - HTTP_PROXY=http://45.9.74.154:8888
+      - HTTPS_PROXY=http://45.9.74.154:8888
+      - NO_PROXY=localhost,127.0.0.1,telegram-bot-api,postgres,cyberkitty19-postgres,real-whisper
+  worker:
+    environment:
+      - HTTP_PROXY=
+      - HTTPS_PROXY=

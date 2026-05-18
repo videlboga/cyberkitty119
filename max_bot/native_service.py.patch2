@@ -1,0 +1,20 @@
+--- max_bot/native_service.py
++++ max_bot/native_service.py
+@@ -107,6 +107,17 @@
+     chat = upd.get("chat_id") or (upd.get("chat") or {}).get("id") if isinstance(upd.get("chat"), dict) else upd.get("chat")
+     msg = upd.get("message") or upd.get("body") or upd
+ 
++    if not chat and isinstance(msg, dict):
++        recipient = msg.get("recipient") or {}
++        if isinstance(recipient, dict):
++            chat = recipient.get("chat_id")
++            
++    if not chat and isinstance(msg, dict):
++        sender = msg.get("sender") or {}
++        if isinstance(sender, dict):
++            chat = sender.get("user_id")
++
++
+     # user
+     sender = None
+     if isinstance(msg, dict):

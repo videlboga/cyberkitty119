@@ -1,0 +1,234 @@
+== Info:   Trying 172.66.0.243:443...
+== Info: Connected to api.openai.com (172.66.0.243) port 443 (#0)
+== Info: ALPN: offers h2,http/1.1
+=> Send SSL data, 5 bytes (0x5)
+0000: .....
+== Info: TLSv1.3 (OUT), TLS handshake, Client hello (1):
+=> Send SSL data, 512 bytes (0x200)
+0000: ......>..+.4Yf(.../.l..g.r.R.HJ....... .-%....NV..I?../.=7U..O[`
+0040: .g.+.K..>.......,.0.........+./...$.(.k.#.'.g.....9.....3.....=.
+0080: <.5./.....u.........api.openai.com..............................
+00c0: ...........h2.http/1.1.........1.....*.(........................
+0100: .................+............-.....3.&.$... .~[.-jB..\!H......1
+0140: .{.1...O..g#h...................................................
+0180: ................................................................
+01c0: ................................................................
+== Info:  CAfile: /etc/ssl/certs/ca-certificates.crt
+== Info:  CApath: /etc/ssl/certs
+<= Recv SSL data, 5 bytes (0x5)
+0000: ....z
+== Info: TLSv1.3 (IN), TLS handshake, Server hello (2):
+<= Recv SSL data, 122 bytes (0x7a)
+0000: ...v...F..Y.Y...nE.l .)%...j@#T..C.[E. .-%....NV..I?../.=7U..O[`
+0040: .g.+.K.......3.$... ..ij..].vq9....u .\...lw3..<..20.+....
+<= Recv SSL data, 5 bytes (0x5)
+0000: .....
+<= Recv SSL data, 5 bytes (0x5)
+0000: .....
+<= Recv SSL data, 1 bytes (0x1)
+0000: .
+== Info: TLSv1.3 (IN), TLS handshake, Encrypted Extensions (8):
+<= Recv SSL data, 19 bytes (0x13)
+0000: .................h2
+== Info: TLSv1.3 (IN), TLS handshake, Certificate (11):
+<= Recv SSL data, 2538 bytes (0x9ea)
+0000: ...........0...0..U.......=qR..D...#{.....0...*.H.=...0;1.0...U.
+0040: ...US1.0...U....Google Trust Services1.0...U....WE10...260112003
+0080: 915Z..260412013913Z0.1.0...U....api.openai.com0Y0...*.H.=....*.H
+00c0: .=....B....p.....@n./..<.S..^..V6......ac.Y$....W.D...y.....P...
+0100: ....x.......[0..W0...U...........0...U.%..0...+.......0...U.....
+0140: ..0.0...U......yv;..W.6C....{Ou~.kO0...U.#..0....w.5g......{..y{
+0180: ...80^..+........R0P0'..+.....0...http://o.pki.goog/s/we1/PXE0%.
+01c0: .+.....0...http://i.pki.goog/we1.crt0+..U...$0"..api.openai.com.
+0200: .*.api.openai.com0...U. ..0.0...g.....06..U.../0-0+.).'.%http://
+0240: c.pki.goog/we1/n0dx7V1Gbbo.crl0.....+.....y............w..W.....
+0280: >3.,........=q2%.!.%.a.N!.............H0F.!..7#.@.\..M..O.f.$...
+02c0: .............!..]eg.G-$..@.V)....sMZ....QA....P.w.d..l..........
+0300: ..O(...5'......}...............H0F.!...t#.v...Q..Q..P...$..l..\.
+0340: ....q.!....Z.AL)#..W..m.B..^.qf<.r...r..0...*.H.=....G.0D. __.J2
+0380: ...2&<  .".4BcV.vN$..n...... a.;9...@.:j.Y...L"I$|R.@a.<<U......
+03c0: ..0...0..%..........w.,"Jv.].....0...*.H.=...0G1.0...U....US1"0 
+0400: ..U....Google Trust Services LLC1.0...U....GTS Root R40...231213
+0440: 090000Z..290220140000Z0;1.0...U....US1.0...U....Google Trust Ser
+0480: vices1.0...U....WE10Y0...*.H.=....*.H.=....B..o.:.gWGL!..@.G].XG
+04c0: .@.\....7..|..K.................Y.,&...&%....V...0..0...U.......
+0500: ....0...U.%..0...+.........+.......0...U.......0.......0...U....
+0540: ...w.5g......{..y{...80...U.#..0....L..t.I6.....>.j....04..+....
+0580: ....(0&0$..+.....0...http://i.pki.goog/r4.crt0+..U...$0"0 ......
+05c0: http://c.pki.goog/r/r4.crl0...U. ..0.0...g.....0...*.H.=....h.0e
+0600: .1....Q..C..u......@Az&....2-=....#H.R.>dy....,.nU..0&..h.b...~.
+0640: ...D~.LI..l.b4...~:..P.....}s..RAM..V....~0..z0..b.........0.3.C
+0680: .....I=..0...*.H........0W1.0...U....BE1.0...U....GlobalSign nv-
+06c0: sa1.0...U....Root CA1.0...U....GlobalSign Root CA0...23111503432
+0700: 1Z..280128000042Z0G1.0...U....US1"0 ..U....Google Trust Services
+0740:  LLC1.0...U....GTS Root R40v0...*.H.=....+...".b...ts.h.`.C.5..0
+0780: {KI...a...F.k.a.5.@.s...0Z.<..|.@v;...G.*...js..r9.)...._^X.e...
+07c0: e......s..j/.........0..0...U...........0...U.%..0...+.........+
+0800: .......0...U.......0....0...U.......L..t.I6.....>.j....0...U.#..
+0840: 0...`{f.E....P/}..4....K06..+........*0(0&..+.....0...http://i.p
+0880: ki.goog/gsr1.crt0-..U...&0$0". ....http://c.pki.goog/r/gsr1.crl0
+08c0: ...U. ..0.0...g.....0...*.H..............B........?c.....hH.9"s.
+0900: ..N-.1......6...y.....j.{.}.t..e.h*,,.B..q...-.k..n.}V.#XX.%...G
+0940: ... ........U.yu5,1[?e....B.....^.....-G...c~....k.......gX.....
+0980: .I.P[?:.%....\.yW.6...&.........>..n..<..8.A..^S.>. W...?H......
+09c0: j#....?/....n..F...g.3&...K..6.&;[........
+== Info: TLSv1.3 (IN), TLS handshake, CERT verify (15):
+<= Recv SSL data, 79 bytes (0x4f)
+0000: ...K...G0E.!...cql..E.....4.va>...Y-..+.r|.... M..C....r.K....q.
+0040: .[V`.......1.a.
+== Info: TLSv1.3 (IN), TLS handshake, Finished (20):
+<= Recv SSL data, 52 bytes (0x34)
+0000: ...0.....P..92..`.....f.....z...xJ.s..V.[y]:x....>.&
+=> Send SSL data, 5 bytes (0x5)
+0000: .....
+== Info: TLSv1.3 (OUT), TLS change cipher, Change cipher spec (1):
+=> Send SSL data, 1 bytes (0x1)
+0000: .
+=> Send SSL data, 5 bytes (0x5)
+0000: ....E
+=> Send SSL data, 1 bytes (0x1)
+0000: .
+== Info: TLSv1.3 (OUT), TLS handshake, Finished (20):
+=> Send SSL data, 52 bytes (0x34)
+0000: ...0&k.(.......p...*"e..4.V.....8r...e.q..?....".. .
+== Info: SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384
+== Info: ALPN: server accepted h2
+== Info: Server certificate:
+== Info:  subject: CN=api.openai.com
+== Info:  start date: Jan 12 00:39:15 2026 GMT
+== Info:  expire date: Apr 12 01:39:13 2026 GMT
+== Info:  subjectAltName: host "api.openai.com" matched cert's "api.openai.com"
+== Info:  issuer: C=US; O=Google Trust Services; CN=WE1
+== Info:  SSL certificate verify ok.
+=> Send SSL data, 5 bytes (0x5)
+0000: ....Q
+=> Send SSL data, 1 bytes (0x1)
+0000: .
+== Info: using HTTP/2
+== Info: h2h3 [:method: POST]
+== Info: h2h3 [:path: /v1/audio/transcriptions]
+== Info: h2h3 [:scheme: https]
+== Info: h2h3 [:authority: api.openai.com]
+== Info: h2h3 [user-agent: curl/7.88.1]
+== Info: h2h3 [accept: */*]
+== Info: h2h3 [authorization: Bearer [REDACTED]
+== Info: h2h3 [content-length: 1440]
+== Info: h2h3 [content-type: multipart/form-data; boundary=------------------------6de26ea385882ebd]
+== Info: Using Stream ID: 1 (easy handle 0x55e691a537a0)
+=> Send SSL data, 5 bytes (0x5)
+0000: .....
+=> Send SSL data, 1 bytes (0x1)
+0000: .
+=> Send header, 396 bytes (0x18c)
+0000: POST /v1/audio/transcriptions HTTP/2
+0026: Host: api.openai.com
+003c: user-agent: curl/7.88.1
+0055: accept: */*
+0062: authorization: Bearer [REDACTED]
+00a2: KmYdUL8QLUkmwPzyzq-dpyf5Ym5jDOIgBtVpqKeLT3BlbkFJj8pWNs_4DWAqXUIT
+00e2: aFVt5_GlIeHU0gwtXbZrChB6-9PyhwJQDAm7nnonddXsjb7NHjoDjlwwwA
+011e: content-length: 1440
+0134: content-type: multipart/form-data; boundary=--------------------
+0174: ----6de26ea385882ebd
+018a: 
+=> Send SSL data, 5 bytes (0x5)
+0000: .....
+=> Send SSL data, 1 bytes (0x1)
+0000: .
+=> Send data, 1440 bytes (0x5a0)
+0000: --------------------------6de26ea385882ebd
+002c: Content-Disposition: form-data; name="model"
+005a: 
+005c: gpt-4o-mini-transcribe
+0074: --------------------------6de26ea385882ebd
+00a0: Content-Disposition: form-data; name="file"; filename="input.mp3
+00e0: "
+00e3: Content-Type: application/octet-stream
+010b: 
+010d: ..c..N....P.......)'..[.p.....n..I.....$4..,V.D.]..w.^...B.@.=F.
+014d: ..*......3.=X.p.9.....-2L8..Fh.g?.8....+....p..]s...3;5..'......
+018d: ....'..... .M..F....C..z$n..5g..F.%......-1.^gmV!<O..q..@.Z.k.M9
+01cd: ..>.]Thr|Au.}...uKS..4#.......=.....p...7.y"..Sca....GbD..y..y..
+020d: J....J[.8xO..p........z......'..u.e].....JB..G|\@.........j...a.
+024d: .|...X."....D4.....wb.A...&o..5H...(..B..4..%.6|.."y..T.F.[.(...
+028d: Y.w../...(.kT..... -....0b.Mf..\q3.B.]B.."....v.^....]zZ.m=.l..0
+02cd: <...UX.*;~E.....ray......E....5f.......`)ja..`.n..... .]..&.]..R
+030d: ..u..~]oDk~@&f..lbX.F)9 .@..S...8.@.U.<..~...B....g-B.#.....O...
+034d: >DB.^.2.L.7jz>W..1....4}.N,`...p..i7.|...9....m...........1o.f..
+038d: ....O..G......I...s..j.Il.{.@....N.i..)..x..R%......hK....o..J..
+03cd: .......8...........,(cF...|.......+...}..Ya...7.7..+8.......Cpp.
+040d: ....6..,..L...6...^..../3....k$.^.^A.B..}W.W..m&|.%K.52b....?../
+044d: m..".r..IL.!..~$....{K.K..e..Y..j.=.O........JX."v..........G8.'
+048d: ..&.dI.=.t...~.ttJPP.._.f...i6-..e.........y.KEOFT...Mq....o.Q..
+04cd: ....I...s~dT..]H....;..'y4.g9..\Ot...X(.K.(*.A`.. .U.^.U.....<O.
+050f: --------------------------6de26ea385882ebd
+053b: Content-Disposition: form-data; name="language"
+056c: 
+056e: ru
+0572: --------------------------6de26ea385882ebd--
+== Info: We are completely uploaded and fine
+<= Recv SSL data, 5 bytes (0x5)
+0000: .....
+<= Recv SSL data, 1 bytes (0x1)
+0000: .
+== Info: TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+<= Recv SSL data, 238 bytes (0xee)
+0000: ....... .1......,.[p_..W;..k....9g=l.4...Pi...w*sCo...P..\.^..*.
+0040: ...I.)a....z<F..+p. .p*g0....K...=R...E+..1<.:.........f....eD.s
+0080: ..)...."..UN.........!.q8H.j<M....,V9.........Xy..y.J.=.^(-j..s.
+00c0: .9....^.....+$g.......q.s....n.>...*....8.zz..
+== Info: TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+<= Recv SSL data, 238 bytes (0xee)
+0000: ....... .T .....,.[p_..W;..k....h...]..t.......f..`fR.."..z..~a.
+0040: ,E..H.e..|j.V.......d!>....a.iJ....Fc7.k......`..p)M..%.X=..y...
+0080: E...W.||.`.,.J7f....S.5...=.....].....]......?.y....W.*.|..P..&t
+00c0: .a....+...v....V..z..C...Hi.HP.....*....8.zz..
+== Info: old SSL session ID is stale, removing
+<= Recv SSL data, 5 bytes (0x5)
+0000: ....B
+<= Recv SSL data, 1 bytes (0x1)
+0000: .
+=> Send SSL data, 5 bytes (0x5)
+0000: .....
+=> Send SSL data, 1 bytes (0x1)
+0000: .
+<= Recv SSL data, 5 bytes (0x5)
+0000: .....
+<= Recv SSL data, 1 bytes (0x1)
+0000: .
+<= Recv header, 13 bytes (0xd)
+0000: HTTP/2 403 
+<= Recv header, 37 bytes (0x25)
+0000: date: Wed, 28 Jan 2026 10:47:27 GMT
+<= Recv header, 32 bytes (0x20)
+0000: content-type: application/json
+<= Recv header, 21 bytes (0x15)
+0000: content-length: 153
+<= Recv header, 294 bytes (0x126)
+0000: set-cookie: __cf_bm=kK41OJmgkenN1MFgY9lZaBZSXXwMX7QtQVpbF8_X4q4-
+0040: 1769597247-1.0.1.1-ta7T2HCs6Z1cNnJqkhTLbmArJN8ntcpzDbWcjRjY5vMKF
+0080: JTlk6BpU8B0rUyAR_ZHdHVmUWJP2TH0Ul_pZflunqEqq1odSMuGv5X403eqKWU; 
+00c0: path=/; expires=Wed, 28-Jan-26 11:17:27 GMT; domain=.api.openai.
+0100: com; HttpOnly; Secure; SameSite=None
+<= Recv header, 73 bytes (0x49)
+0000: strict-transport-security: max-age=31536000; includeSubDomains; 
+0040: preload
+<= Recv header, 33 bytes (0x21)
+0000: x-content-type-options: nosniff
+<= Recv header, 20 bytes (0x14)
+0000: server: cloudflare
+<= Recv header, 30 bytes (0x1e)
+0000: cf-ray: 9c4fe96b3e9c9dcb-DME
+<= Recv header, 30 bytes (0x1e)
+0000: alt-svc: h3=":443"; ma=86400
+<= Recv header, 2 bytes (0x2)
+0000: 
+<= Recv SSL data, 5 bytes (0x5)
+0000: .....
+<= Recv SSL data, 1 bytes (0x1)
+0000: .
+<= Recv data, 153 bytes (0x99)
+0000: {"error":{"code":"unsupported_country_region_territory","message
+0040: ":"Country, region, or territory not supported","param":null,"ty
+0080: pe":"request_forbidden"}}
+== Info: Connection #0 to host api.openai.com left intact

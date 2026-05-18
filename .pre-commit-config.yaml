@@ -1,0 +1,13 @@
+repos:
+  - repo: local
+    hooks:
+      - id: validate-metadata
+        name: validate-docs-metadata
+        entry: python .github/scripts/validate_metadata.py docs
+        language: system
+        types: [markdown]
+      - id: markdownlint
+        name: markdownlint
+        entry: npx --yes markdownlint-cli@0.33.0 "docs/**/*.md"
+        language: node
+        types: [markdown]

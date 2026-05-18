@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import importlib
 from pathlib import Path
@@ -43,14 +44,19 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 
 # Проверяем BOT_TOKEN только для модулей бота (не для API сервера)
-REQUIRE_BOT_TOKEN = os.getenv('REQUIRE_BOT_TOKEN', 'true').lower() == 'true'
+_running_tests = 'PYTEST_CURRENT_TEST' in os.environ or any('pytest' in arg for arg in sys.argv)
+default_require_bot_token = 'false' if _running_tests else 'true'
+REQUIRE_BOT_TOKEN = os.getenv('REQUIRE_BOT_TOKEN', default_require_bot_token).lower() == 'true'
 if REQUIRE_BOT_TOKEN and not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN не установлен!")
     raise ValueError("BOT_TOKEN обязателен")
+if not REQUIRE_BOT_TOKEN and not BOT_TOKEN and not _running_tests:
+    logger.warning("⚠️ BOT_TOKEN отключён через REQUIRE_BOT_TOKEN=false — используйте только в тестах")
 
 # ===== TELEGRAM BOT API SERVER =====
 USE_LOCAL_BOT_API = os.getenv('USE_LOCAL_BOT_API', 'true').lower() == 'true'
 LOCAL_BOT_API_URL = os.getenv('LOCAL_BOT_API_URL', 'http://localhost:8083')
+LOCAL_BOT_FILE_API_URL = os.getenv('LOCAL_BOT_FILE_API_URL', 'http://localhost:8083')
 
 # API_ID и API_HASH нужны только для Bot API Server (в docker-compose.yml)
 TELEGRAM_API_ID = int(os.getenv('TELEGRAM_API_ID', '0'))
@@ -141,6 +147,11 @@ if FEATURE_GOOGLE_CALENDAR:
     GOOGLE_SCOPES.append('https://www.googleapis.com/auth/calendar.events')
 
 MINIAPP_PUBLIC_URL = os.getenv('MINIAPP_PUBLIC_URL', 'https://cyberkitty.ru/miniapp').rstrip("/")
+# Dev override for MiniApp URL (typically a HTTPS tunnel such as cloudflared/ngrok).
+# If set, the bot will use this URL for MiniApp buttons.
+MINIAPP_DEV_TUNNEL_URL = os.getenv('MINIAPP_DEV_TUNNEL_URL', '').strip().rstrip("/")
+# Effective URL used by bot UI.
+MINIAPP_EFFECTIVE_URL = (MINIAPP_DEV_TUNNEL_URL or MINIAPP_PUBLIC_URL).rstrip("/")
 MINIAPP_PROXY_URL = os.getenv('MINIAPP_PROXY_URL', 'https://t.me/CyberKitty19_bot/journal').rstrip('/')
 MINIAPP_PROXY_QUERY_PARAM = os.getenv('MINIAPP_PROXY_QUERY_PARAM', 'startapp').strip() or 'startapp'
 MINIAPP_NOTE_LINK_TEMPLATE = os.getenv('MINIAPP_NOTE_LINK_TEMPLATE', '').strip()
@@ -157,6 +168,11 @@ logger.info(f"⏱️ Максимальная длительность: {MAX_AUD
 logger.info(f"🧪 Бета-режим включен по умолчанию: {FEATURE_BETA_MODE}")
 logger.info(f"🧭 Router модель: {ROUTER_MODEL}")
 logger.info(f"📂 Google Drive интеграция включена: {GOOGLE_OAUTH_CONFIGURED}")
+
+# Управление пользовательскими уведомлениями об ошибках
+SUPPRESS_FAILURE_MESSAGES = os.getenv('SUPPRESS_FAILURE_MESSAGES', 'true').lower() in ('1', 'true', 'yes')
+if SUPPRESS_FAILURE_MESSAGES:
+    logger.info("🔇 Пользовательские сообщения об ошибках обработки медиa отключены (SUPPRESS_FAILURE_MESSAGES=true)")
 
 
 def load_media_service_overrides() -> Optional[Mapping[str, Any]]:
@@ -220,5 +236,6 @@ __all__ = [
     "DATABASE_URL",
     "IN_CONTAINER",
     "logger",
+    "SUPPRESS_FAILURE_MESSAGES",
     "load_media_service_overrides",
 ]

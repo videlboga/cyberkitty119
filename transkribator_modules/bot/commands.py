@@ -1,20 +1,23 @@
 import json
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from transkribator_modules.config import logger, FEATURE_BETA_MODE
+from transkribator_modules.config import logger, MINIAPP_EFFECTIVE_URL
 from transkribator_modules.db.database import (
-    SessionLocal,
     UserService,
     ApiKeyService,
     TransactionService,
     PromoCodeService,
-    NoteService,
+    ReferralService,
+    log_event,
 )
-from transkribator_modules.beta.reminders import REMINDER_KEYBOARD
 from transkribator_modules.db.models import ApiKey, PlanType
+from transkribator_modules.utils.event_logging import log_user_action
+from transkribator_modules.bot.logging_utils import trace_handler, log_step
+from transkribator_modules.wai_flow import wai_menu_command
 
 
 def _get_target_message(update: Update):
@@ -33,76 +36,88 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, 
         return await context.bot.send_message(chat_id=update.effective_user.id, text=text, **kwargs)
     return None
 
+@log_user_action("bot_command_start")
+@trace_handler("command:/start")
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start: показываем нужное главное меню (как по кнопке Назад)."""
-    db = SessionLocal()
+    context.chat_data.pop("last_transcription_result", None)
+    context.chat_data.pop("qa_session", None)
     usage_reset = False
     was_created = False
+    referral_bonus_applied = False
+    referral_code: Optional[str] = None
+    
+    start_payload = None
+    if context.args:
+        start_payload = context.args[0]
+    elif update.message and update.message.text:
+        parts = update.message.text.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            start_payload = parts[1]
+    if start_payload:
+        start_payload = start_payload.strip()
+        if start_payload.lower().startswith("ref="):
+            referral_code = start_payload[4:]
+        elif start_payload.lower().startswith("ref_"):
+            referral_code = start_payload[4:]
+    if referral_code:
+        referral_code = referral_code.strip()
+
     try:
-        user_service = UserService(db)
-        db_user = user_service.get_or_create_user(
-            telegram_id=update.effective_user.id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-            last_name=update.effective_user.last_name,
-        )
-        user_service.get_usage_info(db_user)
-        usage_reset = bool(getattr(db_user, "_usage_reset", False))
-        was_created = bool(getattr(db_user, "_was_created", False))
-        setattr(db_user, "_usage_reset", False)
-        setattr(db_user, "_was_created", False)
+        import httpx
+        import os
+        api_url = os.getenv("API_SERVER_URL", "http://host.docker.internal:8001")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{api_url}/api/v1/auth/tg/start",
+                json={
+                    "telegram_id": update.effective_user.id,
+                    "username": update.effective_user.username,
+                    "first_name": update.effective_user.first_name,
+                    "last_name": update.effective_user.last_name,
+                    "referral_code": referral_code
+                }
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            
+            was_created = data.get("is_new_user", False)
+            usage_reset = data.get("usage_reset", False)
+            referral_bonus_applied = data.get("referral_bonus_applied", False)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "Start command: failed to init user",
+            "Start command: failed to init user through Core API",
             extra={"user_id": update.effective_user.id, "error": str(exc)},
         )
-        usage_info = None
-    finally:
-        db.close()
 
-    first_name = update.effective_user.first_name or 'котик'
-    welcome_text = f"""🐱 **Мяу! Добро пожаловать в Cyberkitty19 Transkribator!**
+    await wai_menu_command(update, context)
 
-Привет, {first_name}! Я котик, который помогает превращать видео в заметки и держать всё под лапкой.
-
-🎬 **Что я умею:**
-• Расшифровываю видео и аудио в текст  
-• Форматирую заметки и делаю краткие и длинные саммори  
-• Веду задачи и записи вместе с миниаппом **«Журнал»**  
-• Нахожу и обновляю заметки через встроенного ИИ‑агента
-
-🚀 **Как работать:**
-1. Отправь мне видео или аудио — я создам заметку автоматически.  
-2. Спроси агента — он найдёт нужную запись или подготовит новую.  
-3. Открой миниапп **«Журнал»**, чтобы просматривать и редактировать заметки в Telegram.
-
-💡 **Готов начать?**  
-Нажми кнопку ниже, чтобы открыть личный кабинет и «Журнал», или просто пришли мне видео.
-
-*мурчит и готов к новым заметкам* 🐾"""
-
-    extra_lines: list[str] = []
-    if was_created:
-        extra_lines.append(
-            "🎁 В бесплатном тарифе доступны 3 видео в месяц. Используй их, чтобы попробовать все возможности."
+    if referral_bonus_applied:
+        await _reply(
+            update,
+            context,
+            "🎉 Реферальный бонус активирован: 14 дней плана «Реферал». Загляни в личный кабинет, чтобы увидеть новые лимиты!",
+        )
+    elif was_created:
+        await _reply(
+            update,
+            context,
+            "🎁 В бесплатном тарифе доступны 3 видео в месяц. Используй их, чтобы попробовать все возможности.",
         )
     elif usage_reset:
-        extra_lines.append(
-            "🔄 Лимит бесплатного тарифа обновился — снова доступны 3 бесплатные загрузки на этот месяц."
+        await _reply(
+            update,
+            context,
+            "🔄 Лимит бесплатного тарифа обновился — снова доступны 3 бесплатные загрузки на этот месяц.",
+        )
+    elif referral_code:
+        await _reply(
+            update,
+            context,
+            "💌 Ты пришёл по реферальной ссылке — подарок уже активирован: 14 дней плана «Реферал». Наслаждайся расширенными возможностями!",
         )
 
-    if extra_lines:
-        welcome_text = f"{welcome_text}\n\n" + "\n".join(extra_lines)
-
-    keyboard = [
-        [InlineKeyboardButton("🏠 Личный кабинет", callback_data="personal_cabinet")],
-        [InlineKeyboardButton("⭐ Купить подписку", callback_data="show_payment_plans")],
-        [InlineKeyboardButton("💡 Помощь", callback_data="show_help")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await _reply(update, context, welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
-
+@trace_handler("command:/help")
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /help"""
     help_text = """📖 **Справка по CyberKitty Transkribator**
@@ -143,6 +158,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await _reply(update, context, help_text, parse_mode='Markdown')
 
+@trace_handler("command:/status")
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /status"""
     status_text = """✅ **Статус CyberKitty Transkribator**
@@ -165,6 +181,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await _reply(update, context, status_text, parse_mode='Markdown')
 
+@trace_handler("command:/raw_transcript")
 async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /rawtranscript"""
     help_text = """📝 **Получение сырой транскрипции**
@@ -187,22 +204,52 @@ async def raw_transcript_command(update: Update, context: ContextTypes.DEFAULT_T
 
     await _reply(update, context, help_text, parse_mode='Markdown')
 
+@trace_handler("command:/plans")
 async def plans_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /plans"""
+    try:
+        log_event(update.effective_user.id, "bot_command_plans", {
+            "chat_id": update.effective_chat.id if update.effective_chat else None
+        })
+    except Exception:
+        logger.debug("Failed to log /plans event", exc_info=True)
+    
     from transkribator_modules.bot.payments import show_payment_plans
     await show_payment_plans(update, context)
 
+@trace_handler("command:/buy")
 async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /buy — быстрый переход к покупке."""
+    try:
+        log_event(update.effective_user.id, "bot_command_buy", {
+            "chat_id": update.effective_chat.id if update.effective_chat else None
+        })
+    except Exception:
+        logger.debug("Failed to log /buy event", exc_info=True)
+    
     from transkribator_modules.bot.payments import show_payment_plans
     await show_payment_plans(update, context)
 
+@trace_handler("command:/stats")
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /stats"""
     try:
-        from transkribator_modules.db.database import get_user_stats
+        log_event(update.effective_user.id, "bot_command_stats", {
+            "chat_id": update.effective_chat.id if update.effective_chat else None
+        })
+    except Exception:
+        logger.debug("Failed to log /stats event", exc_info=True)
+    
+    try:
+        import httpx
+        import os
+        api_url = os.getenv("API_SERVER_URL", "http://host.docker.internal:8001")
+        
         user_id = update.effective_user.id
-        stats = get_user_stats(user_id)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{api_url}/api/v1/system/stats/tg/{user_id}")
+            resp.raise_for_status()
+            stats = resp.json()
 
         stats_text = f"""📊 **Ваша статистика**
 
@@ -229,7 +276,16 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _reply(update, context, "❌ Не удалось получить статистику. Попробуйте позже.")
 
 
+@trace_handler("command:/timezone")
 async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        log_event(update.effective_user.id, "bot_command_timezone", {
+            "chat_id": update.effective_chat.id if update.effective_chat else None,
+            "has_args": bool(context.args)
+        })
+    except Exception:
+        logger.debug("Failed to log /timezone event", exc_info=True)
+    
     args = context.args
     if not args:
         await _reply(
@@ -251,68 +307,48 @@ async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    db = SessionLocal()
+    import httpx
     try:
-        user_service = UserService(db)
-        user = user_service.get_or_create_user(
-            telegram_id=update.effective_user.id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-            last_name=update.effective_user.last_name,
-        )
-        user_service.set_timezone(user, tz_name)
-    except Exception as exc:  # noqa: BLE001
+        import os
+        api_url = os.getenv("API_SERVER_URL", "http://host.docker.internal:8001")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{api_url}/api/v1/internal_bot/user",
+                json={
+                    "user_id": update.effective_user.id,
+                    "username": update.effective_user.username,
+                    "first_name": update.effective_user.first_name,
+                    "last_name": update.effective_user.last_name,
+                    "timezone": tz_name
+                }
+            )
+            # The internal API should ideally support saving timezone or we just ignore the error for now to preserve decoupled bot
+    except Exception as exc:
         logger.error("Timezone update failed", extra={"user_id": update.effective_user.id, "error": str(exc)})
         await _reply(update, context, "Не удалось сохранить часовой пояс. Попробуй позже.")
     else:
         await _reply(update, context, f"Часовой пояс сохранён: {tz_name}")
-    finally:
-        db.close()
 
 
+@trace_handler("command:/backlog")
 async def backlog_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показать пользователю заметки из бэклога и предложить разобрать их."""
+    """Историческая команда — сейчас просто рассказываем, что функция недоступна."""
+    await _reply(
+        update,
+        context,
+        "Бэклог временно недоступен. В новой версии бота весь фокус на стандартной обработке файлов.",
+    )
 
-    if not FEATURE_BETA_MODE:
-        await _reply(update, context, "Бэклог доступен в новом бета-режиме. Ожидайте обновлений!")
-        return
-
-    db = SessionLocal()
-    try:
-        user_service = UserService(db)
-        note_service = NoteService(db)
-
-        user = user_service.get_or_create_user(
-            telegram_id=update.effective_user.id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-            last_name=update.effective_user.last_name,
-        )
-
-        if not user_service.is_beta_enabled(user):
-            await _reply(update, context, "Включи бета-режим в личном кабинете, чтобы работать с бэклогом.")
-            return
-
-        backlog_notes = note_service.list_backlog(user, limit=5)
-        if not backlog_notes:
-            await _reply(update, context, "Бэклог пуст — можно отдыхать! 💤")
-            return
-
-        lines = []
-        for note in backlog_notes:
-            snippet = note.summary or (note.text or '')
-            snippet = (snippet or '').strip().replace('\n', ' ')
-            if len(snippet) > 80:
-                snippet = snippet[:77] + '…'
-            lines.append(f"• {snippet or 'без текста'}")
-
-        text = "У тебя есть заметки в бэклоге. Разберём 5 сейчас?\n\n" + "\n".join(lines)
-        await _reply(update, context, text, reply_markup=REMINDER_KEYBOARD, disable_web_page_preview=True)
-    finally:
-        db.close()
-
+@trace_handler("command:/api")
 async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /api"""
+    try:
+        log_event(update.effective_user.id, "bot_command_api", {
+            "chat_id": update.effective_chat.id if update.effective_chat else None
+        })
+    except Exception:
+        logger.debug("Failed to log /api event", exc_info=True)
+    
     api_text = """🔌 **API интеграция**
 
 **Скоро будет доступно:**
@@ -333,9 +369,24 @@ async def api_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await _reply(update, context, api_text, parse_mode='Markdown')
 
+@trace_handler("command:/promo")
 async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /promo"""
-    if not context.args:
+    try:
+        log_event(update.effective_user.id, "bot_command_promo", {
+            "chat_id": update.effective_chat.id if update.effective_chat else None,
+            "has_args": bool(context.args)
+        })
+    except Exception:
+        logger.debug("Failed to log /promo event", exc_info=True)
+    
+    # Пытаемся взять аргументы из контекста или callback_data (если это инлайн кнопка и есть что-то дальше)
+    # Но для инлайн кнопки обычно аргументов нет, поэтому будет показана справка
+    args = context.args
+    # Специальная логика для callback: мы не передаем args через callback_data в эту функцию сейчас, 
+    # но если понадобится, можно извлечь
+    
+    if not args:
         promo_text = """🎁 **Промокоды**
 
 **Как использовать:**
@@ -351,128 +402,136 @@ async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 • Специальные акции
 
 Следите за обновлениями для получения новых промокодов! 🔥"""
-
-        await update.message.reply_text(promo_text, parse_mode='Markdown')
+        if update.message:
+            await update.message.reply_text(promo_text, parse_mode='Markdown')
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(promo_text, parse_mode='Markdown')
         return
 
-    promo_code = context.args[0].upper()
+    promo_code = args[0].upper()
 
     try:
-        from transkribator_modules.db.database import activate_promo_code
-        user_id = update.effective_user.id
-        result = activate_promo_code(user_id, promo_code)
+        import httpx
+        import os
+        api_url = os.getenv("API_SERVER_URL", "http://host.docker.internal:8001")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{api_url}/api/v1/system/promo/activate",
+                json={
+                    "telegram_id": update.effective_user.id,
+                    "promo_code": promo_code
+                }
+            )
+            resp.raise_for_status()
+            result = resp.json()
 
-        if result['success']:
-            await update.message.reply_text(
+        if result.get('success'):
+            text = (
                 f"🎉 **Промокод активирован!**\n\n"
-                f"**Бонус:** {result['bonus']}\n"
-                f"**Действует до:** {result['expires']}\n\n"
-                f"Спасибо за использование CyberKitty Transkribator! 🐱",
-                parse_mode='Markdown'
+                f"**Бонус:** {result.get('bonus')}\n"
+                f"**Действует до:** {result.get('expires')}\n\n"
+                f"Спасибо за использование CyberKitty Transkribator! 🐱"
             )
         else:
-            await update.message.reply_text(
+            text = (
                 f"❌ **Ошибка активации промокода**\n\n"
-                f"Причина: {result['error']}\n\n"
-                f"Проверьте правильность ввода кода.",
-                parse_mode='Markdown'
+                f"Причина: {result.get('error')}\n\n"
+                f"Проверьте правильность ввода кода."
             )
+            
+        if update.message:
+            await update.message.reply_text(text, parse_mode='Markdown')
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(text, parse_mode='Markdown')
 
     except Exception as e:
-        logger.error(f"Ошибка при активации промокода: {e}")
-        await update.message.reply_text(
-            "❌ Не удалось активировать промокод. Попробуйте позже."
-        )
+        logger.error(f"Ошибка при активации промокода через Core API: {e}")
+        error_msg = "❌ Не удалось активировать промокод. Попробуйте позже."
+        if update.message:
+            await update.message.reply_text(error_msg)
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(error_msg)
 
+@trace_handler("command:/personal_cabinet")
 async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Личный кабинет пользователя"""
+    try:
+        log_event(update.effective_user.id, "bot_command_cabinet", {
+            "chat_id": update.effective_chat.id if update.effective_chat else None
+        })
+    except Exception:
+        logger.debug("Failed to log /cabinet event", exc_info=True)
+    
     user = update.effective_user
 
-    db = SessionLocal()
+    import httpx
     try:
-        user_service = UserService(db)
-        promo_service = PromoCodeService(db)
+        # STRANGLER PATTERN: Call the new Core API for user profile
+        import os
+        api_url = os.getenv("API_SERVER_URL", "http://host.docker.internal:8001")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{api_url}/api/v1/system/profile/tg/{user.id}",
+                params={"first_name": user.first_name or "", "last_name": user.last_name or ""}
+            )
+            resp.raise_for_status()
+            data = resp.json()
 
-        db_user = user_service.get_or_create_user(telegram_id=user.id)
-        usage_info = user_service.get_usage_info(db_user)
-        active_promos = promo_service.get_user_active_promos(db_user)
+        cabinet_text = f"""🐱 **Личный кабинет**\n\n👤 **Профиль:**\n• Имя: {data['first_name'] or 'Котик'} {data['last_name'] or ''}\n• План: {data['plan_display_name']} {data['plan_status_text']}\n\n📊 **Использование в этом месяце:**"""
 
-        # Определяем статус тарифа
-        plan_status = ""
-        if db_user.plan_expires_at:
-            if db_user.plan_expires_at > datetime.utcnow():
-                days_left = (db_user.plan_expires_at - datetime.utcnow()).days
-                plan_status = f"(истекает через {days_left} дн.)"
-            else:
-                plan_status = "(истек)"
-        elif db_user.current_plan != "free":
-            plan_status = "(бессрочно 🎉)"
-
-        cabinet_text = f"""🐱 **Личный кабинет**
-
-👤 **Профиль:**
-• Имя: {user.first_name or 'Котик'} {user.last_name or ''}
-• План: {usage_info['plan_display_name']} {plan_status}
-
-📊 **Использование в этом месяце:**"""
-
-        # Для бесплатного тарифа показываем генерации
-        if usage_info['current_plan'] == 'free':
-            remaining = usage_info['generations_remaining']
-            percentage = usage_info['usage_percentage']
+        if data["minutes_limit"]:
+            remaining = data["minutes_remaining"]
+            percentage = data["usage_percentage"]
             progress_bar = "🟩" * int(percentage // 10) + "⬜" * (10 - int(percentage // 10))
-
-            cabinet_text += f"""
-• Использовано: {usage_info['generations_used_this_month']} из {usage_info['generations_limit']} генераций
-• Осталось: {remaining} генераций
-{progress_bar} {percentage:.1f}%"""
-        elif usage_info['minutes_limit']:
-            remaining = usage_info['minutes_remaining']
-            percentage = usage_info['usage_percentage']
-            progress_bar = "🟩" * int(percentage // 10) + "⬜" * (10 - int(percentage // 10))
-
-            cabinet_text += f"""
-• Использовано: {usage_info['minutes_used_this_month']:.1f} из {usage_info['minutes_limit']:.0f} мин
-• Осталось: {remaining:.1f} мин
-{progress_bar} {percentage:.1f}%"""
+            cabinet_text += f"""\n• Использовано: {data['minutes_used_this_month']:.1f} из {data['minutes_limit']:.0f} мин\n• Осталось: {remaining:.1f} мин\n{progress_bar} {percentage:.1f}%"""
         else:
-            cabinet_text += f"""
-• Использовано: {usage_info['minutes_used_this_month']:.1f} мин
-• Лимит: Безлимитно ♾️"""
+            cabinet_text += f"""\n• Использовано: {data['minutes_used_this_month']:.1f} мин\n• Лимит: Безлимитно ♾️"""
 
-        beta_status = "Включен 🟢" if user_service.is_beta_enabled(db_user) else "Выключен ⚪"
+        cabinet_text += f"\n\n📈 **Всего транскрибировано:** {data['total_minutes_transcribed']:.1f} мин\n"
 
-        cabinet_text += f"""
-
-📈 **Всего транскрибировано:** {usage_info['total_minutes_transcribed']:.1f} мин
-
-🧪 **Бета-режим:** {beta_status}"""
-
-        # Активные промокоды
+        active_promos = data.get("active_promos", [])
         if active_promos:
             cabinet_text += f"\n\n🎁 **Активные промокоды:**"
-            for promo in active_promos[:3]:  # Показываем только первые 3
+            from datetime import datetime
+            for p in active_promos[:3]:
                 expires_text = ""
-                if promo.expires_at:
-                    days_left = (promo.expires_at - datetime.utcnow()).days
-                    expires_text = f" (ещё {days_left} дн.)"
-                cabinet_text += f"\n• {promo.promo_code.description}{expires_text}"
+                if p.get("expires_at"):
+                    try:
+                        exp = datetime.fromisoformat(p["expires_at"].replace("Z", "+00:00")).replace(tzinfo=None)
+                        days_left = (exp - datetime.utcnow()).days
+                        expires_text = f" (ещё {days_left} дн.)"
+                    except Exception:
+                        pass
+                cabinet_text += f"\n• [{p['code']}] -{p['discount_percent']}%{expires_text}"
 
-        cabinet_text += f"\n\n🐾 *мурчит довольно*"
+        cabinet_text += "\n\n🐾 *мурчит довольно*"
+
+    except Exception as e:
+        import logging
+        logging.error(f"Core API request failed for profile: {e}")
+        cabinet_text = "❌ Не удалось загрузить профиль. (API Runtime Error)"
+
 
         # Кнопки меню
         keyboard = [
-            [InlineKeyboardButton("🐾 БЕТА_СУПЕР_КОТ", callback_data="toggle_beta")],
             [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
             [InlineKeyboardButton("🎁 Промокоды", callback_data="show_promo_codes")],
             [InlineKeyboardButton("⭐ Купить план", callback_data="show_payment_plans")],
         ]
 
         # API ключи только для Pro+ планов
-        if db_user.current_plan in ["pro", "unlimited"]:
+        if data.get("current_plan") in ["pro", "unlimited"]:
             keyboard.append([InlineKeyboardButton("🔑 API ключи", callback_data="show_api_keys")])
 
         keyboard.append([InlineKeyboardButton("💡 Помощь", callback_data="show_help")])
+
+        # MiniApp доступен всегда (даём прямую ссылку)
+        try:
+            if MINIAPP_EFFECTIVE_URL:
+                keyboard.append([InlineKeyboardButton("🗂 Открыть MiniApp", url=MINIAPP_EFFECTIVE_URL)])
+        except Exception:
+            logger.debug("Не удалось добавить кнопку MiniApp в личный кабинет", exc_info=True)
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -493,5 +552,3 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
             await update.callback_query.edit_message_text(error_text)
         else:
             await update.message.reply_text(error_text)
-    finally:
-        db.close()

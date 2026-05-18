@@ -1,0 +1,43 @@
+version: '3.8'
+
+# This compose file runs telegram-bot-api inside the vpnspace network namespace
+# to route all traffic through WireGuard tunnel
+
+services:
+  telegram-bot-api-vpn:
+    build:
+      context: .
+      dockerfile: Dockerfile.telegram-bot-api
+      args:
+        APT_PROXY: ${APT_PROXY-}
+    container_name: cyberkitty19-telegram-bot-api-vpn
+    ports:
+    - 9082:8081
+    env_file:
+    - .env
+    environment:
+    - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+    - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+    volumes:
+    - ./telegram-bot-api-data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+    networks:
+    - cyberkitty19-transkribator-network
+    # Network namespace configuration - routes through VPN
+    network_mode: "host"
+    cap_add:
+    - NET_ADMIN
+    - SYS_MODULE
+    ipc: host
+    pid: host
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: 1
+
+networks:
+  cyberkitty19-transkribator-network:
+    external: true
+    name: cyberkitty19-transkribator-network
+
+volumes:
+  telegram-bot-api-data:
+    external: true

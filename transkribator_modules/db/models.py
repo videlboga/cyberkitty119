@@ -98,6 +98,29 @@ class User(Base):
     notes = relationship("Note", back_populates="user")
     note_groups = relationship("NoteGroup", back_populates="user", cascade="all, delete-orphan")
 
+
+class UserIdentifier(Base):
+        """Link external provider identifiers to internal users.
+
+        Examples:
+            provider='telegram', external_id='123456789'
+            provider='max', external_id='user-abc-123'
+        """
+
+        __tablename__ = "user_identifiers"
+
+        id = Column(Integer, primary_key=True, index=True)
+        user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+        provider = Column(String, nullable=False)
+        external_id = Column(String, nullable=False)
+
+        created_at = Column(DateTime, default=datetime.utcnow)
+
+        __table_args__ = (UniqueConstraint("provider", "external_id", name="uq_provider_external_id"),)
+
+        # optional relationship back to user (weak)
+        # user = relationship("User")
+
 class Plan(Base):
     __tablename__ = "plans"
 
@@ -464,7 +487,7 @@ DEFAULT_PLANS = [
         "display_name": "💎 Профессиональный",
         "minutes_per_month": 600.0,  # 10 часов
         "max_file_size_mb": 500.0,
-        "price_rub": 299.0,
+        "price_rub": 1.0,
         "price_usd": 0.0,
         "price_stars": 230,
         "description": "Для бизнеса и работы",
@@ -530,3 +553,53 @@ class ProcessingJob(Base):
             f"ProcessingJob(id={self.id}, job_type={self.job_type!r}, "
             f"status={self.status!r}, user_id={self.user_id})"
         )
+
+
+class NoteQASession(Base):
+    """Persisted QA sessions for note-level conversations."""
+
+    __tablename__ = "note_qa_sessions"
+
+    id = Column(Integer, primary_key=True)
+    note_id = Column(Integer, ForeignKey("notes.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(255), nullable=True)
+    summary = Column(Text, nullable=True)
+    tags = Column(MutableList.as_mutable(JSONType), default=list)
+    context_snapshot = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_message_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    total_messages = Column(Integer, nullable=False, default=0)
+
+    note = relationship("Note")
+    user = relationship("User")
+    messages = relationship(
+        "NoteQAMessage",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("note_id", "user_id", name="uq_note_qa_sessions_note_user"),
+    )
+
+
+class NoteQAMessage(Base):
+    """Individual messages that belong to QA sessions."""
+
+    __tablename__ = "note_qa_messages"
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(
+        Integer,
+        ForeignKey("note_qa_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role = Column(String(32), nullable=False)  # "user" | "assistant"
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    session = relationship("NoteQASession", back_populates="messages")

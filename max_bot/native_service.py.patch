@@ -1,0 +1,75 @@
+--- max_bot/native_service.py
++++ max_bot/native_service.py
+@@ -3,6 +3,7 @@
+ import time
+ import json
+ import os
++import threading
+ from typing import Optional
+ 
+ from .api_client import MaxAPI
+@@ -10,6 +11,54 @@
+ from .native_handlers import handle_event
+ from .native_types import Event, Attachment, MaxUser
+ 
++def _poll_completed_jobs(api: MaxAPI):
++    from transkribator_modules.db.database import SessionLocal
++    from transkribator_modules.db.models import ProcessingJob
++    from sqlalchemy.orm.attributes import flag_modified
++    
++    while True:
++        try:
++            with SessionLocal() as db:
++                jobs = db.query(ProcessingJob).filter(ProcessingJob.status.in_(["completed", "failed"])).limit(500).all()
++                for job in jobs:
++                    payload = job.payload or {}
++                    extra = payload.get("extra", {})
++                    if extra.get("platform") == "max" and not payload.get("_max_delivered"):
++                        chat_id = extra.get("chat_id")
++                        if not chat_id:
++                            # mark anyway to avoid looping
++                            pass
++                        elif job.status == "completed":
++                            result = payload.get("_result", {})
++                            text = result.get("final_transcript") or result.get("raw_transcript") or "Аудио обработано, текста нет."
++                            try:
++                                api.send_message(chat_id, f"✅ Транскрипция:\n\n{text}")
++                            except Exception as e:
++                                logger.error(f"Failed to send result to max for job {job.id}: {e}")
++                        elif job.status == "failed":
++                            error_text = job.error or "Неизвестная ошибка"
++                            try:
++                                api.send_message(chat_id, f"❌ Ошибка обработки:\n{error_text}")
++                            except Exception as e:
++                                logger.error(f"Failed to send error to max for job {job.id}: {e}")
++                        
++                        # Mark as delivered
++                        new_payload = dict(payload)
++                        new_payload["_max_delivered"] = True
++                        job.payload = new_payload
++                        flag_modified(job, "payload")
++                        db.add(job)
++                        logger.info(f"Marked max job {job.id} as delivered")
++                
++                try:
++                    db.commit()
++                except Exception as e:
++                    db.rollback()
++                    logger.error(f"Failed to commit max job delivery status: {e}")
++        except Exception as e:
++            logger.exception("Error polling completed jobs")
++            
++        time.sleep(5.0)
+ 
+ def _normalize_update(upd: dict) -> Event:
+     # Normalize a provider update dict into Event.
+@@ -101,6 +150,9 @@
+     except Exception:
+         last = None
+ 
++    t = threading.Thread(target=_poll_completed_jobs, args=(api,), daemon=True)
++    t.start()
++
+     while True:
+         try:
+             timeout = MAX_POLL_TIMEOUT if MAX_POLL_LONGPOLL else 0

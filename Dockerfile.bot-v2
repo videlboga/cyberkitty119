@@ -1,0 +1,36 @@
+FROM python:3.10-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DEFAULT_TIMEOUT=180
+
+# Системные зависимости (ffmpeg нужен для аудио конвертации, libpq5 для psycopg3)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Локальные wheel (те же что использует основной Dockerfile)
+COPY wheelhouse/ /wheelhouse/
+
+# Зависимости бота (копируем всю папку — bot.txt ссылается на base.txt)
+COPY requirements/ ./requirements/
+RUN pip install --no-cache-dir \
+    --find-links=/wheelhouse \
+    --prefer-binary \
+    -r requirements/bot.txt
+
+# Исходный код
+COPY transkribator_modules/ ./transkribator_modules/
+COPY core_api/ ./core_api/
+COPY bot/ ./bot/
+COPY alembic/ ./alembic/
+COPY transcribe_client/ ./transcribe_client/
+COPY alembic.ini .
+COPY job_worker.py .
+
+# Директории
+RUN mkdir -p /app/media/incoming /app/data
+
+CMD ["python", "-m", "bot.main"]

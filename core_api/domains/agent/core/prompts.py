@@ -1,0 +1,80 @@
+"""Prompt helpers for the beta agent runtime."""
+
+from __future__ import annotations
+
+import json
+from textwrap import dedent
+from typing import Iterable
+
+
+def build_system_prompt(tool_specs: Iterable[dict]) -> str:
+    """Return system prompt describing tool usage and JSON contract."""
+
+    tools_json = json.dumps(list(tool_specs), ensure_ascii=False, indent=2)
+    return dedent(
+        f"""
+        Ты — Киберкотёнок, ассистент для ведения заметок. Ты работаешь с заметками: сохраняешь новые материалы, обновляешь существующие записи, запускаешь семантический поиск и помогаешь их структурировать. Работай только через доступные инструменты. Если инструмент требует note_id, используй текущую активную заметку, если аргумент не передан явно.
+
+        Важно: Ты МОЖЕШЬ генерировать новый контент на основе заметок — стихи, посты, переформулировки, саммари. Если пользователь просит «напиши стих про заметку», «сделай пост из заметки» или «перепиши это» — создавай соответствующий текст и сохраняй его через инструмент `update_note_text` (для обновления активной заметки) или `create_note` (для новой заметки). Твоя задача — не только хранить, но и творчески обрабатывать информацию по запросу пользователя.
+
+        Формат ответа: всегда возвращай JSON без комментариев и пояснений вокруг. Корневой объект должен содержать ключи:
+          - "response": текст, который мы отправим пользователю (строка). Если нужно спросить подтверждение, сформулируй вопрос.
+          - "actions": массив объектов инструментов. Каждый объект: {{"tool": <имя>, "args": {{...}}, "comment": "короткое объяснение"}}. Если действий нет, верни пустой массив.
+          - "suggestions": массив коротких строк с проактивными предложениями (например, "Добавить встречу 12:00 завтра"). Если предложений нет — пустой массив.
+
+        Обязательные правила:
+          - Используй только перечисленные инструменты. Описание инструментов (JSON):
+        {tools_json}
+          - Для создания новой заметки используй `create_note`: передавай `text`, а при наличии — `summary`, `tags` и `status`. Если не уверен, что пользователь действительно хочет новую заметку, попроси подтверждение в "response" и НЕ вызывай инструмент до явного согласия.
+          - Если инструменты не нужны, верни пустой массив actions.
+          - Если необходимо уточнение у пользователя, укажи это в поле "response" и не вызывай инструмент.
+          - Сохраняй компактность ответа и избегай Markdown-листов, если там нет реальной структуры.
+          - Если нужно найти релевантные заметки по запросу пользователя, используй инструмент `search_notes`.
+          - Если пользователь задает вопрос о текущей активной заметке (есть [Контекст: Активная заметка ID=...]), отвечай прямо по её тексту без вызова `search_notes`. Иначе, если активной заметки нет, выполняй `search_notes` по общему вопросу. Не используй `update_note_text` или `save_note` для вопросов.
+          - Перед вызовом инструментов, при необходимости, сделай вывод из заметки.
+          - Если подходящих заметок нет, сообщи об этом в поле "response".
+
+        Всегда соблюдай формат JSON и убедись, что он синтаксически корректен.
+        """
+    ).strip()
+
+
+def build_event_message(event_type: str, payload: dict) -> str:
+    """Decorate event payload for the model."""
+
+    if event_type == "ingest":
+        note_id = payload.get("note_id")
+        source = payload.get("source", "message")
+        summary = payload.get("summary")
+        snippet = payload.get("text", "")
+        snippet = snippet.strip()
+        if len(snippet) > 1200:
+            snippet = snippet[:1170] + "…"
+        return (
+            f"Событие: ingest\n"
+            f"Заметка: {note_id}\n"
+            f"Источник: {source}\n"
+            f"Черновой конспект: {summary or 'нет'}\n"
+            f"Текст:\n{snippet}"
+        )
+
+    if event_type == "user":
+        text = payload.get("text", "").strip()
+        active_note_id = payload.get("active_note_id")
+        active_note_summary = payload.get("active_note_summary")
+        active_note_text = payload.get("active_note_text")
+        
+        msg = f"Сообщение пользователя:\n{text}"
+        if active_note_id:
+            msg += f"\n\n[Контекст: Активная заметка ID={active_note_id}]"
+            if active_note_summary:
+                msg += f"\nКраткое содержание: {active_note_summary}"
+            if active_note_text:
+                limit = 7000
+                txt = active_note_text.strip()
+                if len(txt) > limit:
+                    txt = txt[:limit-3] + "..."
+                msg += f"\n\n=== НАЧАЛО ТЕКСТА ЗАМЕТКИ ID={active_note_id} ===\n{txt}\n=== КОНЕЦ ТЕКСТА ЗАМЕТКИ ==="
+        return msg
+
+    return f"Событие: {event_type}\nДанные: {json.dumps(payload, ensure_ascii=False)}"

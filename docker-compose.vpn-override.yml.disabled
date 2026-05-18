@@ -1,0 +1,24 @@
+version: '3.8'
+services:
+  vpn-gateway:
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - ENABLE_WG=1
+    privileged: true
+
+  telegram-bot-api:
+    network_mode: "service:vpn-gateway"
+
+  api:
+    network_mode: "service:vpn-gateway"
+
+  bot:
+    network_mode: "service:vpn-gateway"
+
+  worker:
+    network_mode: "service:vpn-gateway"
+    environment:
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - NO_PROXY=*

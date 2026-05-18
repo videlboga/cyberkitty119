@@ -1,0 +1,36 @@
+--- max_bot/native_service.py
++++ max_bot/native_service.py
+@@ -35,7 +35,6 @@
+                             
+                             summary = result.get("summary")
+                             source_url = extra.get("source_url")
+-                            text_path = result.get("text_path")
+                             
+                             result_message = "✅ Обработка завершена!\n\n"
+                             if summary:
+@@ -48,15 +47,21 @@
+                                     [{"text": " Задать вопросы", "callbackData": f"result:ask:{job.id}"}],
+                                     [{"text": "🏠 Главное меню", "callbackData": "main:menu"}],
+                                 ]
+                             }
+                             
+                             try:
+-                                if text_path and __import__("os").path.exists(text_path):
+-                                    with open(text_path, "rb") as f:
+-                                        api.send_document(chat_id, f, __import__("os").path.basename(text_path), caption="📄 Транскрипция готова.")
++                                transcript_text = result.get("final_transcript") or result.get("raw_transcript")
++                                if transcript_text:
++                                    import tempfile
++                                    import os
++                                    fd, tmp_path = tempfile.mkstemp(suffix=".txt", prefix=f"transcription_{job.id}_")
++                                    with os.fdopen(fd, 'w', encoding='utf-8') as f:
++                                        f.write(transcript_text)
++                                    with open(tmp_path, "rb") as f:
++                                        api.send_document(chat_id, f, f"transcription_{job.id}.txt", caption="📄 Транскрипция готова.")
++                                    try:
++                                        os.unlink(tmp_path)
++                                    except Exception:
++                                        pass
+                                 api.send_message(chat_id, result_message, reply_markup=keyboard)
+                             except Exception as e:
+                                 logger.error(f"Failed to send result to max for job {job.id}: {e}")

@@ -49,3 +49,16 @@
 - На первом экране «Обработка» всегда 4 кнопки.
 - Автобэклог включён для всего необработанного.
 - Команды подтверждаются одним диалогом.
+
+## Progress 2026-01-27 — containerized DeepInfra worker (brief)
+
+- Implemented a containerized worker image under `tools/di_worker` to POST audio to DeepInfra and extract segment timestamps.
+- Added `wg_entrypoint.sh` and updated Dockerfile to include `wireguard-tools`, `openresolv`, `procps`, and `iptables` so the container can bring up WireGuard if required.
+- Created `extract_segments.py` that writes CSV and human-readable timestamped transcript from DeepInfra JSON.
+- Performed E2E run: mounted host `/home/cyberkitty/Projects/torrent/wg0.conf`, used host `DEEPINFRA_API_KEY`, and executed `run_e2e` inside the image; outputs written to `/home/cyberkitty/Projects/Cyberkitty119/results/di_e2e/`.
+- Observed runtime requirements: bringing up WG inside container needs host capabilities (tested `--privileged`; `--cap-add=NET_ADMIN --device=/dev/net/tun` may work with tuned host policies).
+
+Next steps:
+- Decide runtime model for deployment (host netns vs in-container WG vs podman ns attach).
+- Harden the image and runbook (systemd unit template, limited capabilities, secret handling guidance).
+

@@ -1,0 +1,1 @@
+sed -i 's/    if not OPENROUTER_API_KEY or not text.strip():/    print(f"DEBUG: OPENROUTER_API_KEY is_set={bool(OPENROUTER_API_KEY)}, text_length={len(text.strip())}", flush=True)\n    if not OPENROUTER_API_KEY or not text.strip():/g' core_api/domains/agent/core/content_processor.py

@@ -1,0 +1,72 @@
+# Ignore local audio test files and other large artifacts from Docker build context
+audio/
+*.mp3
+*.wav
+*.ogg
+telegram-bot-api-data/
+*.mp4
+*.mkv
+
+# Additional large directories/output artifacts
+archive/
+deploy_pack.tar.gz
+miniapp/
+whisper-models/
+postgres_data*/
+proxy_backup/
+downloads/
+temp/
+# miniapp_dist нужен для API/UI, поэтому не исключаем его из контекста
+# Exclude heavy runtime directories from build context to avoid copying large files into image
+telegram-bot-api-data/
+videos/
+audio/
+transcriptions/
+*.sqlite
+*.db
+whisper-models/
+
+# Ignore local data/test artifacts
+data/
+videos/
+server_dbs_*/
+backups/
+.postgres_data_transkribator/
+postgres_data_transkribator/
+*.dump
+.backups/
+
+# Python virtual environments (CRITICAL - can be 1GB+ each!)
+.venv
+.venv_*
+venv/
+env/
+.env.local
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+media/
+audio/
+videos/
+transcriptions/
+data/
+telegram-bot-api-data/
+__pycache__/
+*.pyc
+postgres_data_transkribator

@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # Telegram бот для разработки
+  bot-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APT_PROXY: ${APT_PROXY-}
+    container_name: transkribator-bot-dev
+    volumes:
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+      - ./.env:/app/.env
+      - ./transkribator_modules:/app/transkribator_modules
+      - .:/app  # Монтируем весь проект для разработки
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    networks:
+      - transkribator-dev-network
+    # Не запускаем автоматически, только для интерактивной работы
+    command: /bin/bash
+
+  # API сервер для разработки
+  api-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        APT_PROXY: ${APT_PROXY-}
+    container_name: transkribator-api-dev
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+      - ./.env:/app/.env
+      - ./transkribator_modules:/app/transkribator_modules
+      - .:/app  # Монтируем весь проект для разработки
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./cyberkitty19-transkribator.db}
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    networks:
+      - transkribator-dev-network
+    depends_on:
+      - postgres-dev
+    # Не запускаем автоматически, только для интерактивной работы
+    command: /bin/bash
+
+  postgres-dev:
+    image: postgres:16
+    container_name: transkribator-postgres-dev
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-transkribator}
+      - POSTGRES_USER=${POSTGRES_USER:-transkribator}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-transkribator}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - transkribator-dev-network
+
+networks:
+  transkribator-dev-network:
+    driver: bridge
+
+volumes:
+  videos:
+  audio:
+  transcriptions:
+  postgres-data:

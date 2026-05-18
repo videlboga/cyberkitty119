@@ -47,7 +47,10 @@ class WorkerConfig:
     backoff_min: float = 1.0
     backoff_max: float = 30.0
     plan_reminder_interval: float = 1800.0
-    enable_plan_reminders: bool = True
+    # Default to disabled to avoid accidental reminder spam in local/dev runs.
+    # Use --disable-plan-reminders flag or DISABLE_PLAN_REMINDERS env to control
+    # reminder behavior. In production, set the env/flag explicitly when needed.
+    enable_plan_reminders: bool = False
 
 
 class JobWorker:
@@ -196,7 +199,7 @@ class JobWorker:
     def _handle_failure(self, job: ProcessingJob, exc: Exception) -> None:
         if isinstance(exc, UnknownJobTypeError):
             available = ", ".join(registry.available()) or "none"
-            error_message = f"Unknown job type {exc.job_type}. Registered handlers: {available}"
+            error_message = f"Unknown job type '{exc.job_type}'. Registered handlers: {available}"
             logger.error(
                 "Job failed: unknown type",
                 extra={
@@ -291,7 +294,7 @@ def build_config(argv: list[str]) -> WorkerConfig:
     parser.add_argument(
         "--service-overrides",
         default=os.environ.get("MEDIA_SERVICE_OVERRIDES"),
-        help="Override media services via module:attr mapping provider.",
+        help="Override media services via 'module:attr' mapping provider.",
     )
     parser.add_argument(
         "--dry-run",
@@ -394,4 +397,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

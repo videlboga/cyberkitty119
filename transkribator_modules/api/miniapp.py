@@ -38,8 +38,8 @@ from transkribator_modules.db.database import (
     ReferralService,
 )
 from transkribator_modules.db.models import Note, NoteStatus, NoteVersion, Reminder, NoteGroup, User, PlanType, Event
-from transkribator_modules.beta.agent_runtime import AgentSession, AgentUser, AgentResponse
-from transkribator_modules.beta.note_utils import safe_parse_links, auto_finalize_note
+from core_api.domains.agent.core.agent_runtime import AgentSession, AgentUser, AgentResponse
+from transkribator_modules.note_utils import safe_parse_links, auto_finalize_note
 from transkribator_modules.audio.extractor import extract_audio_from_video
 from transkribator_modules.transcribe.transcriber_v4 import (
     compress_audio_for_api,
@@ -854,8 +854,7 @@ def authenticate(
 
         if is_new_user:
             try:
-                activation = referral_service.apply_referral_welcome_bonus(user)
-                referral_bonus_applied = activation is not None
+                referral_bonus_applied = referral_service.apply_referral_welcome_bonus(user)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Failed to apply referral welcome bonus",
@@ -899,13 +898,15 @@ def authenticate(
         logger.debug("Failed to log miniapp auth", exc_info=True)
 
     token = MiniAppTokenManager.sign({"user_id": user.id, "telegram_id": user.telegram_id})
+    # Для совместимости — показываем миниапп как доступный даже если флаг в БД выключен.
+    # Это отключает требование ручного включения бета-режима в UI.
     response_user = AuthResponseUser(
         id=user.id,
         telegramId=user.telegram_id,
         username=user.username,
         firstName=user.first_name,
         lastName=user.last_name,
-        betaEnabled=bool(user.beta_enabled),
+        betaEnabled=True,
         timezone=user.timezone,
         plan=user.current_plan,
     )
@@ -916,7 +917,9 @@ def authenticate(
 def get_beta_status(
     current_user: User = Depends(get_current_user),
 ) -> BetaStatusResponse:
-    enabled = bool(current_user.beta_enabled)
+    # Временно принудительно разрешаем MiniApp независимо от флага в БД —
+    # это убирает требование вручную включать бета-режим в UI.
+    enabled = True
     logger.info(
         "MiniApp beta status fetched",
         extra={
@@ -1678,6 +1681,197 @@ def calendar(
         )
     events.sort(key=lambda event: event.timestamp)
     return CalendarResponse(events=events)
+
+
+# ==================== Search Analytics Endpoints ====================
+
+@router.get("/analytics/search/summary")
+def get_search_analytics_summary(
+    days: int = Query(7, ge=1, le=90),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Get search analytics summary for the specified period."""
+    try:
+        from transkribator_modules.search.analytics import get_search_analytics_summary
+        summary = get_search_analytics_summary(db, days=days)
+        return summary
+    except ImportError:
+        return {
+            "total_queries": 0,
+            "unique_users": 0,
+            "avg_results": 0,
+            "cache_hit_rate": 0,
+            "click_through_rate": 0,
+            "avg_duration_ms": 0,
+        }
+    except Exception as exc:
+        logger.error("Failed to get search analytics summary", extra={"error": str(exc)})
+        raise HTTPException(status_code=500, detail="Failed to load search analytics")
+
+
+@router.get("/analytics/search/trends")
+def get_search_trends(
+    days: int = Query(7, ge=1, le=90),
+    db: Session = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Get daily search trends."""
+    try:
+        from transkribator_modules.search.analytics import SearchQueryLog
+        from sqlalchemy import func, cast, Date
+        
+        since = datetime.utcnow() - timedelta(days=days)
+        
+        daily_stats = (
+            db.query(
+                func.date(SearchQueryLog.timestamp).label('date'),
+                func.count(SearchQueryLog.id).label('query_count'),
+                func.avg(SearchQueryLog.results_count).label('avg_results')
+            )
+            .filter(SearchQueryLog.timestamp >= since)
+            .group_by(func.date(SearchQueryLog.timestamp))
+            .order_by(func.date(SearchQueryLog.timestamp))
+            .all()
+        )
+        
+        return [
+            {
+                "date": str(row.date),
+                "query_count": row.query_count,
+                "avg_results": round(row.avg_results, 1) if row.avg_results else 0
+            }
+            for row in daily_stats
+        ]
+    except ImportError:
+        return []
+    except Exception as exc:
+        logger.error("Failed to get search trends", extra={"error": str(exc)})
+        return []
+
+
+@router.get("/analytics/search/performance")
+def get_search_performance(
+    days: int = Query(7, ge=1, le=90),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Get search performance breakdown."""
+    try:
+        from transkribator_modules.search.analytics import SearchQueryLog
+        
+        since = datetime.utcnow() - timedelta(days=days)
+        
+        perf_stats = (
+            db.query(
+                func.avg(SearchQueryLog.vector_duration_ms).label('avg_vector'),
+                func.avg(SearchQueryLog.fulltext_duration_ms).label('avg_fulltext'),
+                func.avg(SearchQueryLog.rerank_duration_ms).label('avg_rerank'),
+                func.avg(SearchQueryLog.total_duration_ms).label('avg_total')
+            )
+            .filter(SearchQueryLog.timestamp >= since)
+            .first()
+        )
+        
+        return {
+            "avg_vector_duration_ms": round(perf_stats.avg_vector, 1) if perf_stats.avg_vector else 0,
+            "avg_fulltext_duration_ms": round(perf_stats.avg_fulltext, 1) if perf_stats.avg_fulltext else 0,
+            "avg_rerank_duration_ms": round(perf_stats.avg_rerank, 1) if perf_stats.avg_rerank else 0,
+            "avg_total_duration_ms": round(perf_stats.avg_total, 1) if perf_stats.avg_total else 0,
+        }
+    except ImportError:
+        return {
+            "avg_vector_duration_ms": 0,
+            "avg_fulltext_duration_ms": 0,
+            "avg_rerank_duration_ms": 0,
+            "avg_total_duration_ms": 0,
+        }
+    except Exception as exc:
+        logger.error("Failed to get search performance", extra={"error": str(exc)})
+        return {
+            "avg_vector_duration_ms": 0,
+            "avg_fulltext_duration_ms": 0,
+            "avg_rerank_duration_ms": 0,
+            "avg_total_duration_ms": 0,
+        }
+
+
+@router.get("/analytics/search/top-queries")
+def get_top_queries(
+    days: int = Query(7, ge=1, le=90),
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Get most popular search queries."""
+    try:
+        from transkribator_modules.search.analytics import SearchQueryLog
+        
+        since = datetime.utcnow() - timedelta(days=days)
+        
+        top_queries = (
+            db.query(
+                SearchQueryLog.query,
+                func.count(SearchQueryLog.id).label('count'),
+                func.avg(SearchQueryLog.results_count).label('avg_results'),
+                func.sum(func.cast(SearchQueryLog.used_cache, int)).label('cache_count'),
+                func.sum(func.cast(SearchQueryLog.used_hybrid, int)).label('hybrid_count'),
+                func.sum(func.cast(SearchQueryLog.used_rerank, int)).label('rerank_count'),
+            )
+            .filter(SearchQueryLog.timestamp >= since)
+            .group_by(SearchQueryLog.query)
+            .order_by(func.count(SearchQueryLog.id).desc())
+            .limit(limit)
+            .all()
+        )
+        
+        return [
+            {
+                "query": row.query,
+                "count": row.count,
+                "avg_results": round(row.avg_results, 1) if row.avg_results else 0,
+                "used_cache": row.cache_count > 0 if row.cache_count else False,
+                "used_hybrid": row.hybrid_count > 0 if row.hybrid_count else False,
+                "used_rerank": row.rerank_count > 0 if row.rerank_count else False,
+            }
+            for row in top_queries
+        ]
+    except ImportError:
+        return []
+    except Exception as exc:
+        logger.error("Failed to get top queries", extra={"error": str(exc)})
+        return []
+
+
+@router.get("/analytics/search/recent")
+def get_recent_searches(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Get recent search queries."""
+    try:
+        from transkribator_modules.search.analytics import SearchQueryLog
+        
+        recent = (
+            db.query(SearchQueryLog)
+            .order_by(SearchQueryLog.timestamp.desc())
+            .limit(limit)
+            .all()
+        )
+        
+        return [
+            {
+                "timestamp": search.timestamp.isoformat(),
+                "query": search.query,
+                "results_count": search.results_count,
+                "duration_ms": search.total_duration_ms,
+                "used_cache": search.used_cache,
+                "used_hybrid": search.used_hybrid,
+                "used_rerank": search.used_rerank,
+            }
+            for search in recent
+        ]
+    except ImportError:
+        return []
+    except Exception as exc:
+        logger.error("Failed to get recent searches", extra={"error": str(exc)})
+        return []
 
 
 def create_miniapp_app() -> FastAPI:

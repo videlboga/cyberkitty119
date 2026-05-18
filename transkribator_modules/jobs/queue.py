@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import logging
 from typing import Any, Optional
 
 from sqlalchemy import and_, select
@@ -131,13 +132,47 @@ def _fetch_job_for_update(
     return result
 
 
-def mark_job_progress(job_id: int, *, progress: Optional[int] = None) -> None:
+def mark_job_progress(
+    job_id: int,
+    *,
+    progress: Optional[int] = None,
+    stage: Optional[str] = None,
+    stage_progress: Optional[int] = None,
+    stage_label: Optional[str] = None,
+    stage_window: Optional[tuple[int, int]] = None,
+) -> None:
     with _session_scope() as session:
         job = session.get(ProcessingJob, job_id)
         if not job:
             logger.warning("Progress update skipped; job missing", extra={"job_id": job_id})
             return
-        job.progress = progress
+        if progress is not None:
+            job.progress = progress
+        payload = dict(job.payload or {})
+        status_blob = dict(payload.get("_status") or {})
+
+        def _maybe_update(key: str, value: Optional[Any]) -> bool:
+            if value is None:
+                return False
+            if status_blob.get(key) == value:
+                return False
+            status_blob[key] = value
+            return True
+
+        changed = False
+        if stage_progress is not None:
+            normalized_stage = max(0, min(100, int(stage_progress)))
+            changed |= _maybe_update("stage_progress", normalized_stage)
+        changed |= _maybe_update("stage", stage)
+        changed |= _maybe_update("stage_label", stage_label)
+        if stage_window is not None:
+            window = [int(stage_window[0]), int(stage_window[1])]
+            changed |= _maybe_update("stage_window", window)
+
+        if changed:
+            payload["_status"] = status_blob
+            job.payload = payload
+
         job.locked_at = _utcnow()
         session.flush()
 

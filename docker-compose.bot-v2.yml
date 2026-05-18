@@ -1,0 +1,162 @@
+services:
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: bot-v2-telegram-api
+    profiles:
+      - donotstart
+    ports:
+      - "8081:8081"
+    env_file:
+      - .env
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - TELEGRAM_LOCAL=1
+    volumes:
+      - ./telegram-bot-api-data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+    networks:
+      - bot-v2-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/ || wget -qO- --method=GET http://127.0.0.1:8081/bot${BOT_TOKEN}/getMe || true"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ─── База данных (PostgreSQL с pgvector) ─────────────────────────────────────
+  postgres:
+    image: ankane/pgvector:latest
+    container_name: bot-v2-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-transkribator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-transkribator}
+      POSTGRES_DB: ${POSTGRES_DB:-transkribator}
+    volumes:
+      - ./postgres_data_transkribator:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - bot-v2-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-transkribator}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Бот v2 ───────────────────────────────────────────────────────────────
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot-v2
+    container_name: bot-v2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      
+    env_file:
+      - .env
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - USE_LOCAL_BOT_API=${USE_LOCAL_BOT_API:-false}
+      - LOCAL_BOT_API_URL=${LOCAL_BOT_API_URL:-http://172.29.0.2:8081}
+      - LOCAL_BOT_FILE_API_URL=${LOCAL_BOT_FILE_API_URL:-http://172.29.0.2:8081}
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-transkribator}:${POSTGRES_PASSWORD:-transkribator}@postgres:5432/${POSTGRES_DB:-transkribator}
+      - LOCAL_BOT_API_DATA_DIR=${LOCAL_BOT_API_DATA_DIR:-}
+      - LOCAL_BOT_API_DATA_DIR_HOST=${LOCAL_BOT_API_DATA_DIR_HOST:-/vpn-api-data}
+      - TRANSCRIBE_DEFAULT_MODE=${TRANSCRIBE_DEFAULT_MODE:-deepinfra}
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./media:/app/media
+      - ./data:/app/data
+      - ./core_api:/app/core_api
+      - ./transkribator_modules:/app/transkribator_modules
+      - ./transcribe_client:/app/transcribe_client
+      - ./audio:/app/audio
+      - /var/lib/telegram-bot-api-vpn:/vpn-api-data:ro
+  # Note: do not bind-mount host /etc/hosts here - it overrides Docker extra_hosts mapping
+    restart: unless-stopped
+    networks:
+      - bot-v2-net
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ─── Воркер (существующий job_worker) ────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile      # основной Dockerfile со всеми зависимостями
+    image: cyberkitty119/worker:fix-vpnstack
+    container_name: bot-v2-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-transkribator}:${POSTGRES_PASSWORD:-transkribator}@postgres:5432/${POSTGRES_DB:-transkribator}
+      - LOCAL_BOT_API_URL=${LOCAL_BOT_API_URL:-http://172.29.0.2:8081}
+      - LOCAL_BOT_FILE_API_URL=${LOCAL_BOT_FILE_API_URL:-http://172.29.0.2:8081}
+      - USE_LOCAL_BOT_API=${USE_LOCAL_BOT_API:-false}
+      - LOCAL_BOT_API_DATA_DIR=${LOCAL_BOT_API_DATA_DIR:-}
+      - LOCAL_BOT_API_DATA_DIR_HOST=${LOCAL_BOT_API_DATA_DIR_HOST:-/vpn-api-data}
+      - BOT_TOKEN=${BOT_TOKEN}
+      - TRANSCRIBE_DEFAULT_MODE=${TRANSCRIBE_DEFAULT_MODE:-deepinfra}
+      - LOG_LEVEL=INFO
+      # Prefer an explicit HTTP relay URL or SSH alias from .env.
+      - REMOTE_DEEPINFRA_SSH_ALIAS=${REMOTE_DEEPINFRA_SSH_ALIAS:-proxy}
+      - REMOTE_DEEPINFRA_RELAY_URL=${REMOTE_DEEPINFRA_RELAY_URL}
+      - DISABLE_LOCAL_WHISPER=${DISABLE_LOCAL_WHISPER:-1}
+    volumes:
+      - ./media:/app/media
+      - ./data:/app/data
+      - ./core_api:/app/core_api
+      - ./transkribator_modules:/app/transkribator_modules
+      - ./transcribe_client:/app/transcribe_client
+      - ./audio:/app/audio
+      - ./workers:/app/workers:ro
+      - ./entrypoint-worker.sh:/entrypoint-worker.sh:ro
+      - /var/lib/telegram-bot-api-vpn:/vpn-api-data:ro
+      - /var/lib/telegram-bot-api-vpn:/app/telegram-bot-api-data
+  # Note: keep /etc/hosts untouched so extra_hosts (host-gateway) can be applied
+      - /home/cyberkitty/.ssh:/tmp/.ssh_bind:ro
+    entrypoint: ["/entrypoint-worker.sh"]
+    command: ["python", "workers/transcribe_worker.py"]
+    restart: unless-stopped
+    networks:
+      - bot-v2-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ─── Core API (REST Backend) ────────────────────────────────────
+  core-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: bot-v2-core-api
+    ports:
+      - "8001:8000"
+    networks:
+      - bot-v2-net
+    env_file:
+      - .env
+    volumes:
+      - ./media:/app/media
+      - ./data:/app/data
+      - ./core_api:/app/core_api
+      - ./transkribator_modules:/app/transkribator_modules
+      - ./transcribe_client:/app/transcribe_client
+      - ./audio:/app/audio
+      - ./videos:/app/videos
+      - ./telegram-bot-api-data:/vpn-api-data:ro
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  bot-v2-net:
+    driver: bridge

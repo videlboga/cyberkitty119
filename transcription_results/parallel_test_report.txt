@@ -1,0 +1,50 @@
+================================================================================
+PARALLEL WHISPER GPU TRANSCRIPTION REPORT (Process-based)
+================================================================================
+
+SYSTEM INFORMATION
+  Device: CUDA
+  PyTorch version: 2.10.0+cu128
+  CUDA available: True
+  GPU: NVIDIA GeForce RTX 3070 Ti
+
+TEST CONFIGURATION
+  Number of processes: 5
+  Input file: /app/audio/audio_prepared.mp3
+  Model: Whisper BASE (loaded in each process)
+  Language: Russian
+  Execution method: Separate Python processes (avoiding thread conflicts)
+
+RESULTS
+
+  Successful tasks: 5/5
+  Failed tasks: 0/5
+  
+  Total wall-clock time: 145.95s
+  
+INDIVIDUAL TASK TIMES
+
+  Process 1: 96.06s (14705 chars)
+  Process 2: 116.73s (14265 chars)
+  Process 3: 107.65s (14085 chars)
+  Process 4: 94.18s (14197 chars)
+  Process 5: 96.32s (14241 chars)
+
+STATISTICS
+
+  Min time: 94.18s
+  Max time: 116.73s
+  Avg time: 102.19s
+  
+PERFORMANCE ANALYSIS
+
+  Sequential estimate (5 × 102.19s): ~510.94s
+  Parallel execution: 145.95s
+  Effective speedup: 3.50x
+  
+  GPU utilization: Excellent
+  
+  Key insight: Running 5 tasks in parallel took 145.95s instead of 510.94s
+  Each process loads its own model instance, allowing GPU to execute multiple
+  CUDA streams in parallel. The speedup factor of 3.5x indicates the level
+  of true parallelization achieved on the RTX 3070 Ti.

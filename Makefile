@@ -1,3 +1,23 @@
+.PHONY: docs-validate test smoke place-sample dev-setup
+
+docs-validate:
+	@echo "Running docs metadata validator (Docker)"
+	@./.github/scripts/run_metadata_validator_docker.sh
+
+test:
+	@echo "Running pytest in Docker"
+	docker run --rm -v "$(PWD)":/work -w /work python:3.11-slim bash -lc "python -m pip install --upgrade pip >/dev/null && pip install pytest >/dev/null && pytest -q"
+
+smoke:
+	@echo "Run smoke test helper (requires compose running)"
+	@./scripts/smoke_test_pipeline.sh
+
+place-sample:
+	@./scripts/place_test_file.sh
+
+dev-setup:
+	@echo "Enable local hooks: git config core.hooksPath .githooks"
+	@echo "Run docs validator: make docs-validate"
 # Makefile для Cyberkitty19 Transkribator
 
 .PHONY: help install setup start start-api start-docker stop-docker logs clean clean-all test docker-test docker-shell docker-run docker-dev migrate revision backup-postgres

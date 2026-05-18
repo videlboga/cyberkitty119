@@ -1,0 +1,16 @@
+version: '3.8'
+
+# Простой тестовый бот для отладки
+
+services:
+  simple-test-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.simple-bot
+    container_name: simple-test-bot
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=DEBUG
+    restart: unless-stopped

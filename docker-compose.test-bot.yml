@@ -1,0 +1,53 @@
+version: '3.8'
+
+# Простой тестовый бот с локальным telegram-bot-api
+
+services:
+  # Локальный Telegram Bot API Server
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: test-tba
+    ports:
+      - "8081:8081"
+    env_file:
+      - .env
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+    volumes:
+      - ./telegram-bot-api-data:/var/lib/telegram-bot-api
+    command:
+      - "--dir=/var/lib/telegram-bot-api"
+      - "--temp-dir=/tmp/telegram-bot-api"
+      - "--http-port=8081"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8081/ || true"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # Простой тестовый бот
+  simple-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.simple-bot
+    container_name: test-simple-bot
+    depends_on:
+      telegram-bot-api:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=DEBUG
+      - LOCAL_BOT_API_URL=http://telegram-bot-api:8081
+      - BOT_TOKEN=${BOT_TOKEN}
+    restart: unless-stopped
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge

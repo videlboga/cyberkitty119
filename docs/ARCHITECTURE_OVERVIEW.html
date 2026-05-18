@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>CyberKitty19 — Архитектура, пайплайны и пользовательские флоу</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });</script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050810;
+      --card: #0f1726;
+      --card2: #111a2c;
+      --text: #e8edf7;
+      --muted: #99a7c8;
+      --accent: #7ecbff;
+      --accent2: #ffcf8b;
+      --border: #1f2a44;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(circle at 20% 20%, rgba(10,40,80,.6), var(--bg));
+      color: var(--text);
+      line-height: 1.6;
+      padding: 50px 36px 80px;
+    }
+    header { max-width: 1100px; }
+    h1 { margin: 0 0 12px; font-size: 40px; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; }
+    h2 { margin-top: 60px; font-size: 28px; letter-spacing: .05em; color: var(--accent2); }
+    h3 { margin-top: 28px; color: var(--accent); }
+    p { max-width: 1100px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; margin-top: 28px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 18px; padding: 22px; box-shadow: 0 18px 38px rgba(0,0,0,.45); }
+    .card h3 { margin-top: 0; }
+    code { background: rgba(255,255,255,.07); padding: 2px 6px; border-radius: 6px; font-size: 90%; color: #feeaa3; }
+    .diagram { background: var(--card2); border: 1px solid var(--border); border-radius: 18px; padding: 24px; margin-top: 28px; box-shadow: 0 20px 50px rgba(0,0,0,.5); }
+    .flow { margin-top: 24px; border: 1px solid var(--border); border-radius: 16px; padding: 18px; background: rgba(10,20,35,.85); }
+    ul { padding-left: 22px; }
+    ul ul { margin-top: 6px; }
+    .pill { display: inline-flex; padding: 4px 10px; border-radius: 999px; background: rgba(126,203,255,.16); color: var(--accent); text-transform: uppercase; font-size: 11px; letter-spacing: .08em; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: .95rem; }
+    th, td { border: 1px solid var(--border); padding: 12px 14px; text-align: left; }
+    th { background: rgba(126,203,255,.08); }
+    section { max-width: 1200px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CyberKitty19 · Архитектура и взаимодействия</h1>
+    <p>
+      Подробное описание контейнеров, пайплайнов, очередей, мини‑приложения и пользовательских сценариев.
+      Диаграммы на базе Mermaid показывают связи компонентов и пошаговую обработку медиаконтента/поисковых запросов.
+    </p>
+  </header>
+
+  <section>
+    <h2>1 · Контейнеры и сервисы</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="pill">bot</span>
+        <h3>cyberkitty19-transkribator-bot</h3>
+        <ul>
+          <li>PTB, polling через локальный Bot API.</li>
+          <li>Скачивание медиа, конвертация, локальный Whisper/TranscribeClient.</li>
+          <li>Создание заметок, отправка summary/файлов.</li>
+          <li>enqueue <code>MediaJob</code> в <code>processing_jobs</code>.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="pill">worker</span>
+        <h3>cyberkitty19-transkribator-worker</h3>
+        <ul>
+          <li>Pipelines <code>run_media_pipeline</code>.</li>
+          <li><code>auto_finalize_note</code> + IndexService (pgvector).</li>
+          <li>Whisper сегменты, fallback hash embeddings.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="pill">api</span>
+        <h3>cyberkitty19-transkribator-api</h3>
+        <ul>
+          <li>FastAPI/uvicorn, MiniApp REST, поиск, оплаты.</li>
+          <li>Реиспользует <code>transkribator_modules</code> (NoteService, ReferralService).</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="pill">db</span>
+        <h3>PostgreSQL</h3>
+        <ul>
+          <li>Бизнес-данные: users, notes, transcriptions, plans, transactions.</li>
+          <li>Технические: <code>processing_jobs</code>, <code>note_chunks</code>, <code>note_groups</code>…</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="pill">whisper</span>
+        <h3>real-whisper</h3>
+        <ul>
+          <li>Uvicorn сервис, локальная модель Whisper.</li>
+          <li>Отдаёт сегменты, используется ботом и worker’ом.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="pill">aux</span>
+        <h3>Telegram Bot API Server</h3>
+        <ul>
+          <li>Локальный instance для надёжного скачивания медиа.</li>
+          <li>Снимает ограничения и уменьшает latency.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2 · Архитектурная диаграмма (Mermaid)</h2>
+    <div class="diagram">
+      <div class="mermaid">
+        graph TD
+          subgraph Telegram Cloud
+            A[User]
+            B[Telegram API]
+          end
+          subgraph Local Stack
+            BOT[Bot Container]
+            API[API Container]
+            WRK[Worker]
+            DB[(PostgreSQL)]
+            WHISPER[Real Whisper]
+            TGAPI[Local Bot API Server]
+          end
+          A --> B
+          B --> TGAPI --> BOT
+          BOT -->|transcripts/notes| DB
+          BOT -->|enqueue job| DB
+          WRK -->|acquire job| DB
+          WRK -->|update chunks| DB
+          BOT -->|HTTP| API
+          API -->|queries| DB
+          BOT -->|segments| WHISPER
+          WRK -->|segments| WHISPER
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3 · Пайплайн обработки медиа (Sequence Diagram)</h2>
+    <div class="diagram">
+      <div class="mermaid">
+        sequenceDiagram
+          autonumber
+          participant User
+          participant Bot
+          participant Whisper
+          participant DB
+          participant Queue
+          participant Worker
+
+          User->>Bot: Отправляет видео/аудио/ссылку
+          Bot->>Bot: download + ffmpeg convert
+          Bot->>Whisper: transcribe(audio)
+          Whisper-->>Bot: segments + transcript
+          Bot->>DB: NoteService.create_note
+          Bot->>Queue: enqueue MediaJob(note_id)
+          Bot->>User: Summary + файлы + кнопки
+          Worker->>Queue: acquire job
+          Worker->>DB: auto_finalize_note (summary/tags/title)
+          Worker->>DB: IndexService.add (pgvector)
+          Worker-->>Queue: mark completed
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>4 · Подсистемы и конфигурации</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Подсистема</th>
+          <th>Роль</th>
+          <th>Ключевые настройки</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Transcription</td>
+          <td>Whisper (локально) + fallback OpenAI; кеширование сегментов.</td>
+          <td><code>TRANSCRIBE_DEFAULT_MODE</code>, <code>TRANSCRIBE_CLIENT_ENABLED</code>.</td>
+        </tr>
+        <tr>
+          <td>Summary</td>
+          <td><code>generate_brief_summary</code> через OpenRouter/Gemini.</td>
+          <td><code>OPENROUTER_API_KEY</code>, <code>ROUTER_MODEL=gemini-2.5</code>.</td>
+        </tr>
+        <tr>
+          <td>Queue</td>
+          <td>PostgreSQL <code>processing_jobs</code>, worker с backoff.</td>
+          <td><code>JOB_LOCK_TIMEOUT_SECONDS</code>, APScheduler для sync задач.</td>
+        </tr>
+        <tr>
+          <td>Embeddings</td>
+          <td>OpenRouter/DeepInfra, кеш, fallback hash.</td>
+          <td><code>EMBEDDING_PROVIDER</code>, <code>EMBEDDING_MODEL</code>, <code>DISABLE_REMOTE_EMBEDDINGS</code>.</td>
+        </tr>
+        <tr>
+          <td>Vector Search</td>
+          <td>pgvector cosine + full-text hybrid + rerank.</td>
+          <td><code>ENABLE_HYBRID_SEARCH</code>, <code>HYBRID_VECTOR_WEIGHT</code>, <code>ENABLE_RERANKING</code>.</td>
+        </tr>
+        <tr>
+          <td>MiniApp</td>
+          <td>WebApp UI, просмотр/правка заметок, поиск.</td>
+          <td><code>MINIAPP_PUBLIC_URL</code>, <code>MINIAPP_NOTE_LINK_TEMPLATE</code>.</td>
+        </tr>
+        <tr>
+          <td>Payments & Referrals</td>
+          <td>Тарифы, подписки, промокоды, рефералка.</td>
+          <td>ENV для CloudPayments, Stripe, YooKassa, Telegram Stars.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>5 · Пользовательские флоу</h2>
+    <div class="flow">
+      <h3>5.1 Загрузка аудио/видео</h3>
+      <ol>
+        <li><strong>Upload:</strong> пользователь отправляет медиа в чат; бот отвечает “Файл принят! Готовлю обработку…”.</li>
+        <li><strong>Progress:</strong> бот рисует прогресс‑бар (10 сегментов) пока скачивает/конвертирует.</li>
+        <li><strong>Transcribe:</strong> Whisper/TranscribeClient → текст, таймкоды, summary.</li>
+        <li><strong>Result Screen:</strong> “✅ Обработка завершена!” + summary + кнопки:
+          <ul>
+            <li>📄 Скачать текст (TXT)</li>
+            <li>🔎 Задать вопросы (режим vector chat)</li>
+            <li>🏠 Главное меню</li>
+          </ul>
+        </li>
+        <li><strong>Sync:</strong> job в очередь; worker доиндексирует заметку.</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <h3>5.2 Задать вопрос по файлу</h3>
+      <ol>
+        <li>Пользователь нажимает “🔎 Задать вопросы”.</li>
+        <li>Bot → state <code>qa_session</code>; последующие сообщения идут в vector chat.</li>
+        <li>Система строит запрос в IndexService (учитывая дату, теги, группы) → top‑chunks.</li>
+        <li>Формируется системный промпт (описание данных + инструкции) + вопрос; отправляется в выбранную LLM (OpenRouter/Gemini).</li>
+        <li>Ответ (“что обсуждали”, “какие ошибки”) отправляется пользователю; ссылки на источники удалены.</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <h3>5.3 MiniApp / просмотр заметок</h3>
+      <ol>
+        <li>Кнопка “📒 Личный кабинет” открывает WebApp.</li>
+        <li>MiniApp авторизуется через Telegram initData, вызывает API container.</li>
+        <li>Пользователь просматривает список заметок, фильтры по тегам/датам, запускает поиск, редактирует summary.</li>
+        <li>Доступны тарифы/подписки, рефералка, настройки “формат расшифровки / модель / язык”.</li>
+      </ol>
+    </div>
+
+    <div class="flow">
+      <h3>5.4 Интеграция с Google Drive</h3>
+      <ol>
+        <li>APSheduler job <code>beta_drive_sync</code> каждые 10 минут проверяет папку Drive “CyberKitty”.</li>
+        <li>Создаёт отсутствующие папки, выгружает новые заметки/файлы.</li>
+        <li>В логах фиксируются ошибки (например, таймаут прокси <code>YTDLP_PROXY</code>).</li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <h2>6 · Дополнительные диаграммы (пользователь → MiniApp → API → БД)</h2>
+    <div class="diagram">
+      <div class="mermaid">
+        sequenceDiagram
+          autonumber
+          participant User
+          participant MiniApp
+          participant API
+          participant DB
+
+          User->>MiniApp: Открывает WebApp (initData)
+          MiniApp->>API: /notes?auth=initData
+          API->>DB: SELECT notes WHERE user_id
+          DB-->>API: rows
+          API-->>MiniApp: JSON заметок
+          User->>MiniApp: Фильтр/поиск/вопрос
+          MiniApp->>API: /search (query, tags, date)
+          API->>DB: Vector + fulltext search
+          DB-->>API: matches
+          API-->>MiniApp: результаты + метаданные
+          User->>MiniApp: Нажимает “Обработать файл” (Web uploader/Telegram deeplink)
+          MiniApp-->>User: перенаправляет в Telegram /start
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>7 · Логи и мониторинг</h2>
+    <ul>
+      <li><strong>Bot:</strong> DEBUG‑логи HTTPX, события <code>Creating note...</code>, <code>Enqueued media job...</code>, ошибки скачивания.</li>
+      <li><strong>Worker:</strong> <code>Processing job</code>, прогресс стадий, предупреждения embedding fallback, Drive sync.</li>
+      <li><strong>API:</strong> журналы FastAPI/uvicorn, ошибки MiniApp, платежи.</li>
+      <li><strong>DB:</strong> отслеживание состояния очереди, <code>note_chunks</code>, метрик через <code>pg_stat</code>.</li>
+    </ul>
+  </section>
+
+  <footer>
+   
+  </footer>
+</body>
+</html>

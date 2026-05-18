@@ -1,0 +1,4 @@
+id,code,plan_type,duration_days,max_uses,current_uses,description,bonus_type,bonus_value,is_active,created_at,expires_at
+1,KITTY3D,unlimited,3,999999,0,🎁 3 дня безлимитного тарифа,,,t,2025-09-14 17:25:15.017215,2026-09-14 17:25:15.01547
+3,BETACAT,beta,60,999999,7,🐱 Два месяца beta-доступа,,,t,2025-10-14 13:24:47.590653,2026-10-14 13:24:47.590653
+2,LIGHTKITTY,unlimited,,999999,14,🎉 Бессрочный безлимитный тариф,,,t,2025-09-14 17:25:15.024279,2026-09-14 17:25:15.024023

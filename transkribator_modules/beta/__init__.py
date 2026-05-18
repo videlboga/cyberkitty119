@@ -1,11 +1,13 @@
-"""Подмодуль с новым бета-режимом CyberKitty."""
+"""Utilities and entrypoints for beta mode."""
 
-from .feature_flags import (
-    FEATURE_BETA_MODE,
-    ROUTER_MODEL,
-    ROUTER_CONF_HIGH,
-    ROUTER_CONF_MID,
-)
+from core_api.domains.agent.core.agent_runtime import AGENT_MANAGER, AgentResponse, AgentSession
+from .handlers.entrypoint import handle_callback, handle_update, process_text
 
-from .state import BetaState
-from .router import RouterResult, route_message
+__all__ = [
+    "AGENT_MANAGER",
+    "AgentResponse",
+    "AgentSession",
+    "process_text",
+    "handle_update",
+    "handle_callback",
+]

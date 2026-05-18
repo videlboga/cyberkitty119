@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Simple pre-commit hook that runs the docs metadata validator via Docker.
+# To enable locally: git config core.hooksPath .githooks
+set -euo pipefail
+
+echo "Running docs metadata validator (Docker)..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../.github/scripts"
+"$SCRIPT_DIR/run_metadata_validator_docker.sh"
+echo "docs validator passed"

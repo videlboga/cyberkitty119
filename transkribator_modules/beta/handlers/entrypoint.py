@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
@@ -22,14 +22,113 @@ from transkribator_modules.config import (
     MINIAPP_PROXY_URL,
     logger,
 )
-from transkribator_modules.db.database import SessionLocal, UserService, NoteService
+from transkribator_modules.db.database import SessionLocal, UserService, NoteService, log_event
 from transkribator_modules.db.models import Note, NoteStatus
 from transkribator_modules.google_api import GoogleCredentialService, ensure_tree, upload_docx
 from docx import Document
+import httpx
+from pydantic import BaseModel
 
-from ..agent_runtime import AGENT_MANAGER
-from ..note_utils import auto_finalize_note
-from ..tools import _ensure_google_credentials, _looks_like_question, _build_miniapp_note_link as _tools_build_note_link
+class ToolResultResponse(BaseModel):
+    tool_name: str
+    argument: Optional[str] = None
+    result: str
+    success: bool
+    message: Optional[str] = None
+
+class AgentMessageResponse(BaseModel):
+    text: str
+    tool_results: list[ToolResultResponse] = []
+    suggestions: list[str] = []
+
+CORE_API_URL = os.getenv("CORE_API_URL", "http://core-api:8000")
+CORE_API_SERVICE_TOKEN = os.getenv("CORE_API_SERVICE_TOKEN", "").strip()
+
+def _core_headers() -> dict:
+    headers = {}
+    if CORE_API_SERVICE_TOKEN:
+        headers["X-Service-Token"] = CORE_API_SERVICE_TOKEN
+    return headers
+
+class AgentSessionClient:
+    def __init__(self, user):
+        self.user = user
+    
+    def set_active_note(self, note, local_artifact: bool = False):
+        import asyncio
+        async def do_request():
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{CORE_API_URL}/api/v1/agent/active_note",
+                    json={
+                        "telegram_id": self.user.id,
+                        "note_id": note.id,
+                        "local_artifact": local_artifact,
+                    },
+                    headers=_core_headers(),
+                )
+        # Note: In original code this was synchronous. Launch sync using asyncio in background if needed or just block.
+        # However, set_active_note doesn't return anything. We can do fire-and-forget or keep a synchronous HTTP request.
+        try:
+            with httpx.Client() as client:
+                client.post(
+                    f"{CORE_API_URL}/api/v1/agent/active_note",
+                    json={
+                        "telegram_id": self.user.id,
+                        "note_id": note.id,
+                        "local_artifact": local_artifact,
+                    },
+                    timeout=5.0,
+                    headers=_core_headers(),
+                )
+        except Exception as e:
+            logger.error(f"Failed to set active note via API: {e}")
+
+    async def handle_ingest(self, payload, progress=None):
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{CORE_API_URL}/api/v1/agent/ingest",
+                json={
+                    "telegram_id": self.user.id,
+                    "payload": payload,
+                },
+                timeout=120.0,
+                headers=_core_headers(),
+            )
+            resp.raise_for_status()
+            return AgentMessageResponse.parse_obj(resp.json())
+
+    async def handle_user_message(self, text, progress=None):
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{CORE_API_URL}/api/v1/agent/chat",
+                json={
+                    "telegram_id": self.user.id,
+                    "text": text,
+                    "username": getattr(self.user, "username", None),
+                    "first_name": getattr(self.user, "first_name", None),
+                    "last_name": getattr(self.user, "last_name", None),
+                },
+                timeout=120.0,
+                headers=_core_headers(),
+            )
+            resp.raise_for_status()
+            return AgentMessageResponse.parse_obj(resp.json())
+
+class AgentManagerProxy:
+    def get_session(self, user):
+        return AgentSessionClient(user)
+
+AGENT_MANAGER = AgentManagerProxy()
+
+from core_api.domains.agent.core.note_utils import auto_finalize_note, build_note_artifact_content
+from core_api.domains.agent.core.tools import (
+    _ensure_google_credentials,
+    _looks_like_question,
+    _build_miniapp_note_link as _tools_build_note_link,
+    format_note_saved_message,
+    get_note_display_title,
+)
 
 
 COMMAND_PREFIXES = (
@@ -50,6 +149,11 @@ COMMAND_PREFIXES = (
 
 
 TELEGRAM_MESSAGE_LIMIT = 3900
+_PENDING_NOTE_KEY = "pending_note"
+_PENDING_CONFIRM = "beta:note_confirm"
+_PENDING_DECLINE = "beta:note_decline"
+_RESULT_CAPTION_HTML = '<a href="https://t.me/CyberKitty19_bot">CyberKitty119 Транскрибатор</a>'
+_FILENAME_FORBIDDEN_RE = re.compile(r'[\\/:*?"<>|\r\n]+')
 
 
 @dataclass
@@ -115,6 +219,17 @@ async def process_text(
 ) -> None:
     """Process incoming text with the conversational agent."""
 
+    try:
+        logger.info(
+            "beta.process_text: start",
+            extra={
+                "update_id": getattr(update, "update_id", None),
+                "user_id": getattr(getattr(update, "effective_user", None), "id", None),
+                "source": source,
+            },
+        )
+    except Exception:
+        pass
     user = update.effective_user
     if not user:
         return
@@ -126,11 +241,34 @@ async def process_text(
     session = AGENT_MANAGER.get_session(user)
     beta_state = context.user_data.setdefault("beta", {})
     snapshot: Optional[_NoteSnapshot] = None
-    question = _looks_like_question(text)
+    question = await _looks_like_question(text)
 
     ingest_context = source in {"audio", "video", "voice", "media", "backlog"}
     ingest_context = ingest_context or force_mode == "content"
     active_note_id = beta_state.get("active_note_id")
+
+    if not ingest_context and not active_note_id and not question:
+        lowered = text.strip().lower()
+        is_command = any(lowered.startswith(prefix + " ") or lowered == prefix for prefix in COMMAND_PREFIXES)
+        if not is_command:
+            beta_state[_PENDING_NOTE_KEY] = {
+                "text": text,
+                "source": source,
+                "created_at": datetime.datetime.utcnow().isoformat(),
+            }
+            snippet = text.strip()
+            if len(snippet) > 280:
+                snippet = snippet[:277] + "…"
+            message = "Создать новую заметку из этого текста?"
+            if snippet:
+                message += f"\n\n{snippet}"
+            await _respond(
+                update,
+                context,
+                message,
+                reply_markup=_build_pending_keyboard(),
+            )
+            return
 
     progress = await _start_progress_message(update, context, "🤖 Обрабатываю запрос…")
 
@@ -147,6 +285,21 @@ async def process_text(
                 existing_note,
                 create_artifacts=create_artifacts,
             )
+            # Debug: log snapshot / active note context to help trace why later queries may not match
+            try:
+                logger.info(
+                    "DEBUG: process_text created/updated note",
+                    extra={
+                        "user_id": user.id,
+                        "note_id": getattr(snapshot.note, "id", None),
+                        "created": bool(snapshot.created),
+                        "source": source,
+                        "note_ts": getattr(snapshot.note, "ts", None).isoformat() if getattr(snapshot.note, "ts", None) else None,
+                        "note_summary_len": len((snapshot.note.summary or "")[:200]),
+                    },
+                )
+            except Exception:
+                logger.debug("Failed to log process_text snapshot info", exc_info=True)
             if snapshot.note and (snapshot.created or not (snapshot.note.summary and snapshot.note.summary.strip())):
                 updated_note = await auto_finalize_note(snapshot.note.id)
                 if updated_note:
@@ -154,17 +307,25 @@ async def process_text(
             session.set_active_note(snapshot.note, local_artifact=bool(snapshot.local_file))
             beta_state["active_note_id"] = snapshot.note.id
             beta_state["source"] = source
-            payload = {
-                "note_id": snapshot.note.id,
-                "text": text,
-                "summary": snapshot.note.summary,
-                "source": source,
-                "created_at": snapshot.note.ts.isoformat() if snapshot.note.ts else datetime.datetime.utcnow().isoformat(),
-                "created": snapshot.created,
-            }
-            if progress:
-                await progress.update(f"🗂 Заметка #{snapshot.note.id} подготовлена. Думаю над ответом…")
-            response = await session.handle_ingest(payload, progress=progress)
+            
+            # Для медиа (audio/video) - показываем заметку напрямую без агента
+            if source in {"audio", "video", "voice"}:
+                from core_api.domains.agent.core.tools import format_note_saved_message
+                final_text = format_note_saved_message(note=snapshot.note)
+                response = None
+            else:
+                # Для остальных источников - запускаем агента
+                payload = {
+                    "note_id": snapshot.note.id,
+                    "text": text,
+                    "summary": snapshot.note.summary,
+                    "source": source,
+                    "created_at": snapshot.note.ts.isoformat() if snapshot.note.ts else datetime.datetime.utcnow().isoformat(),
+                    "created": snapshot.created,
+                }
+                if progress:
+                    await progress.update(f"🗂 Заметка #{snapshot.note.id} подготовлена. Думаю над ответом…")
+                response = await session.handle_ingest(payload, progress=progress)
         else:
             if progress:
                 if active_note_id:
@@ -173,10 +334,17 @@ async def process_text(
                     await progress.update("🔍 Ищу ответ в заметках…")
             response = await session.handle_user_message(text, progress=progress)
 
-        cleaned_response = _dedupe_response_text(response.text)
+        # Обрабатываем ответ если он есть
+        if response:
+            cleaned_response = _dedupe_response_text(response.text)
+        else:
+            cleaned_response = ""
 
         if snapshot:
-            final_text = _merge_artifact_hint(cleaned_response, snapshot)
+            # Для медиа уже есть final_text из format_note_saved_message
+            if source not in {"audio", "video", "voice"}:
+                final_text = _merge_artifact_hint(cleaned_response, snapshot)
+            # else: final_text уже установлен выше
         else:
             final_text = cleaned_response
 
@@ -192,7 +360,7 @@ async def process_text(
                 sent_separately = True
 
         if snapshot and snapshot.local_file:
-            await _send_local_artifact(update, context, snapshot.local_file, snapshot.note.id)
+            await _send_local_artifact(update, context, snapshot.local_file, snapshot.note)
 
         if progress and not sent_separately and not final_text:
             await progress.finalize("✅ Готово.")
@@ -211,7 +379,16 @@ async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text = message.text or message.caption
     if not text:
         return
-
+    try:
+        logger.info(
+            "beta.handle_update: route",
+            extra={
+                "update_id": getattr(update, "update_id", None),
+                "user_id": getattr(getattr(update, "effective_user", None), "id", None),
+            },
+        )
+    except Exception:
+        pass
     await process_text(update, context, text, source="message")
 
 
@@ -293,16 +470,39 @@ async def _start_progress_message(
             if not user:
                 return None
             message = await context.bot.send_message(chat_id=user.id, text=text, disable_notification=True)
+        try:
+            logger.info(
+                "beta.progress: created",
+                extra={
+                    "update_id": getattr(update, "update_id", None),
+                    "msg_id": getattr(message, "message_id", None),
+                    "chat_id": getattr(getattr(message, "chat", None), "id", None),
+                },
+            )
+        except Exception:
+            pass
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to send progress message", extra={"error": str(exc)})
         return None
     return _ProgressMessage(message, text)
 
 
-async def _respond(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+async def _respond(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    *,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+) -> None:
     rendered, parse_mode = _prepare_telegram_message(text)
     if len(rendered) <= TELEGRAM_MESSAGE_LIMIT:
-        await _send_formatted_text(update, context, rendered, parse_mode)
+        await _send_formatted_text(
+            update,
+            context,
+            rendered,
+            parse_mode,
+            reply_markup=reply_markup,
+        )
         return
 
     await _send_long_response(update, context, text)
@@ -313,10 +513,14 @@ async def _send_formatted_text(
     context: ContextTypes.DEFAULT_TYPE,
     rendered: str,
     parse_mode: Optional[str],
+    *,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
 ) -> None:
     kwargs = {"disable_web_page_preview": True}
     if parse_mode:
         kwargs["parse_mode"] = parse_mode
+    if reply_markup:
+        kwargs["reply_markup"] = reply_markup
 
     if update.message:
         await update.message.reply_text(rendered, **kwargs)
@@ -356,17 +560,82 @@ async def _send_long_response(update: Update, context: ContextTypes.DEFAULT_TYPE
         await _send_formatted_text(update, context, rendered, parse_mode)
         return
 
-    file_path = _export_text_temp(raw_text)
-    if file_path:
-        note = "Ответ слишком объёмный для Telegram, отправил файл во вложении."
-        rendered, parse_mode = _prepare_telegram_message(note)
-        await _send_formatted_text(update, context, rendered, parse_mode)
-        await _send_generic_document(update, context, file_path, "long_response.docx", "Ответ во вложении.")
-        return
+    # Если Drive недоступен, шлём ответ батчами сообщений, а не файлом
+    async def _send_text_in_chunks(text: str) -> None:
+        MAX = 3800  # запас до лимита Telegram 4096
+        # 1) Пытаемся разделить по смысловым блокам: строка-заголовок + тело
+        lines = text.splitlines()
+        blocks: list[str] = []
+        cur: list[str] = []
+        def is_heading(line: str) -> bool:
+            l = line.strip()
+            return bool(l) and (l.startswith('🔹') or l.startswith('⭐') or l.startswith('###') or (l.startswith('**') and l.endswith('**') and len(l) <= 80))
+        for ln in lines:
+            if is_heading(ln) and cur:
+                blocks.append("\n".join(cur).strip())
+                cur = [ln]
+            else:
+                cur.append(ln)
+        if cur:
+            blocks.append("\n".join(cur).strip())
+
+        # Если не удалось распознать блоки — делим по длине/абзацам
+        if len(blocks) <= 1:
+            blocks = []
+            buf = text
+            while buf:
+                if len(buf) <= MAX:
+                    blocks.append(buf)
+                    break
+                cut = buf.rfind('\n\n', 0, MAX)
+                if cut == -1:
+                    cut = buf.rfind('\n', 0, MAX)
+                if cut == -1:
+                    cut = MAX
+                blocks.append(buf[:cut])
+                buf = buf[cut:].lstrip()
+
+        # 2) Гарантируем, что каждый блок влезает в одно сообщение
+        out_parts: list[str] = []
+        for b in blocks:
+            if len(b) <= MAX:
+                out_parts.append(b)
+                continue
+            # Перерезаем крупный блок по абзацам
+            buf = b
+            while buf:
+                if len(buf) <= MAX:
+                    out_parts.append(buf)
+                    break
+                cut = buf.rfind('\n\n', 0, MAX)
+                if cut == -1:
+                    cut = buf.rfind('\n', 0, MAX)
+                if cut == -1:
+                    cut = MAX
+                out_parts.append(buf[:cut])
+                buf = buf[cut:].lstrip()
+
+        for chunk in out_parts:
+            rendered, parse_mode = _prepare_telegram_message(chunk)
+            await _send_formatted_text(update, context, rendered, parse_mode)
+
+    await _send_text_in_chunks(raw_text)
+    return
 
     fallback = "Ответ получился слишком большим и не удалось подготовить файл. Попробуй переформулировать запрос."  # noqa: E501
     rendered, parse_mode = _prepare_telegram_message(fallback)
     await _send_formatted_text(update, context, rendered, parse_mode)
+
+
+def _build_pending_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Создать", callback_data=_PENDING_CONFIRM),
+                InlineKeyboardButton("❌ Не сохранять", callback_data=_PENDING_DECLINE),
+            ]
+        ]
+    )
 
 
 def _ensure_note_artifact(
@@ -376,10 +645,11 @@ def _ensure_note_artifact(
     note: Note,
     text: str,
 ) -> tuple[Optional[str], Optional[str]]:
-    drive_link = _upload_note_to_drive(google_service, note_service, user, note, text)
+    artifact_text = build_note_artifact_content(note, text)
+    drive_link = _upload_note_to_drive(google_service, note_service, user, note, artifact_text)
     if drive_link:
         return drive_link, None
-    local_file = _export_note_locally(note, text)
+    local_file = _export_note_locally(note, artifact_text)
     return None, local_file
 
 
@@ -447,12 +717,13 @@ def _upload_note_to_drive(
 
 
 def _export_note_locally(note: Note, text: str) -> Optional[str]:
-    docx_bytes = _note_to_docx_bytes(text)
-
+    content = (text or "").strip() or "(пустая заметка)"
     try:
-        fd, path = tempfile.mkstemp(prefix=f"note_{note.id}_", suffix=".docx")
-        with os.fdopen(fd, 'wb') as handle:
-            handle.write(docx_bytes)
+        fd, path = tempfile.mkstemp(prefix=f"note_{note.id}_", suffix=".txt")
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(content)
+            if not content.endswith("\n"):
+                handle.write("\n")
         return path
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to create local artifact", extra={"note_id": note.id, "error": str(exc)})
@@ -487,11 +758,13 @@ def _upload_text_blob_to_drive(credentials, user, content: str) -> Optional[str]
 
 
 def _export_text_temp(content: str) -> Optional[str]:
-    docx_bytes = _note_to_docx_bytes(content)
+    text = (content or "").strip()
     try:
-        fd, path = tempfile.mkstemp(prefix="response_", suffix=".docx")
-        with os.fdopen(fd, 'wb') as handle:
-            handle.write(docx_bytes)
+        fd, path = tempfile.mkstemp(prefix="response_", suffix=".txt")
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(text)
+            if text and not text.endswith("\n"):
+                handle.write("\n")
         return path
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to create temp response file", extra={"error": str(exc)})
@@ -616,6 +889,12 @@ def _render_inline_markdown(text: str) -> str:
 
 
 
+def _normalize_block_for_dedupe(text: Optional[str]) -> str:
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
 def _escape_html(text: str) -> str:
     return (text or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
@@ -628,12 +907,40 @@ def _escape_attr(value: str) -> str:
 
 def _merge_artifact_hint(base_text: Optional[str], snapshot: _NoteSnapshot) -> str:
     parts: list[str] = []
-    if base_text and base_text.strip():
-        parts.append(base_text.strip())
-    if snapshot.drive_link and (not base_text or snapshot.drive_link not in base_text):
-        parts.append(f"Drive: {snapshot.drive_link}")
-    if snapshot.local_file and (not base_text or 'файл' not in base_text.lower()):
-        parts.append("📎 Файл заметки прикрепил отдельным сообщением.")
+    seen: set[str] = set()
+
+    def _append(candidate: Optional[str]) -> None:
+        if not candidate:
+            return
+        stripped = candidate.strip()
+        if not stripped:
+            return
+        key = _normalize_block_for_dedupe(stripped)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        parts.append(stripped)
+
+    normalized_base = base_text.strip() if base_text and base_text.strip() else ""
+    _append(normalized_base)
+
+    note_block = ""
+    if snapshot.note:
+        note_block = (format_note_saved_message(note=snapshot.note) or "").strip()
+        _append(note_block)
+
+    if snapshot.drive_link:
+        drive_hint = f"Drive: {snapshot.drive_link}"
+        if not normalized_base or snapshot.drive_link not in normalized_base:
+            _append(drive_hint)
+
+    if snapshot.local_file and (not normalized_base or 'файл' not in normalized_base.lower()):
+        _append("📎 Файл заметки прикрепил отдельным сообщением.")
+
+    # Если ничего не набралось (неожиданный кейс) — вернём отформатированную заметку
+    if not parts and note_block:
+        parts.append(note_block)
+
     return "\n\n".join(parts).strip()
 
 
@@ -669,25 +976,159 @@ def _dedupe_response_text(text: Optional[str]) -> Optional[str]:
     return "\n".join(result_lines)
 
 
-async def _send_local_artifact(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, note_id: int) -> None:
-    caption = f"Заметка #{note_id}."
-    filename = Path(file_path).name
+def _build_result_filename(note: Optional[Note], file_path: str) -> str:
+    suffix = Path(file_path).suffix or ".txt"
+    base_title = get_note_display_title(note) if note else ""
+    if not base_title:
+        base_title = f"note_{note.id if note and note.id else 'result'}"
+
+    normalized = _FILENAME_FORBIDDEN_RE.sub(" ", base_title).strip()
+    normalized = re.sub(r"\s+", "_", normalized, flags=re.UNICODE).strip("_")
+    if not normalized:
+        base_title = f"note_{note.id if note and note.id else 'result'}"
+        normalized = base_title
+    if len(normalized) > 80:
+        normalized = normalized[:80].rstrip("_-.") or normalized[:80]
+    return f"{normalized}{suffix}"
+
+
+async def _send_local_artifact(update: Update, context: ContextTypes.DEFAULT_TYPE, file_path: str, note: Note) -> None:
+    caption_rendered = _RESULT_CAPTION_HTML
+    parse_mode = ParseMode.HTML
+    filename = _build_result_filename(note, file_path)
     try:
         if update.message:
             with open(file_path, 'rb') as handle:
-                await update.message.reply_document(handle, filename=filename, caption=caption)
+                await update.message.reply_document(
+                    handle,
+                    filename=filename,
+                    caption=caption_rendered,
+                    parse_mode=parse_mode,
+                )
         elif update.callback_query and update.callback_query.message:
             with open(file_path, 'rb') as handle:
-                await update.callback_query.message.reply_document(handle, filename=filename, caption=caption)
+                await update.callback_query.message.reply_document(
+                    handle,
+                    filename=filename,
+                    caption=caption_rendered,
+                    parse_mode=parse_mode,
+                )
         else:
             user = update.effective_user
             if user:
                 with open(file_path, 'rb') as handle:
-                    await context.bot.send_document(chat_id=user.id, document=handle, filename=filename, caption=caption)
+                    await context.bot.send_document(
+                        chat_id=user.id,
+                        document=handle,
+                        filename=filename,
+                        caption=caption_rendered,
+                        parse_mode=parse_mode,
+                    )
+        
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to send local artifact", extra={"note_id": note_id, "error": str(exc)})
+        logger.warning(
+            "Failed to send local artifact",
+            extra={"note_id": note.id if note else None, "error": str(exc)},
+        )
     finally:
         try:
             Path(file_path).unlink(missing_ok=True)
         except Exception as clear_exc:  # noqa: BLE001
             logger.debug("Failed to remove temp artifact", extra={"path": file_path, "error": str(clear_exc)})
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = (query.data or "").strip()
+    if data == _PENDING_CONFIRM:
+        try:
+            log_event(update.effective_user.id, "bot_beta_note_confirm", {
+                "callback_data": data
+            })
+        except Exception:
+            logger.debug("Failed to log beta callback event", exc_info=True)
+        await _handle_pending_confirmation(update, context, accept=True)
+    elif data == _PENDING_DECLINE:
+        try:
+            log_event(update.effective_user.id, "bot_beta_note_decline", {
+                "callback_data": data
+            })
+        except Exception:
+            logger.debug("Failed to log beta callback event", exc_info=True)
+        await _handle_pending_confirmation(update, context, accept=False)
+
+
+async def _handle_pending_confirmation(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    accept: bool,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    beta_state = context.user_data.setdefault("beta", {})
+    pending = beta_state.pop(_PENDING_NOTE_KEY, None)
+
+    if not pending:
+        await query.edit_message_text("Нет текста для сохранения.")
+        return
+
+    if not accept:
+        await query.edit_message_text("Ок, не сохраняю.")
+        return
+
+    text = (pending.get("text") or "").strip()
+    if not text:
+        await query.edit_message_text("Текст пустой, нечего сохранять.")
+        return
+
+    user = update.effective_user
+    if not user:
+        await query.edit_message_text("Не удалось определить пользователя.")
+        return
+
+    await query.edit_message_text("📝 Создаю заметку…")
+
+    session = AGENT_MANAGER.get_session(user)
+    source = pending.get("source") or "message"
+    create_artifacts = _should_create_artifact(text)
+
+    snapshot = _create_or_update_note(
+        user,
+        text,
+        source,
+        existing_note=None,
+        create_artifacts=create_artifacts,
+    )
+    if snapshot.note and (snapshot.created or not (snapshot.note.summary and snapshot.note.summary.strip())):
+        updated_note = await auto_finalize_note(snapshot.note.id)
+        if updated_note:
+            snapshot.note = updated_note
+
+    session.set_active_note(snapshot.note, local_artifact=bool(snapshot.local_file))
+    beta_state["active_note_id"] = snapshot.note.id
+    beta_state["source"] = source
+
+    payload = {
+        "note_id": snapshot.note.id,
+        "text": text,
+        "summary": snapshot.note.summary,
+        "source": source,
+        "created_at": snapshot.note.ts.isoformat() if snapshot.note.ts else datetime.datetime.utcnow().isoformat(),
+        "created": snapshot.created,
+    }
+
+    response = await session.handle_ingest(payload, progress=None)
+    final_text = _merge_artifact_hint(_dedupe_response_text(response.text), snapshot)
+
+    if snapshot.local_file:
+        await _send_local_artifact(update, context, snapshot.local_file, snapshot.note)
+
+    summary_text = final_text or f"Создал заметку #{snapshot.note.id}."
+    await query.edit_message_text("✅ Заметка создана.")
+    await _respond(update, context, summary_text)

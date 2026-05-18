@@ -1,0 +1,12 @@
+run,chunk_level,chunk_length_s,temperature,http_code,elapsed_s,output_file
+1,whole,,0,500,1.27846,/data/out/result_1.json
+2,segment,120,0,500,1.02076,/data/out/result_2.json
+3,segment,60,0,500,2.02787,/data/out/result_3.json
+4,segment,30,0,500,0.899793,/data/out/result_4.json
+5,segment,15,0,500,1.04989,/data/out/result_5.json
+6,segment,5,0,500,1.03953,/data/out/result_6.json
+7,sentence,120,0,500,0.942005,/data/out/result_7.json
+8,sentence,60,0,500,1.045,/data/out/result_8.json
+9,sentence,30,0,500,1.05815,/data/out/result_9.json
+10,sentence,15,0,500,0.653504,/data/out/result_10.json
+11,sentence,5,0,500,0.920856,/data/out/result_11.json

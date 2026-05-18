@@ -1,0 +1,144 @@
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                    QUEUE-BASED ARCHITECTURE (НОВАЯ)                          ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+USER (Telegram)
+    │
+    ├─ Sends: Video/Audio/Link
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│    TELEGRAM BOT (handlers.py)           │
+│  ✅ NON-BLOCKING (returns in 1 sec)    │
+├─────────────────────────────────────────┤
+│ 1. Download file (30 sec)              │
+│ 2. Extract audio (10 sec)              │
+│ 3. Compress audio (5 sec)              │
+│ 4. Check limits (1 sec)                │
+│ 5. Reserve minutes (1 sec)             │
+│ 6. Create MediaJobPayload (1 sec)      │
+│ 7. enqueue_media_job() (1 sec) ◄──┐    │
+│ 8. Return "Processing..." ◄──┐   │    │
+└─────────────────────────────────────────┘
+         │              │
+         │ job saved    │ user sees
+         │ to DB        │ result
+         │              │
+    ┌────▼──────────────▼──┐
+    │  "✅ Accepted!       │
+    │   Processing..."     │
+    │                      │
+    │  User can now        │
+    │  send new files ✅   │
+    └──────────────────────┘
+
+    ┌──────────────────────────────────────────────────────────┐
+    │ PostgreSQL DB                                            │
+    ├──────────────────────────────────────────────────────────┤
+    │ processing_jobs table:                                   │
+    │ ┌────────────┬─────────┬──────────┐                      │
+    │ │ id         │ status  │ payload  │                      │
+    │ ├────────────┼─────────┼──────────┤                      │
+    │ │ job_001    │ pending │ {...}    │ ◄─── Job 1          │
+    │ │ job_002    │ pending │ {...}    │ ◄─── Job 2          │
+    │ │ job_003    │ pending │ {...}    │ ◄─── Job 3          │
+    │ │ ...        │ ...     │ ...      │                      │
+    │ └────────────┴─────────┴──────────┘                      │
+    └──────────────────────────────────────────────────────────┘
+         │
+         │ job_worker polls DB
+         │
+    ┌────▼──────────────────────────────────────────────────┐
+    │  JOB WORKER (job_worker.py)                            │
+    │  🔄 Background Process(es)                             │
+    │  Can run 1, 2, 10 instances!                           │
+    ├────────────────────────────────────────────────────────┤
+    │ while True:                                            │
+    │   1. acquire_job() from DB                             │
+    │   2. run_media_pipeline()                              │
+    │      ├─ PrepareEnvironmentStage (1 sec)               │
+    │      ├─ DownloadMediaStage (uses audio_path)          │
+    │      ├─ TranscribeMediaStage (5-30 MIN) ◄─ ТЯЖЕЛАЯ   │
+    │      ├─ FinalizeNoteStage (10 sec)                    │
+    │      ├─ DeliverResultsStage (5 sec)                   │
+    │      └─ CleanupStage (5 sec)                           │
+    │   3. complete_job() / fail_job()                       │
+    │   4. sleep(2) if no jobs                               │
+    └────────────────────────────────────────────────────────┘
+         │
+         │ Results saved to:
+         │   - DB: notes table (transcript)
+         │   - Files: transcriptions/
+         │   - User notified (TODO: improve deliver)
+         │
+    ┌────▼──────────────────────────────────────────────────┐
+    │  RESULTS                                               │
+    ├────────────────────────────────────────────────────────┤
+    │  Note created in DB ✅                                 │
+    │  Transcript saved ✅                                   │
+    │  Files created ✅                                      │
+    │  Summary generated (todo) ⏳                            │
+    │  User notified (todo) ⏳                                │
+    └────────────────────────────────────────────────────────┘
+
+
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                        УЛУЧШЕНИЯ ПРОИЗВОДИТЕЛЬНОСТИ                          ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+БЫЛО (Синхронная обработка):
+    User sends file
+        │
+        ├─ Bot downloads (30 sec)
+        ├─ Bot extracts audio (10 sec)
+        ├─ Bot compresses (5 sec)
+        ├─ Bot TRANSCRIBES (5-30 MIN) ◄─────── 🔴 БОТ ЗАМОРОЖЕН!
+        ├─ Bot formats (10 sec)
+        ├─ Bot creates note (5 sec)
+        ├─ Bot sends result (5 sec)
+        │
+    ▼ Total: 6-40 MINUTES (bot blocked!)
+    User: 😫 (stuck, bot not responding)
+
+
+СТАЛО (Асинхронная обработка):
+    User sends file
+        │
+        ├─ Bot downloads (30 sec)
+        ├─ Bot extracts audio (10 sec)
+        ├─ Bot compresses (5 sec)
+        ├─ Bot enqueues (1 sec) ◄─────────── ⚡ БОТ СВОБОДЕН!
+        │
+    ▼ Total: ~1 MINUTE (bot responds immediately!)
+    User: "✅ Accepted! Processing..." ← видит сразу!
+        │
+        └─ Worker processes in background
+            ├─ Downloads (already have audio)
+            ├─ TRANSCRIBES (5-30 MIN) ✅ (не блокирует бот!)
+            ├─ Finalizes (10 sec)
+            └─ Delivers (5 sec)
+
+РЕЗУЛЬТАТ: Bot can handle 10-100x more users! 📈
+
+
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                            SCALING CAPABILITY                                 ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+Single Machine:
+    ┌──────────────┐
+    │  Bot (1x)    │ ◄─ Can handle 10-100 concurrent users
+    │  Worker (1x) │ ◄─ Processes 1 file at a time
+    └──────────────┘
+
+Horizontal Scaling:
+    ┌──────────────┐
+    │  Bot (1x)    │ ◄─ Can handle 10-100 concurrent users
+    │  Worker (1x) │ ◄─ Processes 1 file at a time
+    │  Worker (2x) │ ◄─ Processes 1 file at a time
+    │  Worker (3x) │ ◄─ Processes 1 file at a time
+    │  ...         │
+    └──────────────┘
+
+All workers read from same DB queue! ✅
+Scale without changing code! ✅
