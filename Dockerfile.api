@@ -18,7 +18,7 @@ WORKDIR /app
 COPY requirements/ ./requirements/
 RUN pip install --no-cache-dir -r requirements/api.txt -r requirements/payments.txt
 
-# Копируем только необходимые файлы проекта
+# Копируем файлы проекта и миграции
 COPY api_server.py .
 COPY transkribator_modules/ ./transkribator_modules/
 COPY transcribe_client/ ./transcribe_client/
@@ -27,10 +27,12 @@ COPY bot/ ./bot/
 COPY prompts_catalog.json .
 COPY implementation_plan.md .
 COPY miniapp_dist/ ./miniapp_dist/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
 COPY .env .
 
 # Открываем порт для API
 EXPOSE 8000
 
-# Запускаем API сервер
-ENTRYPOINT ["python", "api_server.py"] 
+# Запускаем API сервер (он выполняет миграции перед стартом)
+ENTRYPOINT ["python", "api_server.py"]
