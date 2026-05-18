@@ -1784,7 +1784,9 @@ def init_plans():
                 )
                 db.add(plan)
                 
-        db.commit()    except Exception as e:
+        db.commit()
+
+    except Exception as e:
         print(f"Ошибка при создании планов: {e}")
         db.rollback()
     finally:
