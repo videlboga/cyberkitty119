@@ -511,6 +511,7 @@ async def toggle_beta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     #db = SessionLocal()
     try:
+        db = SessionLocal()
         user_service = UserService(db)
         db_user = user_service.get_or_create_user(
             telegram_id=user.id,
