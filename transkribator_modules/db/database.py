@@ -1783,19 +1783,8 @@ def init_plans():
                     is_active=plan_data.get("is_active", True)
                 )
                 db.add(plan)
-            else:
-                existing_plan.display_name = plan_data["display_name"]
-                existing_plan.minutes_per_month = plan_data["minutes_per_month"]
-                existing_plan.max_file_size_mb = plan_data["max_file_size_mb"]
-                existing_plan.price_rub = plan_data["price_rub"]
-                existing_plan.price_usd = plan_data["price_usd"]
-                existing_plan.price_stars = plan_data.get("price_stars", existing_plan.price_stars)
-                existing_plan.features = plan_data.get("features", existing_plan.features or "")
-                existing_plan.is_active = plan_data.get("is_active", True)
-
-        db.commit()
-
-    except Exception as e:
+                
+        db.commit()    except Exception as e:
         print(f"Ошибка при создании планов: {e}")
         db.rollback()
     finally:
