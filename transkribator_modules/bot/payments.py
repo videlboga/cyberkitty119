@@ -404,6 +404,7 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
 
         # Обновляем подписку пользователя в базе данных
         pass #db = SessionLocal()
+        db = SessionLocal()
         try:
             user_service = UserService(db)
             transaction_service = TransactionService(db)
