@@ -75,11 +75,11 @@ __pycache__/
 *.pyc
 
 # Large data directories
-videos/
-audio/
+#videos/
+#audio/
 transcriptions/
-telegram-bot-api-data/
-data/
+#telegram-bot-api-data/
+#data/
 
 # Backups
 backups/
@@ -100,10 +100,10 @@ cyberkitty119.log
 ref.db
 transkribator.db
 venv/
-videos/
-audio/
-data/
-telegram-bot-api-data/
+#videos/
+#audio/
+#data/
+#telegram-bot-api-data/
 *.tar.gz
 # ignore local env and credentials
 .env*
@@ -111,6 +111,10 @@ client_secret_*.json
 
 media/
 
-audio/
-videos/
-telegram-bot-api-data/
+#audio/
+#videos/
+#telegram-bot-api-data/
+/audio/
+/videos/
+/data/
+/telegram-bot-api-data/

@@ -72,7 +72,7 @@ services:
       - ./transkribator_modules:/app/transkribator_modules
       - ./transcribe_client:/app/transcribe_client
       - ./audio:/app/audio
-      - /var/lib/telegram-bot-api-vpn:/vpn-api-data:ro
+      - ./telegram-bot-api-data:/vpn-api-data:ro
   # Note: do not bind-mount host /etc/hosts here - it overrides Docker extra_hosts mapping
     restart: unless-stopped
     networks:
@@ -119,8 +119,8 @@ services:
       - ./audio:/app/audio
       - ./workers:/app/workers:ro
       - ./entrypoint-worker.sh:/entrypoint-worker.sh:ro
-      - /var/lib/telegram-bot-api-vpn:/vpn-api-data:ro
-      - /var/lib/telegram-bot-api-vpn:/app/telegram-bot-api-data
+      - ./telegram-bot-api-data:/vpn-api-data:ro
+      - ./telegram-bot-api-data:/app/telegram-bot-api-data
   # Note: keep /etc/hosts untouched so extra_hosts (host-gateway) can be applied
       - /home/cyberkitty/.ssh:/tmp/.ssh_bind:ro
     entrypoint: ["/entrypoint-worker.sh"]
