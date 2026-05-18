@@ -1,20 +1,29 @@
 FROM python:3.10-slim
 
+ARG APT_PROXY=""
+
 # Установка только необходимых системных зависимостей
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN if [ -n "$APT_PROXY" ]; then \
+        echo "Acquire::HTTP::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/99proxy; \
+    fi && \
+    apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* && \
+    rm -f /etc/apt/apt.conf.d/99proxy
 
 WORKDIR /app
 
 # Копируем файлы с зависимостями
 COPY requirements/ ./requirements/
-RUN pip install --no-cache-dir -r requirements/api.txt
+RUN pip install --no-cache-dir -r requirements/api.txt -r requirements/payments.txt
 
 # Копируем только необходимые файлы проекта
 COPY api_server.py .
 COPY transkribator_modules/ ./transkribator_modules/
+COPY transcribe_client/ ./transcribe_client/
+COPY core_api/ ./core_api/
+COPY bot/ ./bot/
 COPY prompts_catalog.json .
 COPY implementation_plan.md .
 COPY miniapp_dist/ ./miniapp_dist/

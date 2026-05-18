@@ -36,10 +36,12 @@ from transkribator_modules.bot.update_dedupe import should_process, should_proce
 from transkribator_modules.bot.payments import (
     handle_pre_checkout_query, handle_successful_payment, show_payment_plans
 )
+from transkribator_modules.manual_mode import manual_menu_command
+from transkribator_modules.wai_flow import wai_menu_command
 from transkribator_modules.db.database import init_database, engine
 from sqlalchemy import text
-from transkribator_modules.beta.reminders import schedule_jobs
-from transkribator_modules.beta.drive_sync import schedule_drive_sync_jobs
+from core_api.domains.agent.core.reminders import schedule_jobs
+from core_api.domains.agent.core.drive_sync import schedule_drive_sync_jobs
 
 def _acquire_singleton_lock() -> bool:
     """Acquire a cross-process singleton lock via PostgreSQL advisory lock.
@@ -139,6 +141,8 @@ def main() -> None:
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("backlog", backlog_command))
     application.add_handler(CommandHandler("timezone", timezone_command))
+    application.add_handler(CommandHandler("manual", manual_menu_command))
+    application.add_handler(CommandHandler("wai", wai_menu_command))
     # Убрали сырой вывод по кнопке/команде
     
     # Новые команды для монетизации

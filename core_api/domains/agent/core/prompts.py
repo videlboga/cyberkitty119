@@ -30,7 +30,7 @@ def build_system_prompt(tool_specs: Iterable[dict]) -> str:
           - Если необходимо уточнение у пользователя, укажи это в поле "response" и не вызывай инструмент.
           - Сохраняй компактность ответа и избегай Markdown-листов, если там нет реальной структуры.
           - Если нужно найти релевантные заметки по запросу пользователя, используй инструмент `search_notes`.
-          - Если сообщение похоже на вопрос (есть знак вопроса или начинается с вопросительного слова), сначала выполняй `search_notes` и предоставляй ответ по найденным заметкам. Не используй `update_note_text` или `save_note`, пока пользователь прямо не попросил изменить заметку.
+          - Если пользователь задает вопрос о текущей активной заметке (есть [Контекст: Активная заметка ID=...]), отвечай прямо по её тексту без вызова `search_notes`. Иначе, если активной заметки нет, выполняй `search_notes` по общему вопросу. Не используй `update_note_text` или `save_note` для вопросов.
           - Перед вызовом инструментов, при необходимости, сделай вывод из заметки.
           - Если подходящих заметок нет, сообщи об этом в поле "response".
 
@@ -62,12 +62,19 @@ def build_event_message(event_type: str, payload: dict) -> str:
         text = payload.get("text", "").strip()
         active_note_id = payload.get("active_note_id")
         active_note_summary = payload.get("active_note_summary")
+        active_note_text = payload.get("active_note_text")
         
         msg = f"Сообщение пользователя:\n{text}"
         if active_note_id:
             msg += f"\n\n[Контекст: Активная заметка ID={active_note_id}]"
             if active_note_summary:
                 msg += f"\nКраткое содержание: {active_note_summary}"
+            if active_note_text:
+                limit = 7000
+                txt = active_note_text.strip()
+                if len(txt) > limit:
+                    txt = txt[:limit-3] + "..."
+                msg += f"\n\n=== НАЧАЛО ТЕКСТА ЗАМЕТКИ ID={active_note_id} ===\n{txt}\n=== КОНЕЦ ТЕКСТА ЗАМЕТКИ ==="
         return msg
 
     return f"Событие: {event_type}\nДанные: {json.dumps(payload, ensure_ascii=False)}"

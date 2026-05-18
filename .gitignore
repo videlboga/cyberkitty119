@@ -108,3 +108,9 @@ telegram-bot-api-data/
 # ignore local env and credentials
 .env*
 client_secret_*.json
+
+media/
+
+audio/
+videos/
+telegram-bot-api-data/

@@ -27,8 +27,8 @@ from transkribator_modules.db.models import Note, NoteStatus
 from transkribator_modules.google_api import GoogleCredentialService, ensure_tree, upload_docx
 from docx import Document
 
-from ..agent_runtime import AGENT_MANAGER
-from ..note_utils import auto_finalize_note, build_note_artifact_content
+from core_api.domains.agent.core.agent_runtime import AGENT_MANAGER
+from core_api.domains.agent.core.note_utils import auto_finalize_note, build_note_artifact_content
 from ..tools import (
     _ensure_google_credentials,
     _looks_like_question,
@@ -206,6 +206,7 @@ async def process_text(
                 else:
                     await progress.update("🔍 Ищу ответ в заметках…")
             response = await session.handle_user_message(text, progress=progress)
+        AGENT_MANAGER.save_session(session)
 
         cleaned_response = _dedupe_response_text(response.text)
 
@@ -872,6 +873,7 @@ async def _handle_pending_confirmation(
     }
 
     response = await session.handle_ingest(payload, progress=None)
+    AGENT_MANAGER.save_session(session)
     final_text = _merge_artifact_hint(_dedupe_response_text(response.text), snapshot)
 
     if snapshot.local_file:

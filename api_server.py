@@ -67,6 +67,8 @@ from core_api.api.v1 import agent as core_agent_router
 app.include_router(core_agent_router.router, prefix="/api/v1/agent", tags=["Agent"])
 from core_api.api.v1 import memory as core_memory_router
 app.include_router(core_memory_router.router, prefix="/api/v1/memory")
+from core_api.api.v1 import payments
+app.include_router(payments.router, prefix="/api/v1")
 
 from core_api.api.v1.transcribe import router as core_transcribe_router
 app.include_router(core_transcribe_router, tags=["Transcription"])

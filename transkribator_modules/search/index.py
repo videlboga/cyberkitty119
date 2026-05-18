@@ -162,6 +162,7 @@ def _coerce_links(raw: object) -> dict:
 def _serialize_note(note: Note) -> dict:
     tags = _coerce_tags(getattr(note, "tags", []))
     links = _coerce_links(getattr(note, "links", {}))
+    groups = [g.name for g in getattr(note, "groups", []) if getattr(g, "name", None)]
     return {
         "id": note.id,
         "ts": note.ts.isoformat() if note.ts else None,
@@ -170,6 +171,7 @@ def _serialize_note(note: Note) -> dict:
         "text": note.text or "",
         "tags": tags,
         "links": links,
+        "groups": groups,
     }
 
 

@@ -28,6 +28,7 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
     MessageHandler,
+    PreCheckoutQueryHandler,
     filters,
 )
 from telegram.request import HTTPXRequest
@@ -48,6 +49,12 @@ from bot.handlers import (
     handle_note_search_message,
     handle_note_search_start,
     handle_start,
+    handle_callback_query,
+    handle_pre_checkout_query,
+    handle_successful_payment,
+    promo_codes_command,
+    personal_cabinet_command,
+    stats_command,
     MAIN_MENU_BUTTON,
     NOTE_SEARCH_BUTTON,
     MENU_STATE,
@@ -91,6 +98,9 @@ def register_handlers(app: Application) -> None:
         media_filter = media_filter | getattr(filters, "VIDEO_NOTE")
     media_filter = media_filter & ~filters.COMMAND
 
+    app.add_handler(CommandHandler("promo", promo_codes_command))
+    app.add_handler(CommandHandler("cabinet", personal_cabinet_command))
+    app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(MessageHandler(media_filter, handle_media_file))
 
     conv_handler = ConversationHandler(
@@ -126,6 +136,9 @@ def register_handlers(app: Application) -> None:
     )
 
     app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(handle_callback_query))
+    app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout_query))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
 
 
 def main() -> None:

@@ -55,18 +55,21 @@ def main():
         users_data = result_users.fetchall()
 
         total_users = len(users_data)
-        total_minutes_all = sum(user.total_minutes_transcribed for user in users_data)
+        total_minutes_all = sum(getattr(user, 'total_minutes_transcribed', 0) or 0 for user in users_data)
         avg_minutes_per_user = total_minutes_all / total_users if total_users > 0 else 0
 
         print(f"👥 Всего активных пользователей: {total_users}")
-        print(".2f"        print(".2f"
+        print(f"📈 Среднее минут на пользователя: {avg_minutes_per_user:.2f}")
         print("\n📋 Топ пользователей по использованию минут:")
         print("Telegram ID | Имя | Минут всего | Минут в мес | План")
         print("-" * 80)
 
         for user in users_data[:20]:  # Показываем топ 20
-            name = user.full_name.strip() or user.username or f"ID:{user.telegram_id}"
-            print("10d")
+            name = (getattr(user, 'full_name', '') or '').strip() or getattr(user, 'username', '') or f"ID:{getattr(user, 'telegram_id', 'N/A')}"
+            minutes_total = getattr(user, 'total_minutes_transcribed', 0) or 0
+            minutes_month = getattr(user, 'minutes_used_this_month', 0) or 0
+            plan = getattr(user, 'current_plan', '') or ''
+            print(f"{getattr(user,'telegram_id','')}	| {name} | {minutes_total} | {minutes_month} | {plan}")
 
         # Запрос 2: Статистика по транскрибациям
         print("\n🎵 Статистика по транскрибациям:")
@@ -86,8 +89,13 @@ def main():
         result_transcriptions = session.execute(query_transcriptions)
         trans_data = result_transcriptions.fetchone()
 
-        print(f"📝 Всего транскрибаций: {trans_data.total_transcriptions}")
-        print(".2f"        print(".2f"        print(".2f"        print(".2f"
+        if trans_data:
+            print(f"📝 Всего транскрибаций: {getattr(trans_data, 'total_transcriptions', 0)}")
+            print(f"⏱️ Суммарно минут: {getattr(trans_data, 'total_minutes_transcribed', 0) or 0:.2f}")
+            print(f"📐 Средняя длительность: {getattr(trans_data, 'avg_duration', 0) or 0:.2f}")
+            print(f"🔢 Мин/Макс длительность: {getattr(trans_data, 'min_duration', 0) or 0:.2f} / {getattr(trans_data, 'max_duration', 0) or 0:.2f}")
+        else:
+            print("📝 Нет данных по транскрибациям")
         # Запрос 3: Минуты по пользователям из транскрибаций
         print("\n📈 Минуты по пользователям (из транскрибаций):")
         print("-" * 80)
@@ -115,10 +123,10 @@ def main():
         print("-" * 100)
 
         for user in user_minutes_data[:15]:  # Показываем топ 15
-            name = user.full_name.strip() or user.username or f"ID:{user.telegram_id}"
-            transcr_minutes = user.total_minutes_from_transcriptions or 0
-            user_minutes = user.total_minutes_from_users or 0
-            print("10d")
+            name = (getattr(user, 'full_name', '') or '').strip() or getattr(user, 'username', '') or f"ID:{getattr(user,'telegram_id','N/A')}"
+            transcr_minutes = getattr(user, 'total_minutes_from_transcriptions', 0) or 0
+            user_minutes = getattr(user, 'total_minutes_from_users', 0) or 0
+            print(f"{getattr(user,'telegram_id','')}	| {name} | {getattr(user,'transcription_count',0)} | {transcr_minutes} | {user_minutes}")
 
         # Запрос 4: API ключи
         print("\n🔑 Статистика по API ключам:")
@@ -136,15 +144,18 @@ def main():
         result_api = session.execute(query_api_keys)
         api_data = result_api.fetchone()
 
-        print(f"🔑 Всего активных API ключей: {api_data.total_api_keys}")
-        print(".2f"        print(".2f"
+        if api_data:
+            print(f"🔑 Всего активных API ключей: {getattr(api_data, 'total_api_keys', 0)}")
+            print(f"⏱️ API минут всего: {getattr(api_data, 'total_api_minutes', 0) or 0:.2f}")
+        else:
+            print("🔑 Нет данных по API ключам")
+
         # Финальная сводка
         print("\n📊 СВОДКА:")
         print("=" * 80)
         print(f"👥 Активных пользователей: {total_users}")
-        print(".2f"        print(".2f"        print(f"📝 Всего транскрибаций: {trans_data.total_transcriptions}")
-        print(".2f"        print(".2f"        print(f"🔑 API ключей: {api_data.total_api_keys}")
-        print(".2f"
+        print(f"📝 Всего транскрибаций: {getattr(trans_data, 'total_transcriptions', 0) if trans_data else 0}")
+        print(f"🔑 API ключей: {getattr(api_data, 'total_api_keys', 0) if api_data else 0}")
         session.close()
 
     except Exception as e:

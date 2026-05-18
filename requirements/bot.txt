@@ -14,7 +14,7 @@ fastapi==0.108.0
 uvicorn==0.25.0
 pydantic==2.5.3
 alembic==1.13.1
-psycopg[binary,pool]==3.1.18
+psycopg==3.3.2
 
 # Утилиты
 yt-dlp==2025.9.26
@@ -23,5 +23,5 @@ gdown==5.1.0
 python-docx==1.1.2
 
 # Платежи
-yookassa==3.0.0
 mega.py==1.0.8
+yookassa==3.0.0

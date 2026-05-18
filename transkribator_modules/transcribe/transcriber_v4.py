@@ -25,6 +25,7 @@ LLM_FORMAT_RETRY_ATTEMPTS = int(os.getenv("LLM_FORMAT_RETRY_ATTEMPTS", "3"))
 TRANSCRIBE_CLIENT_ENABLED = os.getenv("TRANSCRIBE_CLIENT_ENABLED", "0").lower() in ("1", "true", "yes")
 TRANSCRIBE_CLIENT_MODE = os.getenv("TRANSCRIBE_DEFAULT_MODE", "auto")
 _SEGMENT_CACHE_SUFFIX = ".segments.json"
+_STUB_TRANSCRIPTION_TEXT = "this is a stub transcription."
 
 
 def _segments_cache_path(audio_path: Path) -> Path:
@@ -58,10 +59,41 @@ def _load_segments_cache(audio_path: Path) -> Optional[tuple[List[Dict[str, Any]
         data = json.loads(cache_path.read_text(encoding="utf-8"))
         segments = data.get("segments") if isinstance(data.get("segments"), list) else []
         text = data.get("text")
+        if _looks_like_stub_transcription(text, segments):
+            logger.info(
+                "Ignoring stub transcription cache",
+                extra={"audio_path": str(audio_path), "cache_path": str(cache_path)},
+            )
+            try:
+                cache_path.unlink(missing_ok=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to remove stub cache",
+                    extra={"cache_path": str(cache_path), "error": str(exc)},
+                )
+            return None
         return segments, text
     except Exception as exc:  # noqa: BLE001
         logger.debug("Не удалось прочитать кэш сегментов", extra={"error": str(exc)})
         return None
+
+
+def _looks_like_stub_transcription(text: Optional[str], segments: List[Dict[str, Any]]) -> bool:
+    """Detect legacy stub results so we can regenerate them via real Whisper."""
+    if isinstance(text, str) and text.strip().lower() == _STUB_TRANSCRIPTION_TEXT:
+        return True
+    normalized_segments: List[str] = []
+    for seg in segments or []:
+        if not isinstance(seg, dict):
+            continue
+        seg_text = seg.get("text")
+        if isinstance(seg_text, str):
+            cleaned = seg_text.strip().lower()
+            if cleaned:
+                normalized_segments.append(cleaned)
+    if normalized_segments and all(entry == _STUB_TRANSCRIPTION_TEXT for entry in normalized_segments):
+        return True
+    return False
 
 async def compress_audio_for_api(audio_path):
     """Сжимает аудиофайл для отправки в API, уменьшая размер."""
@@ -392,12 +424,15 @@ def _dedupe_transcript_text(text: str) -> str:
                 extra={"repeating_phrase": phrase},
             )
         except Exception:
-        # Логирование не должно ломать постобработку, если extra не сериализуется
+            # Логирование не должно ломать постобработку, если extra не сериализуется
             logger.warning("Postprocess: collapsing repeating phrase in formatted transcript")
         # Заменяем длинные последовательности повторов этой фразы на один экземпляр
         safe_phrase = re.escape(phrase)
         pattern = re.compile(rf"(?:\b{safe_phrase}\b[\s,.;:!\-–—]*){3,}", re.IGNORECASE)
         deduped = pattern.sub(phrase, deduped)
+
+    # 2.1) Срезаем любые другие повторяющиеся сегменты (например, «Корректор А.Кулакова»)
+    deduped = _collapse_repeated_phrases(deduped)
 
     # 3) Удаляем повторяющиеся длинные абзацы (часто появляются при склейке чанков)
     paragraphs = deduped.split("\n\n")
@@ -440,6 +475,64 @@ def _dedupe_transcript_text(text: str) -> str:
         filtered_sentences.append(s)
 
     return " ".join(filtered_sentences)
+
+
+def _collapse_repeated_phrases(text: str, max_repeat: int = 3, max_phrase_len: int = 12) -> str:
+    """Удаляет повторяющиеся подряд фразы длиной до max_phrase_len слов, оставляя максимум max_repeat."""
+
+    if not text:
+        return text
+
+    def _collapse_line(line: str) -> tuple[str, bool]:
+        tokens = line.split()
+        if len(tokens) <= max_repeat:
+            return line, False
+
+        result: list[str] = []
+        n = len(tokens)
+        i = 0
+        changed = False
+
+        while i < n:
+            max_len = min(max_phrase_len, n - i)
+            collapsed = False
+            for length in range(max_len, 0, -1):
+                phrase = tokens[i : i + length]
+                repeat = 1
+                j = i + length
+                while j + length <= n and tokens[j : j + length] == phrase:
+                    repeat += 1
+                    j += length
+                if repeat > 1:
+                    keep = min(repeat, max_repeat)
+                    for _ in range(keep):
+                        result.extend(phrase)
+                    if repeat > keep:
+                        changed = True
+                    i += length * repeat
+                    collapsed = True
+                    break
+            if collapsed:
+                continue
+            result.append(tokens[i])
+            i += 1
+
+        if not changed:
+            return line, False
+        return " ".join(result), True
+
+    any_changes = False
+    processed_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            processed_lines.append(line)
+            continue
+        collapsed_line, changed = _collapse_line(line)
+        any_changes = any_changes or changed
+        processed_lines.append(collapsed_line)
+
+    return "\n".join(processed_lines) if any_changes else text
 
 
 async def _postprocess_full_transcript(text: str) -> str:
@@ -1570,6 +1663,26 @@ async def transcribe_segment_with_deepinfra(segment_path, max_retries=5):
     if not DEEPINFRA_API_KEY:
         logger.error("DEEPINFRA_API_KEY не установлен")
         return None
+
+    # First, prefer the synchronous DeepInfraAdapter (requests) executed in a thread.
+    # This has proven to be more stable in practice vs aiohttp for multipart uploads.
+    try:
+        from transcribe_client.deepinfra import DeepInfraAdapter
+        adapter = DeepInfraAdapter()
+        try:
+            # Run the blocking requests call in a thread to avoid blocking the event loop.
+            result = await asyncio.to_thread(adapter.transcribe, str(segment_path))
+            text = (result.get("text") or "").strip() if isinstance(result, dict) else None
+            if text:
+                logger.info(f"✅ DeepInfraAdapter (sync) successfully transcribed {Path(segment_path).name}")
+                return text
+            else:
+                logger.info("DeepInfraAdapter returned no text, falling back to aiohttp flow")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("DeepInfraAdapter (sync) failed, falling back to aiohttp flow", extra={"error": str(exc)})
+    except Exception:
+        # If the adapter package isn't available, continue with aiohttp implementation below.
+        pass
 
     url = "https://api.deepinfra.com/v1/inference/openai/whisper-large-v3-turbo"
     headers = {"Authorization": f"Bearer {DEEPINFRA_API_KEY}"}

@@ -38,8 +38,8 @@ from transkribator_modules.db.database import (
     ReferralService,
 )
 from transkribator_modules.db.models import Note, NoteStatus, NoteVersion, Reminder, NoteGroup, User, PlanType, Event
-from transkribator_modules.beta.agent_runtime import AgentSession, AgentUser, AgentResponse
-from transkribator_modules.beta.note_utils import safe_parse_links, auto_finalize_note
+from core_api.domains.agent.core.agent_runtime import AgentSession, AgentUser, AgentResponse
+from transkribator_modules.note_utils import safe_parse_links, auto_finalize_note
 from transkribator_modules.audio.extractor import extract_audio_from_video
 from transkribator_modules.transcribe.transcriber_v4 import (
     compress_audio_for_api,

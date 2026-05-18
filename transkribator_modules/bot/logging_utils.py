@@ -49,7 +49,7 @@ def log_step(update: Optional[Update], kind: str, extra: Optional[dict[str, Any]
     except Exception:
         pass
     try:
-        log_telegram_event(update, kind)
+        log_telegram_event(update.effective_user, kind)
     except Exception:
         pass
 

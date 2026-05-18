@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: ankane/pgvector:latest
+    container_name: bot-v2-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-transkribator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-transkribator}
+      POSTGRES_DB: ${POSTGRES_DB:-transkribator}
+    volumes:
+      - ./postgres_data_transkribator:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-transkribator} -d ${POSTGRES_DB:-transkribator}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bot-v2-telegram-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: bot-v2-telegram-api
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - TELEGRAM_LOCAL=1
+    volumes:
+      - telegram-api-data:/var/lib/telegram-bot-api
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+
+  core-api:
+    image: cyberkitty-api:remote
+    container_name: core-api
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  bot:
+    image: cyberkitty-bot:remote
+    container_name: bot
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - telegram-api-data:/var/lib/telegram-bot-api:ro
+    depends_on:
+      - bot-v2-telegram-api
+      - core-api
+    restart: unless-stopped
+
+  worker:
+    image: cyberkitty-bot:remote
+    container_name: bot-v2-worker
+    command: ["python", "job_worker.py"]
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - telegram-api-data:/var/lib/telegram-bot-api:ro
+    depends_on:
+      - postgres
+      - bot-v2-telegram-api
+    restart: unless-stopped
+
+volumes:
+  telegram-api-data:

@@ -1,0 +1,108 @@
+# Docker Compose configuration with GPU Worker
+# This is a reference implementation showing how to add gpu-worker to your setup
+
+version: '3.8'
+
+services:
+  # ... existing services ...
+  
+  gpu-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu-worker
+    container_name: cyberkitty19-gpu-worker
+    depends_on:
+      - postgres
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - LOG_LEVEL=INFO
+      - DATABASE_URL=${DATABASE_URL}
+      # GPU Configuration
+      - CUDA_VISIBLE_DEVICES=0
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      # Worker Configuration
+      - JOB_POLL_INTERVAL=2
+      - JOB_BACKOFF_MIN=1.0
+      - JOB_BACKOFF_MAX=30.0
+      - JOB_MAX_JOBS=0  # 0 = unlimited
+    volumes:
+      # Shared storage for media files
+      - ./media:/app/media
+      - ./data:/app/data
+      - ./videos:/app/videos
+      - ./audio:/app/audio
+      - ./transcriptions:/app/transcriptions
+      # Logs
+      - ./logs:/app/logs
+    # GPU allocation
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1  # One GPU per worker
+              capabilities: [gpu]
+    networks:
+      - cyberkitty19-transkribator-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import torch; assert torch.cuda.is_available()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Optional: Custom entrypoint for different Whisper model
+    # entrypoint: ["python", "gpu_worker.py"]
+    # command:
+    #   - "--worker-id"
+    #   - "gpu-worker-1"
+    #   - "--poll-interval"
+    #   - "2"
+    #   - "--model"
+    #   - "small"  # tiny, base, small, medium, large
+
+  # ============================================================================
+  # If you have multiple GPUs, add more gpu-workers
+  # ============================================================================
+  
+  # gpu-worker-2:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.gpu-worker
+  #   container_name: cyberkitty19-gpu-worker-2
+  #   depends_on:
+  #     - postgres
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - CUDA_VISIBLE_DEVICES=1  # Second GPU
+  #     - DATABASE_URL=${DATABASE_URL}
+  #     - JOB_POLL_INTERVAL=2
+  #   volumes:
+  #     - ./media:/app/media
+  #     - ./data:/app/data
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   networks:
+  #     - cyberkitty19-transkribator-network
+  #   restart: unless-stopped
+  #   command:
+  #     - "--worker-id"
+  #     - "gpu-worker-2"
+
+networks:
+  cyberkitty19-transkribator-network:
+    driver: bridge
+
+volumes:
+  transkribator_postgres-data:
+    external: true

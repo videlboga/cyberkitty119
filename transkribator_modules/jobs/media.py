@@ -12,8 +12,10 @@ from .pipeline import MediaPipelineContext, run_media_pipeline
 from .service_factory import build_services
 from .progress import JobNotifier
 from .queue import enqueue_job
+from .stages import default_media_gpu_stages
 
 MEDIA_JOB_TYPE = "media_processing"
+MEDIA_GPU_JOB_TYPE = "media_gpu_transcription"
 
 
 @dataclass
@@ -109,4 +111,77 @@ def process_media_job(job: ProcessingJob) -> None:
     )
 
 
-__all__ = ["MediaJobPayload", "MEDIA_JOB_TYPE", "enqueue_media_job", "process_media_job"]
+def enqueue_media_gpu_job(
+    *,
+    user_id: int,
+    payload: MediaJobPayload,
+) -> ProcessingJob:
+    """Schedule GPU-accelerated media processing for the given user."""
+    job = enqueue_job(
+        user_id=user_id,
+        job_type=MEDIA_GPU_JOB_TYPE,
+        payload=payload.to_dict(),
+        note_id=payload.note_id,
+    )
+    logger.debug(
+        "GPU media job enqueued",
+        extra={"job_id": job.id, "user_id": user_id, "note_id": payload.note_id},
+    )
+    return job
+
+
+def process_media_gpu_job(job: ProcessingJob) -> None:
+    """Execute the GPU-accelerated media processing pipeline for the given job.
+    
+    This handler is used by gpu_worker.py and uses local Whisper model on GPU.
+    """
+    try:
+        payload = MediaJobPayload.from_mapping(job.payload or {})
+    except ValueError as exc:
+        logger.error(
+            "Bad GPU media job payload",
+            extra={"job_id": job.id, "payload": job.payload, "error": str(exc)},
+        )
+        raise
+
+    notifier = JobNotifier(job.id)
+    services_config = load_media_service_overrides()
+    services = build_services(services_config)
+    context = MediaPipelineContext(
+        job=job,
+        payload=payload,
+        notifier=notifier,
+        services=services,
+    )
+
+    logger.info(
+        "GPU media job handler invoked",
+        extra={
+            "job_id": job.id,
+            "user_id": job.user_id,
+            "file_id": payload.file_id,
+            "note_id": payload.note_id,
+        },
+    )
+    # Use GPU-optimized pipeline stages
+    result = run_media_pipeline(context, stages=default_media_gpu_stages())
+    notifier.notify("GPU транскрибация завершена")
+    logger.info(
+        "GPU media job completed",
+        extra={
+            "job_id": job.id,
+            "note_id": result.note_id,
+            "metadata": result.metadata,
+        },
+    )
+
+
+__all__ = [
+    "MediaJobPayload",
+    "MEDIA_JOB_TYPE",
+    "MEDIA_GPU_JOB_TYPE",
+    "enqueue_media_job",
+    "process_media_job",
+    "enqueue_media_gpu_job",
+    "process_media_gpu_job",
+]

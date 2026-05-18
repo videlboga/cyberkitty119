@@ -14,6 +14,7 @@ import httpx
 
 from transkribator_modules.config import (
     LOCAL_BOT_API_URL,
+    LOCAL_BOT_FILE_API_URL,
     USE_LOCAL_BOT_API,
     logger,
 )
@@ -120,7 +121,7 @@ def _build_api_url(bot_token: str, method: str) -> str:
 
 def _build_file_url(bot_token: str, file_path: str) -> str:
     if USE_LOCAL_BOT_API:
-        base = LOCAL_BOT_API_URL.rstrip("/")
+        base = LOCAL_BOT_FILE_API_URL.rstrip("/")
         return f"{base}/file/bot{bot_token}/{file_path}"
     return f"{API_BASE}/file/bot{bot_token}/{file_path}"
 

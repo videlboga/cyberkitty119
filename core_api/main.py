@@ -4,6 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Импортируем роутеры нового Ядра
 from core_api.api.v1 import system
+from core_api.api.v1 import agent
+from core_api.api.v1 import memory
+from core_api.api.v1 import ingest
+from core_api.api.v1 import transcribe
+from core_api.api.v1 import internal_bot
+from core_api.api.v1 import payments
 
 app = FastAPI(
     title="Second Brain Core API",
@@ -23,6 +29,12 @@ app.add_middleware(
 
 # Монтируем модули API
 app.include_router(system.router, prefix="/api/v1/system")
+app.include_router(agent.router, prefix="/api/v1/agent")
+app.include_router(memory.router, prefix="/api/v1/memory")
+app.include_router(ingest.router, prefix="/api/v1/ingest")
+app.include_router(transcribe.router, prefix="/api/v1/ingest")
+app.include_router(internal_bot.router, prefix="/api/v1/internal_bot")
+app.include_router(payments.router, prefix="/api/v1")
 
 @app.get("/")
 async def root_overview():

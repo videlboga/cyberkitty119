@@ -67,9 +67,36 @@ def init_database():
     """Инициализирует базу данных и создает необходимые таблицы."""
     backend = engine.url.get_backend_name()
 
-    # Для PostgreSQL (и других не-sqlite бэкендов) полагаемся на миграции Alembic.
+    # Для PostgreSQL (и других не-sqlite бэкендов) применяем миграции Alembic.
     if backend != "sqlite":
-        logger.info("Skipping legacy SQLite bootstrap for backend %s", backend)
+        logger.info("Applying Alembic migrations for backend %s", backend)
+        try:
+            from alembic.config import Config
+            from alembic import command
+            import sys
+            from pathlib import Path
+            
+            # Находим директорию alembic относительно этого файла
+            project_root = Path(__file__).resolve().parents[2]
+            alembic_ini = project_root / "alembic.ini"
+            
+            if alembic_ini.exists():
+                cfg = Config(str(alembic_ini))
+                # Убеждаемся, что используем переменную окружения DATABASE_URL
+                db_url = os.getenv("DATABASE_URL")
+                if db_url:
+                    cfg.set_main_option("sqlalchemy.url", db_url)
+                
+                logger.info("Running Alembic migrations")
+                command.upgrade(cfg, "heads")
+                logger.info("Alembic migrations completed successfully")
+            else:
+                logger.warning("alembic.ini not found at %s, skipping migrations", alembic_ini)
+        except ImportError:
+            logger.warning("Alembic not available, skipping migrations")
+        except Exception as exc:
+            logger.error("Failed to apply Alembic migrations: %s", exc, exc_info=True)
+            # Don't fail - maybe migrations are already applied or user will apply them manually
         return
 
     try:
@@ -465,10 +492,70 @@ class UserService:
             return
 
         try:
-            self.db.execute(update(User).where(User.id == user_id).values(**values))
+            # Log the exact targeted update attempt for diagnostics
+            try:
+                logger.debug(
+                    "UserService:_commit_user_safely executing targeted UPDATE",
+                    extra={"user_id": user_id, "values": values},
+                )
+            except Exception:
+                # Ensure logging problems do not prevent DB action
+                pass
+
+            # Build the statement object so we can optionally compile it with
+            # literal binds for easier post-mortem debugging in logs.
+            stmt = update(User).where(User.id == user_id).values(**values)
+            try:
+                # compile with literal binds when possible (may fail on some dialects)
+                compiled_sql = stmt.compile(bind=engine, compile_kwargs={"literal_binds": True})
+                logger.error(
+                    "UserService:_commit_user_safely prepared SQL",
+                    extra={"sql": str(compiled_sql), "user_id": user_id},
+                )
+            except Exception:
+                # Fallback to logging the statement repr and params
+                try:
+                    logger.debug(
+                        "UserService:_commit_user_safely stmt repr",
+                        extra={"stmt": str(stmt), "params": values},
+                    )
+                except Exception:
+                    pass
+
+            self.db.execute(stmt)
             self.db.commit()
         except Exception:
             self.db.rollback()
+            # Diagnostic: inspect rows that match the PK and the telegram_id to help
+            # understand "expected to update 1 row(s); 2 were matched" anomalies.
+            try:
+                rows_by_id = self.db.execute(
+                    text("SELECT id, telegram_id, username FROM users WHERE id = :id"),
+                    {"id": user_id},
+                ).fetchall()
+                logger.error(
+                    "UserService:_commit_user_safely detected unexpected row count for id",
+                    extra={"user_id": user_id, "rows_by_id": [dict(r) for r in rows_by_id]},
+                )
+            except Exception:
+                # Swallow diagnostics failures; we'll re-raise original error below
+                logger.exception("Failed to run diagnostic SELECT by id in _commit_user_safely")
+
+            try:
+                # Also check for duplicates by telegram_id if available
+                telegram_id = getattr(user, "telegram_id", None)
+                if telegram_id is not None:
+                    rows_by_tg = self.db.execute(
+                        text("SELECT id, telegram_id, username FROM users WHERE telegram_id = :tg"),
+                        {"tg": telegram_id},
+                    ).fetchall()
+                    logger.error(
+                        "UserService:_commit_user_safely diagnostic rows by telegram_id",
+                        extra={"telegram_id": telegram_id, "rows_by_telegram_id": [dict(r) for r in rows_by_tg]},
+                    )
+            except Exception:
+                logger.exception("Failed to run diagnostic SELECT by telegram_id in _commit_user_safely")
+
             raise
 
     def get_or_create_user(self, telegram_id: int, username: str = None,
@@ -551,14 +638,6 @@ class UserService:
             self.db.commit()
             plan = self.get_user_plan(user)
 
-        # Для бесплатного тарифа проверяем количество генераций
-        if user.current_plan == "free":
-            if user.generations_used_this_month >= 3:
-                remaining = max(0, 3 - user.generations_used_this_month)
-                return False, f"Превышен лимит бесплатного тарифа. Осталось генераций: {remaining}"
-            return True, "Лимит не превышен"
-
-        # Для платных тарифов проверяем минуты
         # Безлимитный план
         if plan.minutes_per_month is None:
             return True, "Безлимитный план"
@@ -578,17 +657,12 @@ class UserService:
         """Добавить использование (минуты или генерацию)"""
         self._reset_monthly_usage_if_needed(user)
 
-        # Для бесплатного тарифа считаем и генерации, и минуты
-        if user.current_plan == "free":
-            user.generations_used_this_month += 1
-            user.total_generations += 1
-            # Также считаем минуты для статистики
-            user.minutes_used_this_month += minutes_used
-            user.total_minutes_transcribed += minutes_used
-        else:
-            # Для платных тарифов считаем минуты
-            user.minutes_used_this_month += minutes_used
-            user.total_minutes_transcribed += minutes_used
+        # Считаем генерации и минуты для всех тарифов
+        user.generations_used_this_month += 1
+        user.total_generations += 1
+        
+        user.minutes_used_this_month += minutes_used
+        user.total_minutes_transcribed += minutes_used
 
         user.updated_at = datetime.utcnow()
         self._commit_user_safely(user)

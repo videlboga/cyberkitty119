@@ -16,7 +16,7 @@ from transkribator_modules.google_api import (
     upload_markdown,
     upsert_index,
 )
-from transkribator_modules.beta.content_processor import _front_matter, _ensure_signature, FOLDER_MAP
+from core_api.domains.agent.core.content_processor import _front_matter, _ensure_signature, FOLDER_MAP
 from transkribator_modules.transcribe.transcriber_v4 import _basic_local_format
 
 EVENT_KIND = 'drive_sync_pending'

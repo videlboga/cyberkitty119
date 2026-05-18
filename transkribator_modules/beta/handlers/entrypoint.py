@@ -26,10 +26,103 @@ from transkribator_modules.db.database import SessionLocal, UserService, NoteSer
 from transkribator_modules.db.models import Note, NoteStatus
 from transkribator_modules.google_api import GoogleCredentialService, ensure_tree, upload_docx
 from docx import Document
+import httpx
+from pydantic import BaseModel
 
-from ..agent_runtime import AGENT_MANAGER
-from ..note_utils import auto_finalize_note, build_note_artifact_content
-from ..tools import (
+class ToolResultResponse(BaseModel):
+    tool_name: str
+    argument: Optional[str] = None
+    result: str
+    success: bool
+    message: Optional[str] = None
+
+class AgentMessageResponse(BaseModel):
+    text: str
+    tool_results: list[ToolResultResponse] = []
+    suggestions: list[str] = []
+
+CORE_API_URL = os.getenv("CORE_API_URL", "http://core-api:8000")
+CORE_API_SERVICE_TOKEN = os.getenv("CORE_API_SERVICE_TOKEN", "").strip()
+
+def _core_headers() -> dict:
+    headers = {}
+    if CORE_API_SERVICE_TOKEN:
+        headers["X-Service-Token"] = CORE_API_SERVICE_TOKEN
+    return headers
+
+class AgentSessionClient:
+    def __init__(self, user):
+        self.user = user
+    
+    def set_active_note(self, note, local_artifact: bool = False):
+        import asyncio
+        async def do_request():
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{CORE_API_URL}/api/v1/agent/active_note",
+                    json={
+                        "telegram_id": self.user.id,
+                        "note_id": note.id,
+                        "local_artifact": local_artifact,
+                    },
+                    headers=_core_headers(),
+                )
+        # Note: In original code this was synchronous. Launch sync using asyncio in background if needed or just block.
+        # However, set_active_note doesn't return anything. We can do fire-and-forget or keep a synchronous HTTP request.
+        try:
+            with httpx.Client() as client:
+                client.post(
+                    f"{CORE_API_URL}/api/v1/agent/active_note",
+                    json={
+                        "telegram_id": self.user.id,
+                        "note_id": note.id,
+                        "local_artifact": local_artifact,
+                    },
+                    timeout=5.0,
+                    headers=_core_headers(),
+                )
+        except Exception as e:
+            logger.error(f"Failed to set active note via API: {e}")
+
+    async def handle_ingest(self, payload, progress=None):
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{CORE_API_URL}/api/v1/agent/ingest",
+                json={
+                    "telegram_id": self.user.id,
+                    "payload": payload,
+                },
+                timeout=120.0,
+                headers=_core_headers(),
+            )
+            resp.raise_for_status()
+            return AgentMessageResponse.parse_obj(resp.json())
+
+    async def handle_user_message(self, text, progress=None):
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{CORE_API_URL}/api/v1/agent/chat",
+                json={
+                    "telegram_id": self.user.id,
+                    "text": text,
+                    "username": getattr(self.user, "username", None),
+                    "first_name": getattr(self.user, "first_name", None),
+                    "last_name": getattr(self.user, "last_name", None),
+                },
+                timeout=120.0,
+                headers=_core_headers(),
+            )
+            resp.raise_for_status()
+            return AgentMessageResponse.parse_obj(resp.json())
+
+class AgentManagerProxy:
+    def get_session(self, user):
+        return AgentSessionClient(user)
+
+AGENT_MANAGER = AgentManagerProxy()
+
+from core_api.domains.agent.core.note_utils import auto_finalize_note, build_note_artifact_content
+from core_api.domains.agent.core.tools import (
     _ensure_google_credentials,
     _looks_like_question,
     _build_miniapp_note_link as _tools_build_note_link,
@@ -217,7 +310,7 @@ async def process_text(
             
             # Для медиа (audio/video) - показываем заметку напрямую без агента
             if source in {"audio", "video", "voice"}:
-                from transkribator_modules.beta.tools import format_note_saved_message
+                from core_api.domains.agent.core.tools import format_note_saved_message
                 final_text = format_note_saved_message(note=snapshot.note)
                 response = None
             else:

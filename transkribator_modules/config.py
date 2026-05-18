@@ -56,6 +56,7 @@ if not REQUIRE_BOT_TOKEN and not BOT_TOKEN and not _running_tests:
 # ===== TELEGRAM BOT API SERVER =====
 USE_LOCAL_BOT_API = os.getenv('USE_LOCAL_BOT_API', 'true').lower() == 'true'
 LOCAL_BOT_API_URL = os.getenv('LOCAL_BOT_API_URL', 'http://localhost:8083')
+LOCAL_BOT_FILE_API_URL = os.getenv('LOCAL_BOT_FILE_API_URL', 'http://localhost:8083')
 
 # API_ID и API_HASH нужны только для Bot API Server (в docker-compose.yml)
 TELEGRAM_API_ID = int(os.getenv('TELEGRAM_API_ID', '0'))

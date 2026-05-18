@@ -123,7 +123,7 @@ async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.info("Вызвана функция show_payment_plans")
         log_step(update, "payments:show_plans")
 
-        session = SessionLocal()
+        pass #session = SessionLocal()
         try:
             plans = (
                 session.query(Plan)
@@ -223,7 +223,7 @@ async def initiate_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, p
         except AttributeError:
             enum_value = None
 
-        session = SessionLocal()
+        pass #session = SessionLocal()
         try:
             plan_obj = session.query(Plan).filter(Plan.name == (enum_value.value if enum_value else plan_id)).first()
         finally:
@@ -282,7 +282,7 @@ async def initiate_yukassa_payment(update: Update, context: ContextTypes.DEFAULT
         except AttributeError:
             plan_type = None  # DB-only plan (e.g., unlimited_year)
 
-        session = SessionLocal()
+        pass #session = SessionLocal()
         try:
             plan_obj = session.query(Plan).filter(Plan.name == (plan_type.value if plan_type else plan_id)).first()
         finally:
@@ -403,7 +403,7 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
         })
 
         # Обновляем подписку пользователя в базе данных
-        db = SessionLocal()
+        pass #db = SessionLocal()
         try:
             user_service = UserService(db)
             transaction_service = TransactionService(db)

@@ -31,24 +31,26 @@ def build_services(
 ) -> MediaPipelineServices:
     """Build service collection for media pipeline."""
 
-    # Автоматически подменяем download-функцию на vk_ytdlp_download_mp3, если payload содержит url (vk/vkvideo/youtube)
-    from .services import vk_ytdlp_download_mp3
-    if config and config.get("download") == "auto_vk_ytdlp":
-        replacements = {"download": vk_ytdlp_download_mp3}
-    else:
-        replacements = {}
+    base_replacements: dict[str, Callable[..., Any]] = {}
+    normalized_config = dict(config or {})
 
-    if not config:
+    # Автоматически подменяем download-функцию на vk_ytdlp_download_mp3, если указана авто-настройка.
+    from .services import vk_ytdlp_download_mp3
+    if normalized_config.get("download") == "auto_vk_ytdlp":
+        base_replacements["download"] = vk_ytdlp_download_mp3
+        normalized_config.pop("download", None)
+
+    if not normalized_config:
         return default_media_services()
 
-    prepare_fn = config.get("prepare")
-    download_fn = config.get("download")
-    transcribe_fn = config.get("transcribe")
-    finalize_fn = config.get("finalize")
-    deliver_fn = config.get("deliver")
-    cleanup_fn = config.get("cleanup")
+    prepare_fn = normalized_config.get("prepare")
+    download_fn = normalized_config.get("download")
+    transcribe_fn = normalized_config.get("transcribe")
+    finalize_fn = normalized_config.get("finalize")
+    deliver_fn = normalized_config.get("deliver")
+    cleanup_fn = normalized_config.get("cleanup")
 
-    replacements: dict[str, Callable[..., Any]] = {}
+    replacements: dict[str, Callable[..., Any]] = dict(base_replacements)
 
     for key, candidate in (
         ("prepare", prepare_fn),

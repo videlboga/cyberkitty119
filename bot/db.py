@@ -1,130 +1,107 @@
-"""
-Работа с базой данных для нового бота.
-
-Использует существующую инфраструктуру transkribator_modules:
-- ProcessingJob — задача в очереди
-- User — пользователь (telegram_id → id)
-- Note — транскрипция хранится в notes.text
-"""
-
 from __future__ import annotations
-
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
+import httpx
+import logging
 
-# Убедиться, что корень проекта в sys.path
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from bot.config import INTERNAL_BOT_API_BASE, CORE_API_TIMEOUT, core_api_headers
 
-from transkribator_modules.db.database import SessionLocal
-from transkribator_modules.db.models import ProcessingJob, ProcessingJobStatus, User, Note
+logger = logging.getLogger(__name__)
 
+def _sync_post(endpoint: str, json: dict) -> dict:
+    try:
+        with httpx.Client(timeout=CORE_API_TIMEOUT) as client:
+            resp = client.post(
+                f"{INTERNAL_BOT_API_BASE}{endpoint}",
+                json=json,
+                headers=core_api_headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error(f"Error on post {endpoint}: {e}")
+        return {}
 
-# ── Пользователи ─────────────────────────────────────────────────────────────
+def _sync_get(endpoint: str, params: dict = None) -> dict:
+    try:
+        with httpx.Client(timeout=CORE_API_TIMEOUT) as client:
+            resp = client.get(
+                f"{INTERNAL_BOT_API_BASE}{endpoint}",
+                params=params,
+                headers=core_api_headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error(f"Error on get {endpoint}: {e}")
+        return {}
+
+async def _async_post(endpoint: str, json: dict) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=CORE_API_TIMEOUT) as client:
+            resp = await client.post(
+                f"{INTERNAL_BOT_API_BASE}{endpoint}",
+                json=json,
+                headers=core_api_headers(),
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error(f"Error on async post {endpoint}: {e}")
+        return {}
 
 async def ensure_user(telegram_id: int) -> int:
     """Найти или создать пользователя по telegram_id. Вернуть internal id."""
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.telegram_id == telegram_id).first()
-        if user is None:
-            user = User(
-                telegram_id=telegram_id,
-                username=str(telegram_id),
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-        return user.id
-    finally:
-        db.close()
-
+    data = await _async_post("/ensure_user", {"telegram_id": telegram_id})
+    return data.get("user_id")
 
 def get_user_id_by_telegram_id(telegram_id: int) -> Optional[int]:
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.telegram_id == telegram_id).first()
-        return user.id if user else None
-    finally:
-        db.close()
-
-
-# ── Задачи ────────────────────────────────────────────────────────────────────
+    data = _sync_get(f"/user_id_by_tg/{telegram_id}")
+    return data.get("user_id")
 
 def get_job_row(job_id: int) -> Optional[Dict[str, Any]]:
-    """Вернуть dict с полями status / progress / error для job_id."""
-    db = SessionLocal()
-    try:
-        job = db.get(ProcessingJob, job_id)
-        if job is None:
-            return None
-        payload = job.payload or {}
-        status_blob = payload.get("_status") or {}
-        status_blob = job.payload.get("_status") if job.payload else {}
-        stage_window = None
-        if isinstance(status_blob, dict):
-            window_val = status_blob.get("stage_window")
-            if isinstance(window_val, (list, tuple)) and len(window_val) == 2:
-                try:
-                    stage_window = (int(window_val[0]), int(window_val[1]))
-                except (TypeError, ValueError):
-                    stage_window = None
-        return {
-            "id": job.id,
-            "status": job.status,
-            "progress": job.progress,
-            "error": job.error,
-            "payload": payload,
-            "stage": status_blob.get("stage") if isinstance(status_blob, dict) else None,
-            "stage_label": status_blob.get("stage_label") if isinstance(status_blob, dict) else None,
-            "stage_progress": status_blob.get("stage_progress") if isinstance(status_blob, dict) else None,
-            "stage_window": stage_window,
-        }
-    finally:
-        db.close()
-
-
-# ── Транскрипции ─────────────────────────────────────────────────────────────
+    data = _sync_get(f"/jobs/{job_id}")
+    return data.get("job")
 
 def get_transcript_for_job(job_id: int) -> Optional[str]:
-    """
-    Найти транскрипцию завершённого job.
+    data = _sync_get(f"/jobs/{job_id}/transcript")
+    return data.get("transcript")
 
-    Сначала смотрим в artifacts, сохранённых в job.payload["_result"],
-    затем в note, связанной с job.
-    """
-    db = SessionLocal()
-    try:
-        job = db.get(ProcessingJob, job_id)
-        if job is None:
-            return None
+def get_note_for_job(job_id: int) -> Optional[Dict[str, Any]]:
+    data = _sync_get(f"/jobs/{job_id}/note")
+    return data.get("note")
 
-        # 1. Быстрый путь: воркер кладёт final_transcript в payload._result
-        payload = job.payload or {}
-        transcript = payload.get("_result", {}).get("final_transcript")
-        if transcript:
-            return transcript
+def ensure_note_qa_session(
+    *,
+    user_id: int,
+    note: Dict[str, Any],
+    context_snapshot: str,
+) -> int:
+    payload = {
+        "user_id": user_id,
+        "note": note,
+        "context_snapshot": context_snapshot
+    }
+    data = _sync_post("/qa/ensure", payload)
+    return data.get("session_id")
 
-        # 2. Через note_id
-        note_id = payload.get("note_id") or getattr(job, "note_id", None)
-        if note_id:
-            note = db.get(Note, note_id)
-            if note and note.text:
-                return note.text
+def get_note_qa_session_for_user(user_id: int, note_id: int) -> Optional[int]:
+    data = _sync_get("/qa/session_id", params={"user_id": user_id, "note_id": note_id})
+    return data.get("session_id")
 
-        # 3. Ищем последнюю note по user_id отсортированную по времени
-        # (воркер создаёт Note в default_finalize_note)
-        note = (
-            db.query(Note)
-            .filter(Note.user_id == job.user_id)
-            .order_by(Note.created_at.desc())
-            .first()
-        )
-        if note and note.text:
-            return note.text
+def record_note_qa_message(session_id: int, role: str, content: str) -> None:
+    payload = {
+        "session_id": session_id,
+        "role": role,
+        "content": content
+    }
+    _sync_post("/qa/message", payload)
 
-        return None
-    finally:
-        db.close()
+def fetch_note_qa_session_payload(
+    session_id: int,
+    *,
+    history_limit: int = 30,
+) -> Optional[Dict[str, Any]]:
+    data = _sync_get(f"/qa/payload/{session_id}", params={"history_limit": history_limit})
+    return data.get("payload")

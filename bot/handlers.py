@@ -29,6 +29,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
+    LabeledPrice,
 )
 from telegram.constants import ChatAction
 from telegram.ext import ContextTypes, ConversationHandler
@@ -39,6 +40,17 @@ from bot.config import (
     PROGRESS_POLL_INTERVAL,
     PROGRESS_TIMEOUT,
     logger,
+)
+from bot.core_api_client import (
+    CoreAPIError,
+    activate_promo_code,
+    enqueue_media_job,
+    fetch_profile,
+    fetch_referral_info,
+    search_memory as core_search_memory,
+    get_payment_plans,
+    create_payment_invoice,
+    confirm_payment_success,
 )
 from bot.db import (
     ensure_user,
@@ -51,24 +63,11 @@ from bot.db import (
     get_user_id_by_telegram_id,
     record_note_qa_message,
 )
-from bot.jobs import create_media_job
-from transkribator_modules.beta.llm import (
+from core_api.domains.agent.core.llm import (
     AgentLLMError,
     call_agent_llm_with_retry,
 )
-from transkribator_modules.bot.payments import show_payment_plans
-from transkribator_modules.bot.callbacks import (
-    show_personal_cabinet,
-    CABINET_SUPPRESS_INLINE_FLAG,
-    CABINET_REPLY_MARKUP_KEY,
-)
 from transkribator_modules.config import TELEGRAM_REFERRAL_URL
-from transkribator_modules.db.database import ReferralService, SessionLocal, UserService
-
-try:
-    from transkribator_modules.search.service import NoteSearchError, run_note_search
-except ImportError:
-    pass
 
 from transkribator_modules.utils.large_file_downloader import download_large_file
 
@@ -112,10 +111,16 @@ MAX_TRANSCRIPT_CHARS = 12000
 MAIN_MENU_BUTTON = "🐱 Главное меню"
 _ACTIVE_QA_SESSIONS: dict[int, dict[str, int]] = {}
 _ACTIVE_SEARCH_USERS: set[int] = set()
+CABINET_SUPPRESS_INLINE_FLAG = "cabinet_suppress_inline"
+CABINET_REPLY_MARKUP_KEY = "cabinet_reply_markup"
 MENU_RESPONSES = {
     "⚙️ Настройки": "Настройки в разработке. Если нужно что-то сменить (например формат выхлопа) — напиши и помогу вручную.",
     "❓ Помощь": "Просто отправь файл — и я расскажу, что происходит. Если что-то пойдет не так, можно написать сюда же и я помогу разобраться.",
 }
+
+
+async def _search_memory_via_core(telegram_id: int, query: str) -> str:
+    return await core_search_memory(telegram_id, query)
 
 
 # ── Утилиты ──────────────────────────────────────────────────────────────────
@@ -143,6 +148,91 @@ def _main_menu_keyboard() -> ReplyKeyboardMarkup:
         [KeyboardButton("⚙️ Настройки"), KeyboardButton("❓ Помощь")],
     ]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+async def show_payment_plans(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    target = update.effective_message
+    if not target:
+        return
+        
+    try:
+        data = await get_payment_plans()
+        descriptions = data.get("descriptions", {})
+        stars_prices = data.get("stars", {})
+        
+        text = "💳 <b>Тарифы CyberKitty</b>\n\n"
+        keyboard = []
+        for plan_id, plan_info in descriptions.items():
+            text += f"⭐️ <b>{plan_info.get('title', plan_id.title())}</b>\n"
+            text += f"<i>{plan_info.get('description', '')}</i>\n"
+            for feature in plan_info.get("features", []):
+                text += f"• {feature}\n"
+            text += "\n"
+            
+            stars_price = stars_prices.get(plan_id)
+            if stars_price and stars_price > 0:
+                keyboard.append([
+                    InlineKeyboardButton(f"Купить {plan_info.get('title')} за {stars_price} ⭐️", callback_data=f"buy_plan_{plan_id}_stars")
+                ])
+                
+        text += "🤖 Оплата в Telegram Stars доступна прямо здесь."
+        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else _main_menu_keyboard()
+    except Exception as e:
+        logger.error(f"Failed to fetch plans: {e}")
+        text = "💳 <b>Тарифы CyberKitty</b>\n\nНе удалось загрузить списки тарифов. Пожалуйста, попробуйте позже."
+        reply_markup = _main_menu_keyboard()
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        await target.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+    else:
+        await target.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+
+def _format_usage_line(used: float, limit: float | None) -> str:
+    if not limit or limit <= 0:
+        return f"{used:.1f} мин · без лимита"
+    return f"{used:.1f} / {limit:.1f} мин"
+
+
+def _format_profile_message(data: dict) -> str:
+    plan_name = data.get("plan_display_name") or data.get("current_plan", "Free")
+    plan_status = data.get("plan_status_text") or ""
+    minutes_used = float(data.get("minutes_used_this_month", 0.0) or 0.0)
+    minutes_limit_raw = data.get("minutes_limit")
+    try:
+        minutes_limit = float(minutes_limit_raw)
+        if minutes_limit <= 0:
+            minutes_limit = None
+    except (TypeError, ValueError):
+        minutes_limit = None
+    generations_used = int(data.get("generations_used_this_month", 0) or 0)
+    generations_limit_raw = data.get("generations_limit")
+    try:
+        generations_limit = int(generations_limit_raw)
+        if generations_limit <= 0:
+            generations_limit = None
+    except (TypeError, ValueError):
+        generations_limit = None
+    total_minutes = float(data.get("total_minutes_transcribed", 0.0) or 0.0)
+    transcriptions_count = int(data.get("transcriptions_count", 0) or 0)
+    usage_line = _format_usage_line(minutes_used, minutes_limit)
+    if generations_limit:
+        gen_line = f"{generations_used} / {generations_limit} генераций"
+    else:
+        gen_line = f"{generations_used} генераций · без лимита"
+
+    lines = [
+        "🐱 <b>Личный кабинет</b>",
+        f"Тариф: <b>{plan_name}</b> {plan_status}",
+        "",
+        "⏱ <b>Минут в этом месяце</b>",
+        usage_line,
+        "",
+        "📊 <b>Общая статистика</b>",
+        f"• Всего файлов: {transcriptions_count}",
+        f"• Всего минут: {total_minutes:.1f}",
+    ]
+    return "\n".join(lines)
 
 
 def _original_filename(update: Update, file_obj) -> str:
@@ -409,35 +499,28 @@ async def _send_referral_info(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    db = SessionLocal()
     try:
-        user_service = UserService(db)
-        referral_service = ReferralService(db)
-        db_user = user_service.get_or_create_user(
+        data = await fetch_referral_info(
             telegram_id=user.id,
-            username=user.username,
-            first_name=user.first_name,
-            last_name=user.last_name,
+            username=user.username or "",
+            first_name=user.first_name or "",
+            last_name=user.last_name or "",
         )
-        referral_code = referral_service.create_or_get_referral_code(db_user)
+        referral_code = data.get("referral_code", "")
         referral_link = _build_referral_link(referral_code)
-        stats = referral_service.get_referral_stats_for_user(db_user)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Не удалось загрузить реферальную программу", exc_info=True, extra={"error": str(exc)})
+        visits = data.get("visits", 0)
+        paid_count = data.get("paid_count", 0)
+        total_amount = float(data.get("total_amount", 0.0) or 0.0)
+        balance = float(data.get("balance", 0.0) or 0.0)
+    except CoreAPIError as exc:
         await target_message.reply_text(
-            "❌ Не удалось загрузить реферальную программу. Попробуй позже.",
+            f"❌ Не удалось загрузить реферальную программу: {exc}",
             reply_markup=_main_menu_keyboard(),
         )
         return
-    finally:
-        db.close()
 
     safe_code = html.escape(referral_code, quote=False)
     safe_link = html.escape(referral_link, quote=True)
-    visits = stats.get("visits", 0)
-    paid_count = stats.get("paid_count", 0)
-    total_amount = stats.get("total_amount", 0.0) or 0.0
-    balance = stats.get("balance", 0.0) or 0.0
 
     message = (
         "<b>🤝 Реферальная программа</b>\n\n"
@@ -456,6 +539,115 @@ async def _send_referral_info(update: Update, context: ContextTypes.DEFAULT_TYPE
         ]
     )
     await target_message.reply_text(message, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def show_personal_cabinet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if not message or not user:
+        return
+    try:
+        profile = await fetch_profile(
+            telegram_id=user.id,
+            first_name=user.first_name or "",
+            last_name=user.last_name or "",
+        )
+    except CoreAPIError as exc:
+        await message.reply_text(f"❌ Не удалось загрузить профиль: {exc}")
+        return
+    await message.reply_text(
+        _format_profile_message(profile),
+        parse_mode="HTML",
+        reply_markup=_main_menu_keyboard(),
+    )
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await show_personal_cabinet(update, context)
+
+
+async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await show_personal_cabinet(update, context)
+
+
+async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if not message:
+        return
+    user = update.effective_user
+    if not user:
+        await message.reply_text("⚠️ Не удалось определить пользователя.")
+        return
+    args = context.args if context.args else []
+    if not args:
+        await message.reply_text("Использование: /promo <код>", reply_markup=_main_menu_keyboard())
+        return
+    code = args[0].strip()
+    if not code:
+        await message.reply_text("Укажи код после команды: /promo CODE", reply_markup=_main_menu_keyboard())
+        return
+    try:
+        result = await activate_promo_code(user.id, code)
+    except CoreAPIError as exc:
+        await message.reply_text(f"❌ Не удалось активировать промокод: {exc}", reply_markup=_main_menu_keyboard())
+        return
+    if result.get("success"):
+        bonus = result.get("bonus")
+        expires = result.get("expires")
+        text = "✅ Промокод активирован!"
+        if bonus:
+            text += f"\nБонус: {bonus}"
+        if expires:
+            text += f"\nДействует до: {expires}"
+    else:
+        text = f"⚠️ {result.get('error', 'Не удалось активировать промокод.')}"
+    await message.reply_text(text, reply_markup=_main_menu_keyboard())
+
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
+        return
+        
+    data = query.data
+    telegram_id = query.from_user.id
+    
+    if data == "show_payment_plans":
+        await show_payment_plans(update, context)
+        return
+        
+    if data.startswith("buy_plan_"):
+        await query.answer()
+        try:
+            parts = data.replace("buy_plan_", "").split("_")
+            plan_id = parts[0]
+            currency = parts[1] if len(parts) > 1 else "stars"
+            
+            invoice_data = await create_payment_invoice(telegram_id, plan_id, currency)
+            title = invoice_data.get("title", f"Тариф {plan_id.title()}")
+            payload = invoice_data.get("invoice_payload", f"plan_{plan_id}")
+            
+            plans_data = await get_payment_plans()
+            stars_price = plans_data.get("stars", {}).get(plan_id, 0)
+            
+            if currency == "stars" and stars_price > 0:
+                await context.bot.send_invoice(
+                    chat_id=telegram_id,
+                    title=title,
+                    description=f"Оплата тарифа {title}",
+                    payload=payload,
+                    provider_token="",
+                    currency="XTR",
+                    prices=[LabeledPrice("Оплата подписки", stars_price)],
+                )
+            else:
+                await query.message.reply_text("❌ Оплата в данной валюте пока не поддерживается.")
+        except Exception as e:
+            logger.error(f"Error initiating payment: {e}")
+            await query.message.reply_text("⚠️ Ошибка при создании счета на оплату.")
+        return
+        
+    await query.answer("Действие недоступно", show_alert=False)
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -516,28 +708,16 @@ async def handle_media_file(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     # ── 3. Создать задачу на воркер через Core API ─────────────────────────────
     try:
-        import httpx
-        import os
-        api_url = "http://core-api:8000"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{api_url}/api/v1/ingest/media",
-                json={
-                    "telegram_id": telegram_id,
-                    "file_id": str(file_id),
-                    "audio_path": str(dest_path),
-                    "message_id": getattr(msg, "message_id", None)
-                }
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if not data.get("success"):
-                raise Exception(data.get("error", "Unknown API error"))
-            job_id = data["job_id"]
-        logger.info("Job создан через API: id=%s", job_id)
-    except Exception as exc:
+        job_id = await enqueue_media_job(
+            telegram_id=telegram_id,
+            file_id=str(file_id),
+            audio_path=str(dest_path),
+            message_id=getattr(msg, "message_id", None),
+        )
+        logger.info("Job создан через Core API: id=%s", job_id)
+    except CoreAPIError as exc:
         logger.exception("Не удалось создать job через API для %s", file_id)
-        await status_msg.edit_text("❌ Не удалось поставить задачу в очередь. Попробуй позже.")
+        await status_msg.edit_text(f"❌ Не удалось поставить задачу: {exc}")
         return
 
     await status_msg.edit_text(
@@ -879,24 +1059,22 @@ async def handle_note_qa_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("⚠️ Не удалось открыть чат для этой заметки.")
         return
 
+
     telegram_id = query.from_user.id if query and query.from_user else None
-    user_id = None
-    if telegram_id:
-        user_id = get_user_id_by_telegram_id(telegram_id)
-        if user_id is None:
-            user_id = await ensure_user(telegram_id)
-
-    if not user_id:
-        await query.edit_message_text("⚠️ Не удалось определить пользователя для этой заметки.")
+    
+    # NEW CALL TO BACKEND
+    from bot.core_api_client import set_active_note
+    try:
+        await set_active_note(telegram_id, note_id, local_artifact=True)
+    except Exception as e:
+        logger.error(f"Failed to set active note: {e}")
+        await query.edit_message_text("⚠️ Ошибка: не удалось включить чат с заметкой.")
         return
 
-    session_id = _get_note_session_id(context, note_id, user_id=user_id)
-    if not session_id:
-        await query.edit_message_text("⚠️ Не нашёл контекст заметки. Отправь файл заново.")
-        return
+    _set_active_note_session(telegram_id=telegram_id, note_id=note_id, session_id="dummy")
 
-    _set_active_note_session(telegram_id=telegram_id, note_id=note_id, session_id=session_id)
     await context.bot.send_message(
+
         chat_id=query.message.chat_id,
         text="💬 Спросите что угодно по заметке. Я в контексте всей транскрипции.",
         reply_markup=ReplyKeyboardMarkup(
@@ -931,28 +1109,20 @@ async def handle_note_qa_message(update: Update, context: ContextTypes.DEFAULT_T
         await show_personal_cabinet(update, context)
         return MENU_STATE
 
-    session_payload = fetch_note_qa_session_payload(session_id, history_limit=MAX_QA_HISTORY_MESSAGES)
-    if not session_payload:
-        await update.message.reply_text("⚠️ Контекст заметки недоступен. Попробуй отправить файл заново.", reply_markup=ReplyKeyboardRemove())
-        _set_active_note_session(telegram_id=telegram_id, note_id=None, session_id=None)
-        return MENU_STATE
 
-    record_note_qa_message(session_id, "user", text)
-    session_payload["messages"].append({"role": "user", "content": text})
-    if len(session_payload["messages"]) > MAX_QA_HISTORY_MESSAGES:
-        session_payload["messages"] = session_payload["messages"][-MAX_QA_HISTORY_MESSAGES :]
-
+    from bot.core_api_client import chat_with_agent
     await update.message.chat.send_action(ChatAction.TYPING)
     try:
-        answer = await _run_note_agent(session_payload)
-    except AgentLLMError as exc:
-        await update.message.reply_text(f"⚠️ LLM сейчас недоступна: {exc}", reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True))
+        answer = await chat_with_agent(
+            telegram_id=telegram_id, 
+            text=text, 
+            name=update.message.from_user.first_name, 
+            username=update.message.from_user.username
+        )
+    except Exception as exc:
+        logger.error(f"Error querying agent: {exc}")
+        await update.message.reply_text(f"⚠️ Ошибка: {exc}", reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True))
         return NOTE_QA_STATE
-
-    record_note_qa_message(session_id, "assistant", answer)
-    session_payload["messages"].append({"role": "assistant", "content": answer})
-    if len(session_payload["messages"]) > MAX_QA_HISTORY_MESSAGES:
-        session_payload["messages"] = session_payload["messages"][-MAX_QA_HISTORY_MESSAGES :]
 
     await update.message.reply_text(answer, reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True))
     return NOTE_QA_STATE
@@ -978,22 +1148,25 @@ async def handle_note_search_message(update: Update, context: ContextTypes.DEFAU
         await update.message.reply_text("⚠️ Не удалось определить пользователя для поиска.")
         return NOTE_SEARCH_STATE
 
-    user_id = get_user_id_by_telegram_id(telegram_id)
-    if not user_id:
-        user_id = await ensure_user(telegram_id)
-
     await update.message.chat.send_action(ChatAction.TYPING)
     try:
-        result = await run_note_search(user_id=user_id, query=text)
-    except NoteSearchError as exc:
+        response_text = await _search_memory_via_core(telegram_id, text)
+    except CoreAPIError as exc:
         await update.message.reply_text(
             f"⚠️ Не удалось выполнить поиск: {exc}",
             reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True),
         )
         return NOTE_SEARCH_STATE
+    except Exception:
+        logger.exception("Unexpected memory search failure for %s", telegram_id)
+        await update.message.reply_text(
+            "⚠️ Что-то пошло не так при поиске. Попробуйте чуть позже.",
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True),
+        )
+        return NOTE_SEARCH_STATE
 
     await update.message.reply_text(
-        result["response"],
+        response_text,
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton(MAIN_MENU_BUTTON)]], resize_keyboard=True),
     )
     return NOTE_SEARCH_STATE
@@ -1087,4 +1260,28 @@ async def _run_note_agent(session_payload: dict) -> str:
 
     answer = await call_agent_llm_with_retry(messages, timeout=40.0)
     return answer
+
+async def handle_pre_checkout_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.pre_checkout_query
+    await query.answer(ok=True)
+
+async def handle_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    payment = update.message.successful_payment
+    telegram_id = update.message.from_user.id
+    payload = payment.invoice_payload
+    plan_id = payload.replace("plan_", "")
+    
+    try:
+        await confirm_payment_success(
+            telegram_id=telegram_id,
+            plan_id=plan_id,
+            amount=payment.total_amount,
+            currency=payment.currency,
+            payment_id=payment.telegram_payment_charge_id
+        )
+        await update.message.reply_text(f"🎉 Спасибо за оплату! Ваш тариф активирован.")
+    except Exception as e:
+        logger.error(f"Payment success sync failed: {e}")
+        await update.message.reply_text("Платеж прошёл успешно, но у нас возникла небольшая техническая заминка. Поддержка уже уведомлена!")
+
 MENU_STATE, NOTE_QA_STATE, NOTE_SEARCH_STATE = range(3)

@@ -1,7 +1,28 @@
 FROM python:3.10-slim
 
+# Optional apt proxy for faster builds (e.g., local apt-cacher-ng)
+ARG APT_PROXY=""
+# Optional custom mirrors (can be overridden via --build-arg)
+ARG APT_MIRROR="http://deb.debian.org/debian"
+ARG APT_SECURITY_MIRROR="http://deb.debian.org/debian-security"
+
 # Avoid interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DEFAULT_TIMEOUT=180
+
+# Configure apt proxy if provided
+RUN if [ -n "$APT_PROXY" ]; then \
+        echo "Acquire::HTTP::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/99proxy; \
+    fi
+
+# Optionally override Debian mirrors to work around slow defaults
+RUN set -eux; \
+    release="$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")"; \
+    : "${release:=stable}"; \
+    rm -f /etc/apt/sources.list.d/debian.sources; \
+    printf 'deb %s %s main contrib non-free non-free-firmware\n' "${APT_MIRROR}" "${release}" > /etc/apt/sources.list; \
+    printf 'deb %s %s-updates main contrib non-free non-free-firmware\n' "${APT_MIRROR}" "${release}" >> /etc/apt/sources.list; \
+    printf 'deb %s %s-security main contrib non-free non-free-firmware\n' "${APT_SECURITY_MIRROR}" "${release}" >> /etc/apt/sources.list
 
 # Install minimal system packages first (procps needed for sysctl access)
 # Defer large packages (ffmpeg, git) to a later layer to reduce chance of dpkg/apt transient failures
@@ -25,7 +46,7 @@ COPY wheelhouse/ /wheelhouse/
 # Устанавливаем зависимости по группам, чтобы уменьшить пиковое потребление памяти
 # Сначала небольшой набор (core utilities) — низкий объём памяти
 RUN pip install --no-cache-dir --prefer-binary \
-    python-dotenv==1.0.1 \
+    python-dotenv \
     requests==2.31.0 \
     httpx==0.27.0 \
     aiohttp==3.9.1 \
@@ -56,6 +77,10 @@ RUN pip install --no-cache-dir --prefer-binary \
 
 # Копируем файлы проекта
 COPY transkribator_modules/ ./transkribator_modules/
+COPY core_api/ ./core_api/
+COPY transcribe_client/ ./transcribe_client/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
 COPY prompts_catalog.json .
 COPY implementation_plan.md .
 COPY cyberkitty_modular.py .
@@ -70,11 +95,16 @@ RUN mkdir -p /app/videos /app/audio /app/transcriptions
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
+
+# Clean up apt proxy config to avoid leaking into runtime image
+RUN rm -f /etc/apt/apt.conf.d/99proxy
 
 # Запускаем модульного бота
 # Old entrypoint
 COPY entrypoint-wg.sh /entrypoint-wg.sh
-RUN chmod +x /entrypoint-wg.sh
+COPY entrypoint-worker.sh /entrypoint-worker.sh
+RUN chmod +x /entrypoint-wg.sh /entrypoint-worker.sh
 ENTRYPOINT ["/bin/bash", "/entrypoint-wg.sh"]
 CMD []

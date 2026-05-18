@@ -8,6 +8,7 @@ import os
 from typing import Optional, Any, Iterable
 
 import aiohttp
+import socket
 
 from transkribator_modules.config import logger
 
@@ -194,6 +195,7 @@ def _parse_structured_summary(raw: str) -> tuple[str, list[str]]:
 
     parsed: Any = None
     for loader in (json.loads, ast.literal_eval):
+        print(f"DEBUG: calling openrouter API with model={OPENROUTER_MODEL}, payload_len={len(payload)}", flush=True)
         try:
             parsed = loader(candidate)
             break
@@ -213,11 +215,14 @@ async def _build_summary_and_tags(
     full_text: str,
     existing_tags: Optional[list[str]] = None,
 ) -> tuple[str, list[str]]:
+    print(f"DEBUG: OPENROUTER_API_KEY is_set={bool(OPENROUTER_API_KEY)}, text_length={len(text.strip())}", flush=True)
     if not OPENROUTER_API_KEY or not text.strip():
         return "", existing_tags or []
 
     system_prompt = (
-        "Ты аналитик, который делает структурированные саммари без прямых цитат и технической разметки."
+        "Ты универсальный ассистент по заметкам. Твоя задача — коротко и понятно передавать смысл любых материалов, подчёркивая "
+        "ключевые мысли, выводы и факты без шаблонных структур. Подбирай формат под содержание (абзацы, списки, мини-блоки) и "
+        "избегай лишней разметки."
     )
 
     def _split_text_and_tags(raw: str) -> tuple[str, list[str]]:
@@ -259,36 +264,41 @@ async def _build_summary_and_tags(
             "temperature": 0.2,
             "max_tokens": max_tokens,
         }
+        print(f"DEBUG: calling openrouter API with model={OPENROUTER_MODEL}, payload_len={len(payload)}", flush=True)
         try:
-            async with aiohttp.ClientSession() as session:
+            conn = aiohttp.TCPConnector(family=socket.AF_INET)
+            async with aiohttp.ClientSession(connector=conn) as session:
                 async with session.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers=headers,
                     json=payload,
                 ) as response:
                     if response.status != 200:
+                        text_error = await response.text()
+                        logger.error(f"OpenRouter non-200 response: {response.status} {text_error}")
                         return "", []
                     data = await response.json()
                     raw = data["choices"][0]["message"]["content"]
                     return _split_text_and_tags(raw)
-        except Exception:
+        except Exception as e:
+            print(f"DEBUG: exception in call_openrouter {e}", flush=True)
+            logger.exception(f"Exception in call_openrouter: {e}")
             return "", []
 
     def segment_prompt(body: str, idx: int, total: int) -> str:
         return (
-            f"Ты обрабатываешь сегмент {idx}/{total} встречи. Выдели 3–5 смысловых блоков и распиши каждый так, чтобы было понятно кто, что и зачем делает.\n"
-            "Формат блока: короткий заголовок (можно эмодзи) + 2–4 предложения (<=450 символов), описывающих контекст решения, договорённости и конкретные действия.\n"
-            "Не добавляй разделы вроде 'Открытые вопросы', списки вопросов, цитаты или пересказ речи. Просто фиксируй, что договорились сделать и почему.\n"
-            "В конце добавь строку 'Tags: ...' с 3–6 краткими тегами.\n\n"
+            f"Ты пересказываешь часть ({idx}/{total}) длинного материала. Передай ключевые идеи, факты, выводы и акценты, сохраняя имена, даты и цифры.\n"
+            "Выбери структуру, которая лучше раскрывает смысл (абзацы, списки, короткие блоки, цитаты) и избегай шаблонов наподобие «Повестка» или «Открытые вопросы», если они не вытекают из текста.\n"
+            "Не копируй реплики дословно, но сохраняй намерения и решения. В конце добавь строку 'Tags: ...' с 3–6 короткими тегами.\n\n"
             f"Сегмент (длина {len(body)}):\n{body}"
         )
 
     def final_prompt(blocks_text: str) -> str:
         return (
-            "Собери финальное саммари встречи на основе сводок ниже.\n"
-            "Сделай 5–7 блоков того же формата (заголовок + 2–4 предложения <=450 символов) и подробно опиши решения, договорённости, ответственных и следующие шаги.\n"
-            "Не включай разделы 'Открытые вопросы', цитаты, дословные реплики или списки вопросов. Никаких JSON/словарей.\n"
-            "В конце добавь строку 'Tags: ...' с ключевыми темами.\n\n"
+            "Собери целостное саммари по сводкам ниже так, чтобы читатель быстро понял, о чём был материал и какие выводы важны.\n"
+            "Используй свободную структуру: абзацы, списки, короткие тематические блоки — что угодно, лишь бы текст читался естественно. "
+            "Не зацикливайся на формате встреч или задач: ориентируйся по содержанию, сохраняя факты, решения и договорённости.\n"
+            "В конце добавь строку 'Tags: ...' с основными темами.\n\n"
             f"Сводки:\n{blocks_text}"
         )
 

@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  max-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cyberkitty119_max_bot:latest
+    container_name: cyberkitty19-max-bot
+    volumes:
+      - ./:/app
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+    command: ["bash", "-lc", "uvicorn max_bot.server:app --host 0.0.0.0 --port 8085"]
+    ports:
+      - "8085:8085"
+    # Use public DNS resolvers inside container to avoid host resolver issues
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: unless-stopped
+    networks:
+      - cyberkitty119_bot-v2-net
+
+  max-bot-poller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cyberkitty119_max_bot:latest
+    container_name: cyberkitty19-max-bot-poller
+    volumes:
+      - ./:/app
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=DEBUG
+    command: ["bash", "-lc", "python -u -m max_bot.native_service"]
+    # Use public DNS resolvers inside container to avoid host resolver issues
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    restart: unless-stopped
+    networks:
+      - cyberkitty119_bot-v2-net
+
+networks:
+  cyberkitty119_bot-v2-net:
+    external: true

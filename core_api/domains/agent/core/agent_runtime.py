@@ -12,8 +12,9 @@ import re
 from zoneinfo import ZoneInfo
 
 from transkribator_modules.config import logger, ENABLE_STRUCT_LOGS
-from transkribator_modules.db.database import SessionLocal, UserService, NoteService
-from transkribator_modules.db.models import Note, User
+
+from core_api.domains.agent.persistence import AgentPersistenceGateway, NoteSnapshot
+from core_api.domains.agent.session_store import AgentSessionStore, get_agent_session_store
 
 from .llm import call_agent_llm_with_retry, AgentLLMError
 from .prompts import build_system_prompt, build_event_message
@@ -25,6 +26,9 @@ from .tools import (
     resolve_tool,
     _looks_like_question,
 )
+
+PERSISTENCE_GATEWAY = AgentPersistenceGateway()
+SESSION_STORE = get_agent_session_store()
 
 
 @dataclass(slots=True)
@@ -54,8 +58,9 @@ class ProgressReporter(Protocol):
 class AgentSession:
     """Stateful conversation session per Telegram user."""
 
-    def __init__(self, user: AgentUser):
+    def __init__(self, user: AgentUser, *, persistence_gateway: Optional[AgentPersistenceGateway] = None):
         self.user = user
+        self._persistence = persistence_gateway or PERSISTENCE_GATEWAY
         self.history: list[dict[str, str]] = []
         self.active_note_id: Optional[int] = None
         self.active_note_summary: Optional[str] = None
@@ -64,13 +69,41 @@ class AgentSession:
         self.active_note_links: dict[str, str] = {}
         self.active_note_has_local_artifact: bool = False
 
+    def load_state(self, state: dict[str, Any]) -> None:
+        history = state.get("history")
+        if isinstance(history, list):
+            self.history = [
+                {"role": str(entry.get("role", "")), "content": str(entry.get("content", ""))}
+                for entry in history
+                if isinstance(entry, dict)
+            ]
+        self.active_note_id = state.get("active_note_id")
+        self.active_note_summary = state.get("active_note_summary")
+        self.active_note_type = state.get("active_note_type") or "other"
+        self.active_note_text = state.get("active_note_text")
+        links = state.get("active_note_links")
+        if isinstance(links, dict):
+            self.active_note_links = {str(k): str(v) for k, v in links.items()}
+        self.active_note_has_local_artifact = bool(state.get("active_note_has_local_artifact", False))
+
+    def dump_state(self) -> dict[str, Any]:
+        return {
+            "history": list(self.history),
+            "active_note_id": self.active_note_id,
+            "active_note_summary": self.active_note_summary,
+            "active_note_type": self.active_note_type,
+            "active_note_text": self.active_note_text,
+            "active_note_links": dict(self.active_note_links),
+            "active_note_has_local_artifact": self.active_note_has_local_artifact,
+        }
+
     @property
     def user_db_id(self) -> int:
         return self.user.db_id
 
     def set_active_note(
         self,
-        note: Note,
+        note: Any,
         *,
         links: Optional[dict[str, str]] = None,
         local_artifact: bool = False,
@@ -114,6 +147,7 @@ class AgentSession:
             "text": payload.get("text"),
             "links": self.active_note_links,
             "local_artifact": self.active_note_has_local_artifact,
+            "user_id": self.user_db_id,
         }
         return await self._call_agent(
             message,
@@ -133,6 +167,7 @@ class AgentSession:
             "active_note_id": self.active_note_id,
             "active_note_summary": self.active_note_summary,
             "active_note_type": self.active_note_type,
+            "active_note_text": self.active_note_text,
         }
         message = build_event_message("user", payload)
         fallback_context = {
@@ -142,6 +177,7 @@ class AgentSession:
             "summary": self.active_note_summary,
             "links": self.active_note_links,
             "local_artifact": self.active_note_has_local_artifact,
+            "user_id": self.user_db_id,
         }
         return await self._call_agent(
             message,
@@ -221,6 +257,8 @@ class AgentSession:
         search_executed = False
         if not actions:
             await _progress_safe_update(progress, "ℹ️ Дополнительных действий не требуется.")
+            if not response_text:
+                response_text = "Я проанализировал заметку, но не уверен, что ответить. Пожалуйста, уточни свой вопрос."
         for action in actions:
             tool_name = action.get("tool")
             if not tool_name:
@@ -345,7 +383,7 @@ class AgentSession:
         if (
             original_query
             and question_like
-            and not search_executed
+            and not search_executed and not self.active_note_id
         ):
             await _progress_safe_update(progress, "🔍 Дополнительно ищу в заметках…")
             extra_search = await self._invoke_tool(
@@ -464,32 +502,17 @@ class AgentSession:
     def _refresh_active_note(self) -> None:
         if not self.active_note_id:
             return
-        db = SessionLocal()
-        try:
-            service = NoteService(db)
-            note = service.get_note(self.active_note_id)
-            if note and note.user_id == self.user_db_id:
-                self.update_note_snapshot(
-                    text=note.text,
-                    summary=note.summary,
-                    links=_parse_note_links(note.links),
-                    local_artifact=False,
-                )
-        finally:
-            db.close()
+        snapshot = self._persistence.get_note_snapshot(self.active_note_id, self.user_db_id)
+        if snapshot:
+            self.update_note_snapshot(
+                text=snapshot.text,
+                summary=snapshot.summary,
+                links=snapshot.links,
+                local_artifact=False,
+            )
 
     def _get_user_timezone(self) -> Optional[str]:
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.id == self.user_db_id).one_or_none()
-            if not user:
-                return None
-            tz = getattr(user, "timezone", None)
-            if isinstance(tz, str) and tz.strip():
-                return tz.strip()
-            return None
-        finally:
-            db.close()
+        return self._persistence.get_user_timezone(self.user_db_id)
 
     def _prepend_time_context(self, message: str) -> str:
         header = []
@@ -515,8 +538,15 @@ class AgentSession:
 class AgentManager:
     """Creates and caches AgentSession instances per Telegram user."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        persistence_gateway: Optional[AgentPersistenceGateway] = None,
+        session_store: Optional[AgentSessionStore] = None,
+    ):
         self._sessions: dict[int, AgentSession] = {}
+        self._persistence = persistence_gateway or PERSISTENCE_GATEWAY
+        self._session_store = session_store or SESSION_STORE
 
     def get_session(self, telegram_user) -> AgentSession:
         telegram_id = telegram_user.id
@@ -525,31 +555,31 @@ class AgentManager:
             return session
 
         user = self._ensure_user(telegram_user)
-        session = AgentSession(user)
+        session = AgentSession(user, persistence_gateway=self._persistence)
+        cached_state = self._session_store.load(telegram_id)
+        if cached_state:
+            session.load_state(cached_state)
         self._sessions[telegram_id] = session
         return session
 
-    def _ensure_user(self, telegram_user) -> AgentUser:
-        db = SessionLocal()
+    def save_session(self, session: AgentSession) -> None:
+        telegram_id = session.user.telegram_id
         try:
-            user_service = UserService(db)
-            user = user_service.get_or_create_user(
-                telegram_id=telegram_user.id,
-                username=getattr(telegram_user, "username", None),
-                first_name=getattr(telegram_user, "first_name", None),
-                last_name=getattr(telegram_user, "last_name", None),
-            )
-            db_id = int(user.id)
-        finally:
-            db.close()
+            self._session_store.save(telegram_id, session.dump_state())
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to persist agent session", extra={"telegram_id": telegram_id})
+        self._sessions[telegram_id] = session
 
-        return AgentUser(
-            telegram_id=telegram_user.id,
-            db_id=db_id,
-            username=getattr(telegram_user, "username", None),
-            first_name=getattr(telegram_user, "first_name", None),
-            last_name=getattr(telegram_user, "last_name", None),
-        )
+    def reset_session(self, telegram_id: int) -> None:
+        self._sessions.pop(telegram_id, None)
+        try:
+            self._session_store.delete(telegram_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to delete agent session state", extra={"telegram_id": telegram_id})
+
+    def _ensure_user(self, telegram_user) -> AgentUser:
+        payload = self._persistence.ensure_user(telegram_user)
+        return AgentUser(**payload)
 
 
 def _merge_suggestions(primary: list[str], extra: list[str]) -> list[str]:
@@ -757,20 +787,10 @@ def _build_fallback_message(context: Optional[dict[str, Any]]) -> str:
 
 def _fallback_for_ingest(context: dict[str, Any]) -> str:
     note_id = context.get("note_id")
-    note: Optional[Note] = None
+    note: Optional[NoteSnapshot] = None
 
-    if note_id:
-        db = SessionLocal()
-        try:
-            note = NoteService(db).get_note(note_id)
-        except Exception:  # noqa: BLE001
-            logger.debug(
-                "Failed to fetch note for fallback message",
-                exc_info=True,
-                extra={"note_id": note_id},
-            )
-        finally:
-            db.close()
+    if note_id and context.get("user_id"):
+        note = PERSISTENCE_GATEWAY.get_note_snapshot(int(note_id), int(context["user_id"]))
 
     if note:
         return format_note_saved_message(note=note)

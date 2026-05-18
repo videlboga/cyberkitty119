@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+ARG APT_PROXY=""
+WORKDIR /app
+COPY . /app
+RUN if [ -n "$APT_PROXY" ]; then \
+        echo "Acquire::HTTP::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/99proxy; \
+    fi && \
+    apt-get update && apt-get install -y --no-install-recommends build-essential && \
+    python -m pip install --upgrade pip && \
+    pip install -r requirements.txt || true && \
+    pip install -r requirements-dev.txt && \
+    rm -f /etc/apt/apt.conf.d/99proxy
+
+EXPOSE 8001 8002
+
+CMD ["/bin/bash"]

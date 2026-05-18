@@ -1,0 +1,261 @@
+"""Simple native MAX service: poll for updates and dispatch to native handlers.
+
+This runs separately from the existing poller and bypasses PTB emulation.
+Use it when you want a MAX-native bot that follows MAX docs more closely.
+"""
+from __future__ import annotations
+import time
+import json
+import os
+import threading
+from typing import Optional
+
+from .api_client import MaxAPI
+from .config import logger, MAX_POLL_INTERVAL, MAX_POLL_LONGPOLL, MAX_POLL_TIMEOUT, MAX_POLL_STATE_FILE
+from .native_handlers import handle_event
+from .native_types import Event, Attachment, MaxUser
+
+def _poll_completed_jobs(api: MaxAPI):
+    from transkribator_modules.db.database import SessionLocal
+    from transkribator_modules.db.models import ProcessingJob
+    from sqlalchemy.orm.attributes import flag_modified
+    
+    while True:
+        try:
+            with SessionLocal() as db:
+                jobs = db.query(ProcessingJob).filter(ProcessingJob.status.in_(["completed", "failed"])).limit(500).all()
+                for job in jobs:
+                    payload = job.payload or {}
+                    extra = payload.get("extra", {})
+                    if extra.get("platform") == "max" and not payload.get("_max_delivered"):
+                        chat_id = extra.get("chat_id")
+                        if not chat_id:
+                            # mark anyway to avoid looping
+                            pass
+                        elif job.status == "completed":
+                            result = payload.get("_result", {})
+                            
+                            summary = result.get("summary")
+                            source_url = extra.get("source_url")
+                            text_path = result.get("text_path")
+                            
+                            result_message = "✅ Обработка завершена!\n\n"
+                            if summary:
+                                result_message += f"📝 {summary}\n\n"
+                            if source_url:
+                                result_message += f"🔗 Оригинал: {source_url}\n\n"
+                            result_message += "Выберите действие:"
+                            
+                            keyboard = {
+                                "inline_keyboard": [
+                                    [{"text": "�🔎 Задать вопросы", "callbackData": f"result:ask:{job.id}"}],
+                                    [{"text": "🏠 Главное меню", "callbackData": "main:menu"}],
+                                ]
+                            }
+                            
+                            try:
+                                api.send_message(chat_id, result_message, reply_markup=keyboard)
+                            except Exception as e:
+                                logger.error(f"Failed to send result to max for job {job.id}: {e}")
+                        elif job.status == "failed":
+                            error_text = job.error or "Неизвестная ошибка"
+                            try:
+                                api.send_message(chat_id, f"❌ Ошибка обработки:\n{error_text}")
+                            except Exception as e:
+                                logger.error(f"Failed to send error to max for job {job.id}: {e}")
+                        
+                        # Mark as delivered
+                        new_payload = dict(payload)
+                        new_payload["_max_delivered"] = True
+                        job.payload = new_payload
+                        flag_modified(job, "payload")
+                        db.add(job)
+                        logger.info(f"Marked max job {job.id} as delivered")
+                
+                try:
+                    db.commit()
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"Failed to commit max job delivery status: {e}")
+        except Exception as e:
+            logger.exception("Error polling completed jobs")
+            
+        time.sleep(5.0)
+
+def _normalize_update(upd: dict) -> Event:
+    # Normalize a provider update dict into Event.
+    # This is intentionally conservative; expand with real MAX examples.
+    chat = upd.get("chat_id") or (upd.get("chat") or {}).get("id") if isinstance(upd.get("chat"), dict) else upd.get("chat")
+    msg = upd.get("message") or upd.get("body") or upd
+
+    if not chat and isinstance(msg, dict):
+        recipient = msg.get("recipient") or {}
+        if isinstance(recipient, dict):
+            chat = recipient.get("chat_id")
+            
+    if not chat and isinstance(msg, dict):
+        sender = msg.get("sender") or {}
+        if isinstance(sender, dict):
+            chat = sender.get("user_id")
+
+
+    # user
+    sender = None
+    # For callbacks, the sender is often the user inside the callback dict
+    cb = upd.get("callback_query") or upd.get("callback")
+    if isinstance(cb, dict):
+        sender = cb.get("from") or cb.get("user")
+        
+    if sender is None and isinstance(msg, dict):
+        sender = msg.get("sender") or msg.get("from") or msg.get("user")
+        
+    if sender is None:
+        sender = upd.get("sender") or upd.get("from") or {}
+
+    u = MaxUser(
+        id=(sender.get("user_id") or sender.get("id") or sender.get("uid") if isinstance(sender, dict) else sender),
+        username=(sender.get("username") if isinstance(sender, dict) else None),
+        first_name=(sender.get("first_name") if isinstance(sender, dict) else None),
+        last_name=(sender.get("last_name") if isinstance(sender, dict) else None),
+    )
+
+    text = None
+    if isinstance(msg, dict):
+        text = (msg.get("body") or {}).get("text") if isinstance(msg.get("body"), dict) else msg.get("text")
+
+    # callback_data
+    callback_data = None
+    cb = upd.get("callback_query") or upd.get("callback")
+    if isinstance(cb, dict):
+        callback_data = cb.get("data") or cb.get("payload") or cb.get("callback_data")
+    elif upd.get("type") == "callback_query":
+        callback_data = upd.get("data") or upd.get("payload")
+    else:
+        pd = upd.get("callbackData") or upd.get("data") or upd.get("payload")
+        if isinstance(pd, str):
+            callback_data = pd
+        elif isinstance(msg, dict):
+            bd = msg.get("body") or {}
+            bd_pd = bd.get("callbackData") or bd.get("data")
+            if isinstance(bd_pd, str):
+                callback_data = bd_pd
+
+    # attachments
+    attachments_raw = []
+    if isinstance(msg, dict):
+        # prefer link.message.attachments if present
+        try:
+            link_msg = msg.get("link") if isinstance(msg.get("link"), dict) else None
+            link_att = (link_msg.get("message") or {}).get("attachments") if link_msg else None
+            if isinstance(link_att, list) and link_att:
+                attachments_raw = link_att
+        except Exception:
+            attachments_raw = []
+
+    if not attachments_raw and isinstance(msg, dict):
+        attachments_raw = (msg.get("body") or {}).get("attachments") or msg.get("attachments") or msg.get("files") or []
+
+    # top-level attachments
+    top = upd.get("attachments") or upd.get("files") or upd.get("documents")
+    if isinstance(top, list) and top:
+        attachments_raw = top
+
+    attachments = []
+    for a in attachments_raw or []:
+        if not isinstance(a, dict):
+            continue
+        # payload wrappers
+        payload = a.get("payload") if isinstance(a.get("payload"), dict) else a
+        url = payload.get("url") or payload.get("file_url") or payload.get("download_url") or payload.get("content_url")
+        token = payload.get("token") or payload.get("access_token")
+        aid = payload.get("id") or payload.get("file_id") or a.get("id")
+        fname = payload.get("file_name") or payload.get("filename") or payload.get("name")
+        size = payload.get("size") or payload.get("file_size")
+        mime = payload.get("mime_type") or payload.get("mime")
+        attachments.append(Attachment(url=url, token=token, id=aid, filename=fname, size=size, mime=mime, raw=payload))
+
+    ev = Event(
+        raw=upd,
+        chat_id=str(chat) if chat is not None else None,
+        user=u,
+        text=text,
+        attachments=attachments,
+        forwarded=bool((msg.get("link") if isinstance(msg, dict) else None)),
+        callback_data=callback_data,
+    )
+
+    # Debug: if attachments present but none have URLs, dump example for later analysis
+    try:
+        if attachments and not any((a.url for a in attachments)):
+            os.makedirs("data", exist_ok=True)
+            with open("data/max_native_debug.log", "a", encoding="utf-8") as fh:
+                import json as _json
+
+                fh.write(_json.dumps({"ts": int(time.time()), "update": ev.raw}, ensure_ascii=False) + "\n---\n")
+    except Exception:
+        logger.exception("native service: failed to write debug dump", exc_info=True)
+
+    return ev
+
+
+def run_poll_loop():
+    api = MaxAPI()
+    state_path = MAX_POLL_STATE_FILE
+
+    logger.info("max native service starting; longpoll=%s interval=%s timeout=%s", MAX_POLL_LONGPOLL, MAX_POLL_INTERVAL, MAX_POLL_TIMEOUT)
+
+    # load last marker
+    last = None
+    try:
+        if os.path.exists(state_path):
+            with open(state_path, "r") as fh:
+                last = (json.load(fh) or {}).get("last_update_id")
+    except Exception:
+        last = None
+
+    t = threading.Thread(target=_poll_completed_jobs, args=(api,), daemon=True)
+    t.start()
+
+    while True:
+        try:
+            timeout = MAX_POLL_TIMEOUT if MAX_POLL_LONGPOLL else 0
+            updates = api.get_updates(offset=(last + 1 if last is not None else None), timeout=timeout)
+            if updates:
+                for upd in updates:
+                    logger.info("RAW MAX UPDATE: %s", upd)
+                logger.info("native service: received %d updates", len(updates))
+                for upd in updates:
+                    try:
+                        ev = _normalize_update(upd)
+                        try:
+                            handle_event(ev, api=api)
+                        except Exception:
+                            logger.exception("native service: handler error for event")
+                    except Exception:
+                        logger.exception("native service: failed to normalize update")
+
+                    uid = upd.get("id") or upd.get("update_id") or None
+                    if uid is not None:
+                        try:
+                            last = int(uid) if last is None or int(uid) > int(last) else last
+                        except Exception:
+                            pass
+
+                # persist
+                try:
+                    os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
+                    with open(state_path, "w") as fh:
+                        json.dump({"last_update_id": last}, fh)
+                except Exception:
+                    logger.debug("native service: failed to save state", exc_info=True)
+
+        except Exception as exc:
+            logger.exception("native service: error fetching updates: %s", exc)
+            time.sleep(5)
+
+        if not MAX_POLL_LONGPOLL:
+            time.sleep(MAX_POLL_INTERVAL)
+
+
+if __name__ == "__main__":
+    run_poll_loop()

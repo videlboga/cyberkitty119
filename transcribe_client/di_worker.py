@@ -74,10 +74,14 @@ class DiWorkerAdapter:
         # If run_opts provided, split into args (allow additional docker flags)
         if self.run_opts:
             base_cmd += self.run_opts.split()
-    # Use the prepared file path inside the container if created
-    container_input = os.path.basename(prepared_path) if os.path.exists(prepared_path) else os.path.basename(host_path)
-    base_cmd += [self.image, "run_chunk_scan", f"/data/{container_input}", f"/data/{os.path.basename(out_path)}"]
+
+        # Use the prepared file path inside the container if created
+        container_input = os.path.basename(prepared_path) if os.path.exists(prepared_path) else os.path.basename(host_path)
+        base_cmd += [self.image, "run_chunk_scan", f"/data/{container_input}", f"/data/{os.path.basename(out_path)}"]
+
+        # Run the di_worker container
         subprocess.run(base_cmd, check=True)
+
         # The di_worker may write a directory named like the out_path containing multiple
         # per-run JSONs (result_1.json, result_2.json...). Handle both cases.
         if os.path.isdir(out_path):

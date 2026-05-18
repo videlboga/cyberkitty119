@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import dateparser
 
-from transkribator_modules.beta.llm import AgentLLMError, call_agent_llm_with_retry
+from core_api.domains.agent.core.llm import AgentLLMError, call_agent_llm_with_retry
 from transkribator_modules.config import logger
 from transkribator_modules.db.database import SessionLocal
 from transkribator_modules.db.models import Note

@@ -1,9 +1,17 @@
+import os
+import hmac
+
 from fastapi import Depends, Header, Query, HTTPException
 from typing import Optional
 from sqlalchemy.orm import Session
 from transkribator_modules.api.miniapp import get_db
 from transkribator_modules.db.models import User, ApiKey
 from transkribator_modules.db.database import ApiKeyService, UserService
+
+from core_api.domains.memory.search_service import MemorySearchService
+from core_api.domains.ingestion.media_service import MediaIngestionService
+
+SERVICE_TOKEN = os.getenv("CORE_API_SERVICE_TOKEN")
 
 async def verify_api_key(
     authorization: str = Header(None),
@@ -44,3 +52,31 @@ async def verify_api_key(
         )
 
     return user, api_key_obj
+
+
+def get_memory_search_service(db: Session = Depends(get_db)) -> MemorySearchService:
+    """DI helper для MemorySearchService."""
+    return MemorySearchService(db)
+
+
+def get_media_ingestion_service(db: Session = Depends(get_db)) -> MediaIngestionService:
+    """DI helper для MediaIngestionService."""
+    return MediaIngestionService(db)
+
+
+def verify_service_token(
+    x_service_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+) -> None:
+    """Проверка сервисного токена для внутренних клиентов (боты, webhooks)."""
+    if not SERVICE_TOKEN:
+        return  # токен не настроен -> пропускаем проверку
+
+    candidate = None
+    if x_service_token:
+        candidate = x_service_token.strip()
+    elif authorization and authorization.startswith("Bearer "):
+        candidate = authorization[7:].strip()
+
+    if not candidate or not hmac.compare_digest(candidate, SERVICE_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid service token")

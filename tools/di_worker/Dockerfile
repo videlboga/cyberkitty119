@@ -1,34 +1,40 @@
 FROM debian:bookworm-slim
 
+ARG APT_PROXY=""
+
 # Install runtime deps (ffmpeg removed: audio preparation is done by another microservice)
- RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-   python3 \
-  python3-distutils \
-  python3-pip \
-   curl \
-   jq \
-   ca-certificates \
-  iproute2 \
-  bash \
-  wget \
-  unzip \
-  ffmpeg \
-  python3-requests \
-  wireguard-tools \
-  openresolv \
-  procps \
-  iptables \
- && rm -rf /var/lib/apt/lists/*
+RUN if [ -n "$APT_PROXY" ]; then \
+        echo "Acquire::HTTP::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/99proxy; \
+    fi && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      python3 \
+      python3-distutils \
+      python3-pip \
+      curl \
+      jq \
+      ca-certificates \
+      iproute2 \
+      bash \
+      wget \
+      unzip \
+      ffmpeg \
+      python3-requests \
+      wireguard-tools \
+      openresolv \
+      procps \
+      iptables \
+    && rm -rf /var/lib/apt/lists/* && \
+    rm -f /etc/apt/apt.conf.d/99proxy
 
-  # Replace apt yt-dlp (may be outdated) with the latest binary release
-  RUN curl -L -o /usr/local/bin/yt-dlp \
-    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-   && chmod +x /usr/local/bin/yt-dlp || true
+# Replace apt yt-dlp (may be outdated) with the latest binary release
+RUN curl -L -o /usr/local/bin/yt-dlp \
+      https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp || true
 
-  # Install Deno (lightweight JS runtime) which helps yt-dlp extract YouTube player JS
-  RUN curl -fsSL https://deno.land/x/install/install.sh | sh || true \
-   && ln -sf /root/.deno/bin/deno /usr/local/bin/deno || true
+# Install Deno (lightweight JS runtime) which helps yt-dlp extract YouTube player JS
+RUN curl -fsSL https://deno.land/x/install/install.sh | sh || true \
+    && ln -sf /root/.deno/bin/deno /usr/local/bin/deno || true
 
 # Create app dir
 WORKDIR /opt/di

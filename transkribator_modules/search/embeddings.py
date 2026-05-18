@@ -226,14 +226,38 @@ async def embed_texts_async(texts: List[str]) -> List[List[float]]:
 
     # Запрашиваем только некешированные тексты
     logger.debug('Fetching %s/%s embeddings from API', len(texts_to_fetch), len(texts))
-    
-    if EMBEDDING_PROVIDER == 'openrouter':
-        vectors = await _call_openrouter_embeddings(texts_to_fetch)
-    elif EMBEDDING_PROVIDER == 'deepinfra':
-        vectors = await _call_deepinfra_embeddings(texts_to_fetch)
-    else:
-        logger.warning('Unknown embedding provider, falling back to hashes', extra={'provider': EMBEDDING_PROVIDER})
-        vectors = _hash_embeddings(texts_to_fetch)
+
+    vectors: List[List[float]] = []
+    errors: List[str] = []
+
+    async def _fetch_with_provider(provider: str, payload: List[str]) -> List[List[float]]:
+        if provider == 'openrouter':
+            return await _call_openrouter_embeddings(payload)
+        if provider == 'deepinfra':
+            return await _call_deepinfra_embeddings(payload)
+        logger.warning('Unknown embedding provider, using hash fallback', extra={'provider': provider})
+        return _hash_embeddings(payload)
+
+    async def _attempt(primary: str, fallback: str, payload: List[str]) -> List[List[float]]:
+        first = await _fetch_with_provider(primary, payload)
+        if len(first) == len(payload):
+            return first
+        errors.append(primary)
+        logger.warning(
+            'Primary embedding provider returned %s/%s vectors, trying fallback',
+            len(first),
+            len(payload),
+            extra={'primary': primary, 'fallback': fallback},
+        )
+        second = await _fetch_with_provider(fallback, payload)
+        if len(second) == len(payload):
+            return second
+        errors.append(fallback)
+        return first  # partial result; rest hashed later
+
+    primary = EMBEDDING_PROVIDER
+    secondary = 'openrouter' if primary == 'deepinfra' else 'deepinfra'
+    vectors = await _attempt(primary, secondary, texts_to_fetch)
 
     # Кешируем полученные эмбеддинги
     for text, vector in zip(texts_to_fetch, vectors):

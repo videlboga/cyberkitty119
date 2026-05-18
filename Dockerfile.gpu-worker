@@ -1,0 +1,68 @@
+# GPU-specialized worker for Whisper transcription
+# Uses NVIDIA CUDA runtime and PyTorch with GPU support
+
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+
+LABEL maintainer="cyberkitty"
+LABEL description="GPU-specialized worker for Whisper transcription with CUDA 12.1"
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3.11-venv \
+    python3.11-dev \
+    python3-pip \
+    git \
+    curl \
+    wget \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.11 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+
+# Upgrade pip
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# Install PyTorch with CUDA 12.1 support
+RUN python -m pip install torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu121 \
+    --no-cache-dir
+
+# Install Whisper and dependencies
+RUN python -m pip install \
+    openai-whisper \
+    python-telegram-bot \
+    sqlalchemy \
+    psycopg2-binary \
+    httpx \
+    pydantic \
+    pydantic-settings \
+    --no-cache-dir
+
+# Create app directory
+WORKDIR /app
+
+# Copy application code
+COPY . /app
+
+# Create directories for shared storage
+RUN mkdir -p /app/media/{incoming,processing,results} && \
+    mkdir -p /app/data && \
+    mkdir -p /app/logs
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python3 -c "import torch; torch.cuda.is_available()" || exit 1
+
+# Default entrypoint
+ENTRYPOINT ["python", "gpu_worker.py"]
+CMD ["--worker-id", "gpu-worker-1", "--poll-interval", "2"]

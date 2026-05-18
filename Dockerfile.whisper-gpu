@@ -1,0 +1,20 @@
+FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+
+# Install Python and dependencies
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3-pip \
+    ffmpeg \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python alias
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+
+# Install Whisper only (PyTorch will be mounted from host)
+RUN pip install --no-cache-dir openai-whisper
+
+WORKDIR /app
+
+# Default command
+CMD ["/bin/bash"]

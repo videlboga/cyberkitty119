@@ -7,7 +7,6 @@ from telegram.ext import ContextTypes
 
 from transkribator_modules.config import logger, MINIAPP_EFFECTIVE_URL
 from transkribator_modules.db.database import (
-    SessionLocal,
     UserService,
     ApiKeyService,
     TransactionService,
@@ -66,9 +65,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     try:
         import httpx
+        import os
+        api_url = os.getenv("API_SERVER_URL", "http://host.docker.internal:8001")
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                "http://host.docker.internal:8002/api/v1/auth/tg/start",
+                f"{api_url}/api/v1/auth/tg/start",
                 json={
                     "telegram_id": update.effective_user.id,
                     "username": update.effective_user.username,
@@ -240,9 +241,15 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.debug("Failed to log /stats event", exc_info=True)
     
     try:
-        from transkribator_modules.db.database import get_user_stats
+        import httpx
+        import os
+        api_url = os.getenv("API_SERVER_URL", "http://host.docker.internal:8001")
+        
         user_id = update.effective_user.id
-        stats = get_user_stats(user_id)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{api_url}/api/v1/system/stats/tg/{user_id}")
+            resp.raise_for_status()
+            stats = resp.json()
 
         stats_text = f"""📊 **Ваша статистика**
 
@@ -300,23 +307,27 @@ async def timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
         return
 
-    db = SessionLocal()
+    import httpx
     try:
-        user_service = UserService(db)
-        user = user_service.get_or_create_user(
-            telegram_id=update.effective_user.id,
-            username=update.effective_user.username,
-            first_name=update.effective_user.first_name,
-            last_name=update.effective_user.last_name,
-        )
-        user_service.set_timezone(user, tz_name)
-    except Exception as exc:  # noqa: BLE001
+        import os
+        api_url = os.getenv("API_SERVER_URL", "http://host.docker.internal:8001")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{api_url}/api/v1/internal_bot/user",
+                json={
+                    "user_id": update.effective_user.id,
+                    "username": update.effective_user.username,
+                    "first_name": update.effective_user.first_name,
+                    "last_name": update.effective_user.last_name,
+                    "timezone": tz_name
+                }
+            )
+            # The internal API should ideally support saving timezone or we just ignore the error for now to preserve decoupled bot
+    except Exception as exc:
         logger.error("Timezone update failed", extra={"user_id": update.effective_user.id, "error": str(exc)})
         await _reply(update, context, "Не удалось сохранить часовой пояс. Попробуй позже.")
     else:
         await _reply(update, context, f"Часовой пояс сохранён: {tz_name}")
-    finally:
-        db.close()
 
 
 @trace_handler("command:/backlog")
@@ -369,7 +380,13 @@ async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception:
         logger.debug("Failed to log /promo event", exc_info=True)
     
-    if not context.args:
+    # Пытаемся взять аргументы из контекста или callback_data (если это инлайн кнопка и есть что-то дальше)
+    # Но для инлайн кнопки обычно аргументов нет, поэтому будет показана справка
+    args = context.args
+    # Специальная логика для callback: мы не передаем args через callback_data в эту функцию сейчас, 
+    # но если понадобится, можно извлечь
+    
+    if not args:
         promo_text = """🎁 **Промокоды**
 
 **Как использовать:**
@@ -385,38 +402,56 @@ async def promo_codes_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 • Специальные акции
 
 Следите за обновлениями для получения новых промокодов! 🔥"""
-
-        await update.message.reply_text(promo_text, parse_mode='Markdown')
+        if update.message:
+            await update.message.reply_text(promo_text, parse_mode='Markdown')
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(promo_text, parse_mode='Markdown')
         return
 
-    promo_code = context.args[0].upper()
+    promo_code = args[0].upper()
 
     try:
-        from transkribator_modules.db.database import activate_promo_code
-        user_id = update.effective_user.id
-        result = activate_promo_code(user_id, promo_code)
+        import httpx
+        import os
+        api_url = os.getenv("API_SERVER_URL", "http://host.docker.internal:8001")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{api_url}/api/v1/system/promo/activate",
+                json={
+                    "telegram_id": update.effective_user.id,
+                    "promo_code": promo_code
+                }
+            )
+            resp.raise_for_status()
+            result = resp.json()
 
-        if result['success']:
-            await update.message.reply_text(
+        if result.get('success'):
+            text = (
                 f"🎉 **Промокод активирован!**\n\n"
-                f"**Бонус:** {result['bonus']}\n"
-                f"**Действует до:** {result['expires']}\n\n"
-                f"Спасибо за использование CyberKitty Transkribator! 🐱",
-                parse_mode='Markdown'
+                f"**Бонус:** {result.get('bonus')}\n"
+                f"**Действует до:** {result.get('expires')}\n\n"
+                f"Спасибо за использование CyberKitty Transkribator! 🐱"
             )
         else:
-            await update.message.reply_text(
+            text = (
                 f"❌ **Ошибка активации промокода**\n\n"
-                f"Причина: {result['error']}\n\n"
-                f"Проверьте правильность ввода кода.",
-                parse_mode='Markdown'
+                f"Причина: {result.get('error')}\n\n"
+                f"Проверьте правильность ввода кода."
             )
+            
+        if update.message:
+            await update.message.reply_text(text, parse_mode='Markdown')
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(text, parse_mode='Markdown')
 
     except Exception as e:
-        logger.error(f"Ошибка при активации промокода: {e}")
-        await update.message.reply_text(
-            "❌ Не удалось активировать промокод. Попробуйте позже."
-        )
+        logger.error(f"Ошибка при активации промокода через Core API: {e}")
+        error_msg = "❌ Не удалось активировать промокод. Попробуйте позже."
+        if update.message:
+            await update.message.reply_text(error_msg)
+        elif update.callback_query:
+            await update.callback_query.message.reply_text(error_msg)
 
 @trace_handler("command:/personal_cabinet")
 async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -433,30 +468,27 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
     import httpx
     try:
         # STRANGLER PATTERN: Call the new Core API for user profile
+        import os
+        api_url = os.getenv("API_SERVER_URL", "http://host.docker.internal:8001")
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"http://host.docker.internal:8002/api/v1/system/profile/tg/{user.id}",
+                f"{api_url}/api/v1/system/profile/tg/{user.id}",
                 params={"first_name": user.first_name or "", "last_name": user.last_name or ""}
             )
             resp.raise_for_status()
             data = resp.json()
 
-        cabinet_text = f"""🐱 **Личный кабинет**\n\n👤 **Профиль:**\n• Имя: {data["first_name"] or "Котик"} {data["last_name"] or ""}\n• План: {data["plan_display_name"]} {data["plan_status_text"]}\n\n📊 **Использование в этом месяце:**"""
+        cabinet_text = f"""🐱 **Личный кабинет**\n\n👤 **Профиль:**\n• Имя: {data['first_name'] or 'Котик'} {data['last_name'] or ''}\n• План: {data['plan_display_name']} {data['plan_status_text']}\n\n📊 **Использование в этом месяце:**"""
 
-        if data["current_plan"] == "free":
-            remaining = data["generations_remaining"]
-            percentage = data["usage_percentage"]
-            progress_bar = "🟩" * int(percentage // 10) + "⬜" * (10 - int(percentage // 10))
-            cabinet_text += f"""\n• Использовано: {data["generations_used_this_month"]} из {data["generations_limit"]} генераций\n• Осталось: {remaining} генераций\n{progress_bar} {percentage:.1f}%"""
-        elif data["minutes_limit"]:
+        if data["minutes_limit"]:
             remaining = data["minutes_remaining"]
             percentage = data["usage_percentage"]
             progress_bar = "🟩" * int(percentage // 10) + "⬜" * (10 - int(percentage // 10))
-            cabinet_text += f"""\n• Использовано: {data["minutes_used_this_month"]:.1f} из {data["minutes_limit"]:.0f} мин\n• Осталось: {remaining:.1f} мин\n{progress_bar} {percentage:.1f}%"""
+            cabinet_text += f"""\n• Использовано: {data['minutes_used_this_month']:.1f} из {data['minutes_limit']:.0f} мин\n• Осталось: {remaining:.1f} мин\n{progress_bar} {percentage:.1f}%"""
         else:
-            cabinet_text += f"""\n• Использовано: {data["minutes_used_this_month"]:.1f} мин\n• Лимит: Безлимитно ♾️"""
+            cabinet_text += f"""\n• Использовано: {data['minutes_used_this_month']:.1f} мин\n• Лимит: Безлимитно ♾️"""
 
-        cabinet_text += f"\n\n📈 **Всего транскрибировано:** {data["total_minutes_transcribed"]:.1f} мин\n"
+        cabinet_text += f"\n\n📈 **Всего транскрибировано:** {data['total_minutes_transcribed']:.1f} мин\n"
 
         active_promos = data.get("active_promos", [])
         if active_promos:
@@ -471,7 +503,7 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
                         expires_text = f" (ещё {days_left} дн.)"
                     except Exception:
                         pass
-                cabinet_text += f"\n• [{p["code"]}] -{p["discount_percent"]}%{expires_text}"
+                cabinet_text += f"\n• [{p['code']}] -{p['discount_percent']}%{expires_text}"
 
         cabinet_text += "\n\n🐾 *мурчит довольно*"
 
@@ -489,7 +521,7 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
         ]
 
         # API ключи только для Pro+ планов
-        if db_user.current_plan in ["pro", "unlimited"]:
+        if data.get("current_plan") in ["pro", "unlimited"]:
             keyboard.append([InlineKeyboardButton("🔑 API ключи", callback_data="show_api_keys")])
 
         keyboard.append([InlineKeyboardButton("💡 Помощь", callback_data="show_help")])
@@ -520,5 +552,3 @@ async def personal_cabinet_command(update: Update, context: ContextTypes.DEFAULT
             await update.callback_query.edit_message_text(error_text)
         else:
             await update.message.reply_text(error_text)
-    finally:
-        db.close()

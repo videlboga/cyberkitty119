@@ -1,0 +1,23 @@
+services:
+  real-whisper:
+    container_name: real-whisper
+    build:
+      context: ./tools/real_whisper
+      args:
+        APT_PROXY: ${APT_PROXY-}
+    environment:
+      - WHISPER_MODEL=${WHISPER_MODEL:-medium}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
+      - WHISPER_COMPUTE=${WHISPER_COMPUTE:-float32}
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./audio:/app/audio:ro
+    networks:
+      - cyberkitty19-transkribator-network
+    restart: unless-stopped
+
+networks:
+  cyberkitty19-transkribator-network:
+    external: true
+    name: cyberkitty119_cyberkitty19-transkribator-network

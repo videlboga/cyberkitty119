@@ -1,6 +1,6 @@
 """Utilities and entrypoints for beta mode."""
 
-from .agent_runtime import AGENT_MANAGER, AgentResponse, AgentSession
+from core_api.domains.agent.core.agent_runtime import AGENT_MANAGER, AgentResponse, AgentSession
 from .handlers.entrypoint import handle_callback, handle_update, process_text
 
 __all__ = [

@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  vpn-gateway:
+    build:
+      context: ./docker/vpn-gateway
+    container_name: cyberkitty19-vpn-gateway
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ${WG_HOST_CONF_PATH}:/config/wg0.conf:ro
+    ports:
+      - 3128:3128
+    restart: unless-stopped

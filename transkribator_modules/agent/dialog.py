@@ -11,8 +11,8 @@ from transkribator_modules.db.database import SessionLocal, UserService, NoteSer
 from transkribator_modules.db.models import NoteStatus
 from transkribator_modules.search import IndexService
 from transkribator_modules.google_api import GoogleCredentialService, ensure_tree, create_doc, upload_markdown
-from transkribator_modules.beta.presets import get_preset_by_id
-from transkribator_modules.beta.content_processor import ContentProcessor
+from core_api.domains.agent.core.presets import get_preset_by_id
+from core_api.domains.agent.core.content_processor import ContentProcessor
 
 
 _index = IndexService()

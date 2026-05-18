@@ -7,6 +7,16 @@ class ActivePromo(BaseModel):
     discount_percent: int
     expires_at: Optional[datetime]
 
+class PromoActivationRequest(BaseModel):
+    telegram_id: int
+    promo_code: str
+
+class PromoActivationResponse(BaseModel):
+    success: bool
+    bonus: Optional[str] = None
+    expires: Optional[str] = None
+    error: Optional[str] = None
+
 class UserProfileResponse(BaseModel):
     telegram_id: int
     first_name: Optional[str]
@@ -17,8 +27,8 @@ class UserProfileResponse(BaseModel):
     
     # Usage
     minutes_used_this_month: float
-    minutes_limit: float
-    minutes_remaining: float
+    minutes_limit: Optional[float]
+    minutes_remaining: Optional[float]
     generations_used_this_month: int
     generations_limit: int
     generations_remaining: int
@@ -37,3 +47,13 @@ class UserProfileResponse(BaseModel):
     referrals_count: int
     reward_balance: int
     is_google_connected: bool
+
+class UserStatsResponse(BaseModel):
+    subscription_status: str
+    subscription_until: str
+    files_processed: int
+    minutes_transcribed: float
+    total_characters: int
+    last_activity: str
+    files_remaining: str
+    avg_duration: float

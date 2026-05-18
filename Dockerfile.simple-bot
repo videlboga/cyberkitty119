@@ -1,0 +1,25 @@
+FROM python:3.10-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Базовые зависимости
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Копируем requirements и устанавливаем зависимости
+COPY requirements/ requirements/
+RUN pip install --no-cache-dir -r requirements/bot.txt
+
+# Копируем код
+COPY bot/ ./bot/
+
+# Логирование
+ENV PYTHONUNBUFFERED=1
+
+# ВАЖНО: Используем локальный telegram-bot-api на порту 8081
+ENV LOCAL_BOT_API_URL=http://telegram-bot-api:8081
+
+CMD ["python", "-m", "bot.test_local_api"]

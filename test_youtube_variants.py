@@ -4,7 +4,8 @@ from pathlib import Path
 import yt_dlp
 
 def test_variant(name: str, ydl_opts: dict, url: str):
-    print(f"\n{=*60}")
+    # print a separator line of '=' characters
+    print("\n" + "=" * 60)
     print(f"🧪 {name}")
     print("="*60)
     try:

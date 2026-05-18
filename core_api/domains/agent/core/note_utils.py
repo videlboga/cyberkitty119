@@ -309,9 +309,11 @@ async def auto_finalize_note(note_id: int) -> Optional[Note]:
         needs_title = not (getattr(note, "draft_title", None) and getattr(note, "draft_title", "").strip())
         needs_status = (note.status or NoteStatus.INGESTED.value) == NoteStatus.INGESTED.value
 
+        print(f"DEBUG: auto_finalize_note called for {note_id}, needs_summary={needs_summary}, needs_title={needs_title}", flush=True)
         summary_text = note.summary.strip() if note.summary else ""
         tags = existing_tags
         if needs_summary:
+            print(f"DEBUG: calling _build_summary_and_tags for {note_id}", flush=True)
             summary_text, tags = await _build_summary_and_tags(
                 text_body,
                 text_body,

@@ -29,7 +29,8 @@ class LocalAdapter:
         else:
             url = f"{base}/transcribe"
         payload = {"file_uri": file_uri, "options": {"mode": mode}}
-        resp = requests.post(url, json=payload, timeout=60)
+        # Transcription can be slow on CPU-bound models; use a generous timeout.
+        resp = requests.post(url, json=payload, timeout=300)
         try:
             data = resp.json()
         except json.JSONDecodeError:

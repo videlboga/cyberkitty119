@@ -1,5 +1,11 @@
 FROM postgres:16
 
-RUN apt-get update \
+ARG APT_PROXY=""
+
+RUN if [ -n "$APT_PROXY" ]; then \
+        echo "Acquire::HTTP::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/99proxy; \
+    fi && \
+    apt-get update \
     && apt-get install -y --no-install-recommends postgresql-16-pgvector \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* && \
+    rm -f /etc/apt/apt.conf.d/99proxy

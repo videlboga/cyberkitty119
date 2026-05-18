@@ -3,6 +3,3 @@
 
 # Дополнительные зависимости для разработки
 
-# Added for audio preparation tooling
-yt-dlp>=2025.12.0
-requests>=2.31.0

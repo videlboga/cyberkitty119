@@ -1,0 +1,54 @@
+version: '3.8'
+services:
+  ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile.knowledge
+      args:
+        APT_PROXY: ${APT_PROXY-}
+    command: bash -lc "uvicorn knowledge.ingest_service:app --host 0.0.0.0 --port 8001"
+    ports:
+      - 8001:8001
+    volumes:
+      - ./:/app:rw
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+
+  query:
+    build:
+      context: .
+      dockerfile: Dockerfile.knowledge
+      args:
+        APT_PROXY: ${APT_PROXY-}
+    command: bash -lc "uvicorn knowledge.query_service:app --host 0.0.0.0 --port 8002"
+    ports:
+      - 8002:8002
+    volumes:
+      - ./:/app:rw
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+version: "3.8"
+services:
+  ingest:
+    build:
+      context: .
+      args:
+        APT_PROXY: ${APT_PROXY-}
+    command: uvicorn knowledge.ingest_service:app --host 0.0.0.0 --port 8100
+    ports:
+      - "8100:8100"
+    env_file: .env
+    volumes:
+      - ./:/app:rw
+
+  query:
+    build:
+      context: .
+      args:
+        APT_PROXY: ${APT_PROXY-}
+    command: uvicorn knowledge.query_service:app --host 0.0.0.0 --port 8200
+    ports:
+      - "8200:8200"
+    env_file: .env
+    volumes:
+      - ./:/app:rw

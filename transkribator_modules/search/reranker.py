@@ -14,7 +14,7 @@ from transkribator_modules.config import logger, OPENROUTER_API_KEY
 # Default to enabled (can be disabled via env) because LLM-based reranking
 # significantly improves short-list quality in most cases.
 ENABLE_RERANKING = os.getenv('ENABLE_RERANKING', 'true').lower() in {'1', 'true', 'yes'}
-RERANK_MODEL = os.getenv('RERANK_MODEL', 'google/gemini-2.0-flash-exp:free')
+RERANK_MODEL = os.getenv('RERANK_MODEL', 'google/gemini-2.5-flash')
 # Reduce default top-k fetched for reranker to a modest number to save cost/latency
 RERANK_TOP_K = int(os.getenv('RERANK_TOP_K', '8'))  # Fetch this many, then rerank
 RERANK_TIMEOUT = float(os.getenv('RERANK_TIMEOUT', '10'))

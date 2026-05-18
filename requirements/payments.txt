@@ -1,0 +1,4 @@
+# Optional payment-related dependencies
+# Install when you need payment integrations (YooKassa)
+
+yookassa==3.0.0

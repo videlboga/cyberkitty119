@@ -11,6 +11,11 @@ telegram-bot-api-data/
 archive/
 deploy_pack.tar.gz
 miniapp/
+whisper-models/
+postgres_data*/
+proxy_backup/
+downloads/
+temp/
 # miniapp_dist нужен для API/UI, поэтому не исключаем его из контекста
 # Exclude heavy runtime directories from build context to avoid copying large files into image
 telegram-bot-api-data/
@@ -19,12 +24,15 @@ audio/
 transcriptions/
 *.sqlite
 *.db
+whisper-models/
 
 # Ignore local data/test artifacts
 data/
 videos/
 server_dbs_*/
 backups/
+.postgres_data_transkribator/
+postgres_data_transkribator/
 *.dump
 .backups/
 
@@ -53,3 +61,12 @@ __pycache__/
 *.swp
 *.swo
 *~
+media/
+audio/
+videos/
+transcriptions/
+data/
+telegram-bot-api-data/
+__pycache__/
+*.pyc
+postgres_data_transkribator
