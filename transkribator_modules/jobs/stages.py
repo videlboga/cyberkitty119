@@ -73,8 +73,8 @@ class ExtractAudioStage(MediaPipelineStage):
         if path_obj.suffix.lower() not in video_exts:
             return None
             
-        # Извлекаем аудио
-        audio_path_obj = path_obj.with_suffix(".ogg")
+        # Извлекаем аудио (pcm_s16le кодек в extractor несовместим с .ogg — используем .wav)
+        audio_path_obj = path_obj.with_suffix(".wav")
         success = asyncio.run(extract_audio_from_video(media_path, str(audio_path_obj)))
         if not success:
             raise RuntimeError("Failed to extract audio from video")

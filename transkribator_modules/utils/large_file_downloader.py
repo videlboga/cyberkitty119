@@ -365,14 +365,26 @@ async def download_large_file(
                         downloaded = 0
                         total_size = expected_size_bytes or int(response.headers.get("content-length", 0))
 
-                        with open(destination, "wb") as f:
-                            async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-                                if not chunk:
-                                    continue
-                                f.write(chunk)
-                                downloaded += len(chunk)
-                                if progress_callback and total_size > 0:
-                                    await progress_callback(downloaded, total_size)
+                        import aiofiles
+                        
+                        tmp_part = destination.with_suffix('.part')
+                        try:
+                            # Use synchronous file write since aiofiles might be tricky in tight loops or not installed
+                            with open(tmp_part, "wb") as f:
+                                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+                                    if not chunk:
+                                        continue
+                                    f.write(chunk)
+                                    downloaded += len(chunk)
+                                    if progress_callback and total_size > 0:
+                                        await progress_callback(downloaded, total_size)
+                            # Now that it's finished successfully, move to real destination
+                            shutil.move(str(tmp_part), str(destination))
+                        except Exception as e:
+                            # If it fails, delete the tmp part file
+                            if tmp_part.exists():
+                                tmp_part.unlink()
+                            raise e
 
                         logger.info("✅ Direct URL download completed successfully to %s", destination)
                         return True
