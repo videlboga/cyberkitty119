@@ -172,12 +172,15 @@ def default_transcribe_media(context: "MediaPipelineContext", media_path: str) -
                     "error": error_msg,
                 },
             )
-            return f"⚠️ Ошибка при обработке аудио: {error_msg}"
+            # Raise so pipeline marks job as failed and can retry,
+            # instead of saving the error string as transcript text.
+            raise RuntimeError(f"Transcription failed: {error_msg}")
     
+    except RuntimeError:
+        raise
     except Exception as exc:  # pragma: no cover - fallback
         logger.exception("Transcribe client invocation failed", extra={"job_id": context.job.id})
-        error_msg = f"⚠️ Не удалось обработать файл: {str(exc)[:100]}"
-        return error_msg
+        raise RuntimeError(f"Transcription failed: {str(exc)[:200]}") from exc
 
 
 def _format_transcript_text(transcript: str) -> str:

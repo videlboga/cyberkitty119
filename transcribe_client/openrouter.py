@@ -85,42 +85,55 @@ class OpenRouterAdapter:
         }
         
         start_time = time.monotonic()
-        try:
-            resp = requests.post(
-                url,
-                headers=headers,
-                data=json.dumps(payload),
-                timeout=self.request_timeout
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            text = data.get("text", "")
-            
-            elapsed = time.monotonic() - start_time
-            return {
-                "status": "ok",
-                "text": text,
-                "segments": data.get("segments", []),
-                "model": self.model,
-                "meta": {
-                    "provider": "openrouter",
-                    "latency": elapsed,
+        max_retries = 3
+        last_err = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = requests.post(
+                    url,
+                    headers=headers,
+                    data=json.dumps(payload),
+                    timeout=self.request_timeout
+                )
+                if resp.status_code in (502, 503, 504) and attempt < max_retries:
+                    logger.warning(f"OpenRouter returned {resp.status_code} on attempt {attempt}/{max_retries}, retrying in {2**attempt}s...")
+                    time.sleep(2 ** attempt)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                text = data.get("text", "")
+                
+                elapsed = time.monotonic() - start_time
+                return {
+                    "status": "ok",
+                    "text": text,
+                    "segments": data.get("segments", []),
                     "model": self.model,
-                },
-            }
-        except requests.exceptions.RequestException as e:
-            err_msg = str(e)
-            if hasattr(e, "response") and e.response is not None:
-                err_msg = f"{err_msg} - {e.response.text}"
-            
-            return {
-                "status": "error",
-                "text": "",
-                "segments": [],
-                "model": self.model,
-                "meta": {
-                    "error": err_msg,
-                    "provider": "openrouter"
+                    "meta": {
+                        "provider": "openrouter",
+                        "latency": elapsed,
+                        "model": self.model,
+                    },
                 }
+            except requests.exceptions.RequestException as e:
+                err_msg = str(e)
+                if hasattr(e, "response") and e.response is not None:
+                    err_msg = f"{err_msg} - {e.response.text}"
+                last_err = err_msg
+                if attempt < max_retries:
+                    logger.warning(f"OpenRouter request failed attempt {attempt}/{max_retries}: {err_msg[:200]}, retrying in {2**attempt}s...")
+                    time.sleep(2 ** attempt)
+                    continue
+                break
+
+        return {
+            "status": "error",
+            "text": "",
+            "segments": [],
+            "model": self.model,
+            "meta": {
+                "error": last_err or "Unknown error",
+                "provider": "openrouter"
             }
+        }
 
