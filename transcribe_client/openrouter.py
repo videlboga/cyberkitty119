@@ -27,7 +27,7 @@ class OpenRouterAdapter:
         request_timeout: Optional[int] = None,
     ):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
-        self.model = model or os.getenv("OPENROUTER_WHISPER_MODEL") or "openai/whisper-large-v3"
+        self.model = model or os.getenv("OPENROUTER_WHISPER_MODEL") or "openai/whisper-large-v3-turbo"
         
         # Determine timeout: (connect_timeout, read_timeout)
         timeout_env = os.getenv("OPENROUTER_REQUEST_TIMEOUT_SEC", "1800")
@@ -49,7 +49,7 @@ class OpenRouterAdapter:
             "Authorization": auth_header,
             "Content-Type": "application/json",
             "HTTP-Referer": self.referer,
-            "X-Title": self.app_name,
+            "X-OpenRouter-Title": self.app_name,
         }
 
     def _get_audio_duration_seconds(self, file_path: Path) -> float:
@@ -83,7 +83,7 @@ class OpenRouterAdapter:
         return chunks
 
     def _transcribe_bytes(self, raw_data: bytes, audio_format: str, start_time: float) -> dict:
-        """Send a single raw audio payload to OpenRouter and return result dict."""
+        """Send a single raw audio payload to OpenRouter as base64 JSON."""
         base64_audio = base64.b64encode(raw_data).decode("utf-8")
         url = self._build_url()
         headers = self._build_headers()
@@ -110,12 +110,12 @@ class OpenRouterAdapter:
                     time.sleep(2 ** attempt)
                     continue
                 resp.raise_for_status()
-                data = resp.json()
+                result = resp.json()
                 elapsed = time.monotonic() - start_time
                 return {
                     "status": "ok",
-                    "text": data.get("text", ""),
-                    "segments": data.get("segments", []),
+                    "text": result.get("text", ""),
+                    "segments": result.get("segments", []),
                     "model": self.model,
                     "meta": {
                         "provider": "openrouter",
@@ -126,10 +126,14 @@ class OpenRouterAdapter:
             except requests.exceptions.RequestException as e:
                 err_msg = str(e)
                 if hasattr(e, "response") and e.response is not None:
-                    err_msg = f"{err_msg} - {e.response.text}"
+                    try:
+                        err_body = e.response.json()
+                        err_msg = f"{err_msg} - {err_body}"
+                    except Exception:
+                        err_msg = f"{err_msg} - {e.response.text[:300]}"
                 last_err = err_msg
                 if attempt < max_retries:
-                    logger.warning(f"OpenRouter attempt {attempt}/{max_retries} failed: {err_msg[:200]}, retrying in {2**attempt}s…")
+                    logger.warning(f"OpenRouter attempt {attempt}/{max_retries} failed: {err_msg[:300]}, retrying in {2**attempt}s…")
                     time.sleep(2 ** attempt)
                     continue
                 break
@@ -169,7 +173,11 @@ class OpenRouterAdapter:
         file_size = path.stat().st_size
         logger.info(f"OpenRouter sending file: {path.name}, size: {file_size} bytes, format: {audio_format}")
 
-        max_bytes = int(os.getenv("OPENROUTER_MAX_FILE_MB", "20")) * 1024 * 1024
+        # base64 encoding inflates size by ~33%, so Cloudflare/OpenRouter limit on JSON body
+        # is effectively ~7.5 MB binary → ~10 MB base64. Use 5 MB binary to be safe.
+        max_bytes = int(os.getenv("OPENROUTER_MAX_FILE_MB", "5")) * 1024 * 1024
+        # target chunk size: also 5 MB binary
+        target_chunk_bytes = int(os.getenv("OPENROUTER_CHUNK_FILE_MB", "5")) * 1024 * 1024
 
         start_time = time.monotonic()
 
@@ -188,12 +196,11 @@ class OpenRouterAdapter:
                 raw_data = f.read()
             return self._transcribe_bytes(raw_data, audio_format, start_time)
 
-        # Each target chunk ≤ 15 MB → calc max seconds per chunk
-        target_chunk_bytes = 15 * 1024 * 1024
+        # Each target chunk ≤ target_chunk_bytes → calc max seconds per chunk
         bytes_per_sec = file_size / duration
-        chunk_duration_sec = max(60, int(target_chunk_bytes / bytes_per_sec))
+        chunk_duration_sec = max(30, int(target_chunk_bytes / bytes_per_sec))
         logger.info(f"File {file_size/1024/1024:.1f} MB > limit {max_bytes/1024/1024:.0f} MB; "
-                    f"splitting {duration:.0f}s audio into {chunk_duration_sec}s chunks")
+                    f"splitting {duration:.0f}s audio into {chunk_duration_sec}s chunks (~{target_chunk_bytes//1024//1024} MB each)")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             try:
