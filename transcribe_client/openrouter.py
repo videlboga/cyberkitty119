@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import os
 import time
-import base64
-import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -15,6 +13,18 @@ try:
     import requests
 except Exception:
     requests = None
+
+
+# Map file extensions to MIME types for multipart upload
+MIME_MAP = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "ogg": "audio/ogg",
+    "m4a": "audio/mp4",
+    "flac": "audio/flac",
+    "webm": "audio/webm",
+    "aac": "audio/aac",
+}
 
 
 class OpenRouterAdapter:
@@ -45,7 +55,6 @@ class OpenRouterAdapter:
         auth_header = f"Bearer {self.api_key}" if self.api_key else ""
         return {
             "Authorization": auth_header,
-            "Content-Type": "application/json",
             "HTTP-Referer": self.referer,
             "X-Title": self.app_name,
         }
@@ -64,24 +73,21 @@ class OpenRouterAdapter:
 
         with open(path, "rb") as f:
             raw_data = f.read()
-            base64_audio = base64.b64encode(raw_data).decode("utf-8")
 
         # Audio format inference
         extension = path.suffix.lower().lstrip(".")
         format_mapping = {"ogg": "ogg", "mp3": "mp3", "wav": "wav", "m4a": "m4a", "flac": "flac"}
-        audio_format = format_mapping.get(extension, "wav") # Default to wav
+        audio_format = format_mapping.get(extension, "wav")
+        mime_type = MIME_MAP.get(audio_format, "audio/wav")
         
-        logger.info(f"OpenRouter sending file: {path.name}, size: {len(raw_data)} bytes, extension: {extension}, payload_format: {audio_format}")
+        logger.info(f"OpenRouter sending file: {path.name}, size: {len(raw_data)} bytes, format: {audio_format}")
 
         url = self._build_url()
         headers = self._build_headers()
         
-        payload = {
-            "model": self.model,
-            "input_audio": {
-                "data": base64_audio,
-                "format": audio_format
-            }
+        files = {
+            "file": (f"audio.{audio_format}", raw_data, mime_type),
+            "model": (None, self.model),
         }
         
         start_time = time.monotonic()
@@ -89,7 +95,7 @@ class OpenRouterAdapter:
             resp = requests.post(
                 url,
                 headers=headers,
-                data=json.dumps(payload),
+                files=files,
                 timeout=self.request_timeout
             )
             resp.raise_for_status()
@@ -123,4 +129,3 @@ class OpenRouterAdapter:
                     "provider": "openrouter"
                 }
             }
-
