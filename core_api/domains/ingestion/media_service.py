@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any
 
 from sqlalchemy.orm import Session
 
-from transkribator_modules.db.database import UserService
+from transkribator_modules.db.database import UserService, get_media_duration
 from transkribator_modules.db.models import ProcessingJob
 from transkribator_modules.jobs.media import MediaJobPayload, enqueue_media_job
 
@@ -47,6 +47,13 @@ class MediaIngestionService:
             raise MediaIngestionError("Не указан file_id.")
 
         user = self._user_service.get_or_create_user(telegram_id=telegram_id)
+
+        # --- Determine duration and charge minutes ---
+        duration_minutes = get_media_duration(audio_path)
+        can_use, limit_message = self._user_service.check_usage_limit(user, minutes_needed=duration_minutes)
+        if not can_use:
+            raise MediaIngestionError(f"Лимит исчерпан: {limit_message}")
+        self._user_service.add_usage(user, duration_minutes)
 
         payload = MediaJobPayload(
             file_id=file_id,
