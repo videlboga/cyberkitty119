@@ -63,18 +63,46 @@ class ExtractAudioStage(MediaPipelineStage):
             raise RuntimeError("Media path is missing; download stage must run first.")
             
         import asyncio
+        import subprocess
+        import json as _json
         from pathlib import Path
         from transkribator_modules.audio.extractor import extract_audio_from_video, compress_audio_for_api
         
         path_obj = Path(media_path)
         video_exts = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v", ".3gp"}
-        
-        # Если это не видео, пропускаем
-        if path_obj.suffix.lower() not in video_exts:
+
+        def _has_video_stream(file_path: str) -> bool:
+            """Use ffprobe to check if file contains a video stream."""
+            try:
+                result = subprocess.run(
+                    ["ffprobe", "-v", "quiet", "-print_format", "json",
+                     "-show_streams", file_path],
+                    capture_output=True, text=True, timeout=30,
+                )
+                info = _json.loads(result.stdout)
+                return any(
+                    s.get("codec_type") == "video"
+                    for s in info.get("streams", [])
+                )
+            except Exception:
+                return False
+
+        # Для файлов с известными видео-расширениями — сразу обрабатываем.
+        # Для .media и прочих неизвестных расширений — проверяем через ffprobe.
+        suffix = path_obj.suffix.lower()
+        if suffix in video_exts:
+            is_video = True
+        elif suffix in {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".opus"}:
+            is_video = False
+        else:
+            # .media и другие неизвестные — определяем содержимое
+            is_video = _has_video_stream(media_path)
+
+        if not is_video:
             return None
-            
-        # Извлекаем аудио
-        audio_path_obj = path_obj.with_suffix(".ogg")
+
+        # Извлекаем аудио (pcm_s16le кодек в extractor несовместим с .ogg — используем .wav)
+        audio_path_obj = path_obj.with_suffix(".wav")
         success = asyncio.run(extract_audio_from_video(media_path, str(audio_path_obj)))
         if not success:
             raise RuntimeError("Failed to extract audio from video")

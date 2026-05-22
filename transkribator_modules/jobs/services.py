@@ -84,14 +84,37 @@ def default_download_media(context: "MediaPipelineContext") -> str:
                 extra={"job_id": context.job.id, "audio_path": audio_path},
             )
     
-    # Fallback: create placeholder
-    fake_path = pathlib.Path(workspace) / f"{file_id}.media"
-    fake_path.touch()
-    logger.info(
-        "Using placeholder media path",
-        extra={"job_id": context.job.id, "file_id": file_id, "path": str(fake_path)},
-    )
-    return str(fake_path)
+    # Fallback: real download
+    from transkribator_modules.utils.large_file_downloader import download_large_file
+    from transkribator_modules.config import BOT_TOKEN
+    import asyncio
+    import concurrent.futures
+    
+    dest_path = pathlib.Path(workspace) / f"{file_id}.media"
+    
+    async def _do_download():
+        return await download_large_file(
+            bot_token=BOT_TOKEN,
+            file_id=file_id,
+            destination=dest_path,
+        )
+
+    logger.info("Triggering real download in job orchestrator", extra={"job_id": context.job.id, "file_id": file_id})
+    try:
+        def _run():
+            return asyncio.run(_do_download())
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run)
+            success = future.result()
+    except Exception as e:
+        logger.error(f"Download thread exception: {e}", extra={"job_id": context.job.id})
+        success = False
+            
+    if not success or not dest_path.exists():
+        logger.error("Media failed to download during worker execution", extra={"job_id": context.job.id})
+        return ""
+        
+    return str(dest_path)
 
 
 def default_transcribe_media(context: "MediaPipelineContext", media_path: str) -> str:
@@ -149,12 +172,15 @@ def default_transcribe_media(context: "MediaPipelineContext", media_path: str) -
                     "error": error_msg,
                 },
             )
-            return f"⚠️ Ошибка при обработке аудио: {error_msg}"
+            # Raise so pipeline marks job as failed and can retry,
+            # instead of saving the error string as transcript text.
+            raise RuntimeError(f"Transcription failed: {error_msg}")
     
+    except RuntimeError:
+        raise
     except Exception as exc:  # pragma: no cover - fallback
         logger.exception("Transcribe client invocation failed", extra={"job_id": context.job.id})
-        error_msg = f"⚠️ Не удалось обработать файл: {str(exc)[:100]}"
-        return error_msg
+        raise RuntimeError(f"Transcription failed: {str(exc)[:200]}") from exc
 
 
 def _format_transcript_text(transcript: str) -> str:

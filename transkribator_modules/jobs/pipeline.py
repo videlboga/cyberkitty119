@@ -99,11 +99,11 @@ def run_media_pipeline(
             context.notifier.set_progress(progress_value)
     except Exception:
         if not cleanup_executed:
-            _safe_cleanup(context)
+            pass # _safe_cleanup(context)
         raise
     else:
         if not cleanup_executed:
-            _safe_cleanup(context)
+            pass # _safe_cleanup(context)
         context.notifier.set_progress(100)
 
     note = context.artifacts.get("note")
