@@ -78,16 +78,17 @@ while ($row = $r->fetch_assoc()) {
     $text = $row['DETAIL_TEXT'];
     $orig = $text;
 
-    // Remove entire <p> block containing "Bambu AI" with link
+    // Remove <p> blocks containing "Bambu AI" (allow nested HTML tags)
+    // Uses (?:(?!</p>).)* to match any char that doesn't start </p>
     $text = preg_replace(
-        '~<p>[^<]*?Bambu AI\s*<a\s+href=["\'][^"\']*["\'][^>]*>[^<]*</a>[^<]*?</p>~is',
+        '~<p>(?:(?!</p>).)*Bambu AI(?:(?!</p>).)*</p>~is',
         '',
         $text
     );
 
-    // Also try with <blockquote> wrapper
+    // Remove <blockquote> blocks containing "Bambu AI" (allow nested HTML)
     $text = preg_replace(
-        '~<blockquote>\s*<p>[^<]*?Bambu AI[^<]*?</p>\s*</blockquote>~is',
+        '~<blockquote>(?:(?!</blockquote>).)*Bambu AI(?:(?!</blockquote>).)*</blockquote>~is',
         '',
         $text
     );
