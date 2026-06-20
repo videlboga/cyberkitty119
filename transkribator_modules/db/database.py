@@ -558,6 +558,10 @@ class UserService:
 
             raise
 
+    def get_user_by_id(self, user_id: int) -> Optional[User]:
+        """Получить пользователя по id."""
+        return self.db.query(User).filter(User.id == user_id).first()
+
     def get_or_create_user(self, telegram_id: int, username: str = None,
                           first_name: str = None, last_name: str = None) -> User:
         """Получить или создать пользователя"""
