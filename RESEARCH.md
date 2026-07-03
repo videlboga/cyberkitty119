@@ -2,166 +2,144 @@
 
 ## Stack
 
-- **Язык:** Python 3.10 (EOL Oct 2026 — в System Status отмечен план миграции на 3.11+). В коде уже используется `from __future__ import annotations` для совместимости с 3.10 type hints (PEP 604 union syntax `int | None`).
-- **Бот:** python-telegram-bot 22.1 (с job-queue), entrypoint `cyberkitty_modular.py` → `transkribator_modules/main.py` → `transkribator_modules/bot/handlers.py` (2262 строки).
-- **API:** FastAPI 0.108.0 + uvicorn 0.25.0 + pydantic 2.5.3. Два уровня: legacy `api_server.py` (монолит, 1365 строк) и современный `core_api/` (domain-driven: domains/{agent,auth,ingestion,memory,system,users}, api/v1 router: agent/auth/dependencies/ingest/internal_bot/memory/payments/system/transcribe). python-multipart 0.0.6 для multipart/form-data (audio upload).
-- **БД:** PostgreSQL 16 + pgvector 0.2.4 (образ `ankane/pgvector`), embeddings 1536-мерные.
-- **ORM/миграции:** SQLAlchemy 2.0.25 + Alembic 1.13.1 + psycopg 3.3.2 (binary+pool в requirements/api.txt).
-- **ASR:** DeepInfra Whisper (`transcribe_client/deepinfra.py`, `tools/di_worker`) + OpenRouter Gemini (`transcribe_client/openrouter.py`, chunked). Также адаптеры: `gpu.py`, `local.py`, `di_worker.py`, `stub.py` — всего 6 адаптеров в `transcribe_client/`. Транскрипция оркестрируется `transkribator_modules/transcribe/transcriber_v4.py` (1987 строк, монолит).
-- **LLM:** OpenAI SDK 1.14.0 (через OpenRouter). Промпты в `prompts_catalog.json`.
-- **Поиск:** pgvector + redis 5.0.4 + BM25/TF-IDF (`transkribator_modules/search/`: service, reranker, embeddings, index).
-- **Платежи:** YooKassa 3.0.0 (optional, `requirements/payments.txt`), Telegram Stars.
-- **Медиа-источники:** Telegram, YouTube (yt-dlp 2025.9.26), Google Drive (gdown 5.1.0), Mega (mega.py 1.0.8), Dropbox, Yandex.Disk, VK, прямые ссылки.
-- **Google интеграции:** google-api-python-client 2.119.0 (Sheets/Drive/Calendar/Docs/OAuth), google-auth 2.28.0.
-- **Деплой:** Docker Compose. Эталонный файл — `docker-compose.bot-v2.yml` (сервисы: postgres, bot, worker, core-api; telegram-bot-api в профиле `donotstart` — заменён на native процесс в VPN namespace). 17 альтернативных compose-файлов в корне (11 `.disabled`/legacy, 6 активных non-bot-v2: gpu-worker.example, max, mock-whisper, remote, simple-bot, test-bot). 11 Dockerfile-вариантов.
-- **Тесты:** pytest 8.1.1 + pytest-asyncio (asyncio_mode=auto, testpaths=tests). 15 тест-файлов в `tests/` (14 `test_*.py` + 1 `run_tests_no_pytest.py`).
-- **Frontend/miniapp:** `miniapp/` (Vite-based, src/ + public/) + `miniapp_dist/` (assets/, index.html, version.txt, vite.svg — pre-built). Status mixed — нужно выяснить, какая сборка отдаётся в проде.
-- **Build/test команды (из Makefile):**
-  - `make test` → **`pytest -q`** (локально). ВНИМАНИЕ: Makefile содержит ДВА `test:` target (строка 7 — Docker `python:3.11-slim`, строка 160 — локальный `pytest -q`). Второй перекрывает первый; `make test` запускает локальный pytest, а НЕ Docker. `make -n test` подтверждает: `pytest -q`.
-  - `make docker-test` → `./scripts/docker-test.sh` (требует `.env`)
-  - `make install` → `python3 -m venv venv && ./venv/bin/pip install -r requirements.txt`
-  - `make migrate` → `alembic upgrade head`
-  - `make revision NAME=msg` → `alembic revision --autogenerate -m "msg"`
-  - `make start-docker` → `./scripts/docker-start.sh` (docker-compose bot-v2)
-  - `make smoke` → `./scripts/smoke_test_pipeline.sh` (требует запущенный compose)
-  - `make backup-postgres` → `docker compose exec -T postgres pg_dump ...`
-  - `make docs-validate` → `./.github/scripts/run_metadata_validator_docker.sh`
+- **Язык:** Python 3.10 (`from __future__ import annotations` для PEP 604 union syntax). EOL Oct 2026.
+- **Бот:** python-telegram-bot 22.1 (PTB), entrypoint `transkribator_modules/main.py` → `transkribator_modules/bot/handlers.py` (2262 строки). Application строится через `ApplicationBuilder` в `main()` (строка 78–168), запуск `application.run_polling(allowed_updates=Update.ALL_TYPES)`.
+- **ASR pipeline:** `transcribe_client/` — абстракция над адаптерами (openrouter, deepinfra, gpu, local, di_worker, stub). `TranscribeClient` (в `__init__.py`) выбирает ОДИН адаптер через `_resolve_default_adapter` — fallback между адаптерами при ошибке НЕ реализован. Оркестратор: `transkribator_modules/transcribe/transcriber_v4.py` (1987 строк).
+- **Worker:** `job_worker.py` (399 строк) — `JobWorker` pull-loop, `dispatch_job` → `transkribator_modules/jobs/pipeline.py` `run_media_pipeline` → stages (prepare/download/transcribe/finalize/deliver/cleanup) из `transkribator_modules/jobs/services.py`.
+- **БД:** PostgreSQL 16 + SQLAlchemy 2.0.25. `ProcessingJob.error` — текстовое поле (str, обрезается до 4000 символов в `fail_job`).
+- **Тесты:** pytest 8.1.1 + pytest-asyncio (asyncio_mode=auto). `make test` → `pytest -q`. Существующие тесты: `tests/test_transcribe_client.py` (StubAdapter), `tests/test_job_queue_db.py` (enqueue/acquire/complete).
+- **Build/test команды:**
+  - `make test` → `pytest -q` (локально, второй `test:` target в Makefile перекрывает Docker-вариант).
+  - `make install` → venv + pip install -r requirements.txt.
 
 ## Architecture
 
-### Directory layout (канонический верхний уровень)
+### Directory layout (релевантные файлы задачи)
 
 ```
-cyberkitty_modular.py          # thin entrypoint → transkribator_modules/main.py
-api_server.py                  # legacy FastAPI монолит (1365 строк) — core_api заменяет
-job_worker.py                  # воркер фоновых задач (399 строк), сервис worker в compose
-bot/                           # ОТДЕЛЬНЫЙ root-level пакет (НЕ transkribator_modules/bot/)
-  handlers.py (1287 строк)    # "чистый перезапуск" бота, импортирует bot.config/db/core_api_client
-  main.py, config.py, db.py, core_api_client.py, jobs.py, minimal.py, hello.py
-transkribator_modules/         # основной пакет (core)
-  bot/                         # commands, handlers (2262 строки), callbacks, payments, processing_guard, yukassa_webhook, update_dedupe, logging_utils
-  api/                         # miniapp API (legacy, перекрыт core_api)
-  jobs/                        # queue, pipeline, stages, services, progress, plan_reminders, service_factory, bootstrap, media, overrides
-  db/                          # database, models, user_service
-  agent/                       # dialog.py (прототип decision layer, 190 строк)
-  transcribe/                  # transcriber_v4.py (основной ASR + LLM форматирование, 1987 строк)
-  search/                      # service, reranker, embeddings, index
-  google_api/                  # Google Sheets/Drive/Calendar/Docs интеграции
-  audio/                       # extractor (ffmpeg/аудиоподготовка)
-  beta/                        # entrypoint.py (884 строки), router.py (449 строк), handlers/{callbacks,command_flow,content_flow,entrypoint}, __init__.py
-  payments/                    # yukassa, monitoring
-  utils/                       # large_file_downloader
-  config.py, events_registry.py, main.py, manual_mode.py, note_utils.py, wai_flow.py
-transcribe_client/             # адаптеры ASR: deepinfra, openrouter, di_worker, gpu, local, stub (6 адаптеров)
-core_api/                      # современный domain-driven API (FastAPI)
-  api/v1/                      # agent, auth, dependencies, ingest, internal_bot, memory, payments, system, transcribe
-  domains/                     # agent/{core (content_processor.py 366 строк, agent_runtime, command_processor, llm, prompts, ...)}, auth, ingestion/media_service, memory/search_service, system, users
-  schemes/                     # auth, system
-  main.py
-tools/                         # di_worker (контейнерный ASR с WireGuard egress), audio_prep, whisper_service, integration_smoke, mock_whisper_server, transcribe_vpnspace.sh
-alembic/                       # миграции БД
-docs/                          # adr/ADR-2026-001-queue-workers.md, INVENTORY.md, templates
-tests/                         # 15 pytest-файлов
+transcribe_client/
+  __init__.py          # TranscribeClient, _resolve_default_adapter — НЕТ fallback между адаптерами
+  openrouter.py        # OpenRouterAdapter — _transcribe_bytes (retry), transcribe (chunking)
+  deepinfra.py         # DeepInfraAdapter — _transcribe_file (retry + fallback на local whisper)
+  stub.py              # StubAdapter для тестов
+transkribator_modules/
+  main.py              # main() — PTB Application setup, НЕТ add_error_handler
+  bot/
+    handlers.py        # 2262 строки — handle_message, process_*_file, _process_external_audio
+                      # строки 1358/1360: _safe_edit_message(status_msg, str(exc)) — утечка str(exc)
+  transcribe/
+    transcriber_v4.py  # transcribe_segment_with_openrouter_gemini (строка 1799) — 429 retry без backoff
+                      # _try_transcribe_with_client (строка 183) — transcribe_client вызов
+                      # format_transcript_with_openrouter (строка 590) — LLM форматирование, 429 retry
+  jobs/
+    services.py        # default_transcribe_media (строка 120) — TranscribeClient вызов, raise RuntimeError
+                      # default_deliver_results (строка 360) — ТОЛЬКО success-сообщения в Telegram
+    pipeline.py        # run_media_pipeline — stage failure → raise → job_worker._handle_failure
+    queue.py           # fail_job (строка 194) — job.error = error_message[:4000]
+job_worker.py          # JobWorker._handle_failure (строка 199) — traceback.format_exception → fail_job
+core_api/
+  api/v1/internal_bot.py     # GET /jobs/{job_id} — возвращает "error": job.error raw (строка 61)
+  domains/ingestion/media_service.py  # get_job_status — error=job.error raw (строка 104)
+max_bot/
+  native_service.py   # _poll_completed_jobs (строка 60) — send_message(chat_id, job.error) raw
+  native_handlers.py  # _poll_max_job_progress (строка 203) — edit_message(chat_id, job.error) raw
 ```
 
-### Key components / data flow (по ADR-2026-001 и ARCHITECTURE_AGENT_FIRST.md)
+### Key components и flow
 
-1. **Bot handler** (`transkribator_modules/bot/handlers.py`, 2262 строки) — принимает медиа, НЕ блокирует. Вызывает `enqueue_media_job()` → немедленный ответ пользователю «✅ File accepted!».
-2. **Queue** (`transkribator_modules/jobs/queue.py`) — Postgres-таблица `processing_jobs` (durable, status/progress/error, retry). Семантика транзакций.
-3. **Job Worker** (`job_worker.py` 399 строк, `transkribator_modules/jobs/pipeline.py` + `stages.py`) — асинхронно dequeue → download media → transcribe → format → finalize note → deliver → cleanup → update DB.
-4. **Core Transcriber** (`transcriber_v4.py` 1987 строк + `transcribe_client/` адаптеры) — ASR: OpenRouter Gemini (chunked, auto-chunk >20MB), DeepInfra Whisper, local whisper, GPU, stub. OpenRouter использует multipart/form-data (fix #6, commit 623a64d).
-5. **Processing Module** (`core_api/domains/agent/core/content_processor.py`, 366 строк) — ПЕРЕМЕЩЁН из `transkribator_modules/beta/content_processor.py` (commit 3e469c3). Содержит `_unwrap_json_content`, summary/tags generation через OpenRouter. Архитектурный документ ARCHITECTURE_AGENT_FIRST.md всё ещё ссылается на старый путь `beta/content_processor.py` — устаревшая ссылка.
-6. **Agent Orchestrator** (`transkribator_modules/agent/dialog.py` — прототип, 190 строк) — LLM-based controller + rule engine. Требуется decision policy + audit trail.
-7. **LTM** (`transkribator_modules/search/` + `core_api/domains/memory/`) — pgvector embeddings 1536, similarity search. Упомянут, нужна интеграция/ingestion pipeline.
-8. **Core API** (`core_api/`) — domain-driven FastAPI: agent, auth, ingestion (media_service), memory (search_service), system, users, internal_bot, payments.
-9. **Telegram Bot API** — native процесс в VPN namespace (WireGuard, 10.8.0.2/24, внешний IP 185.125.216.254), заменяет контейнерный telegram-bot-api.
+**Транскрипция (production path):**
+1. Бот получает аудио → `handle_message` → `process_audio_file` / `process_video_file` → `enqueue_media_job` (в `transkribator_modules/jobs/media.py`). Status message редактируется на "✅ Файл принят! Транскрипция началась…".
+2. Worker (`job_worker.py`) acquire_job → `dispatch_job` → `run_media_pipeline` → stages.
+3. Transcribe stage: `default_transcribe_media` (`services.py:120`) → `TranscribeClient(default_mode=TRANSCRIBE_DEFAULT_MODE)` → `client.transcribe(media_path, mode=mode)`.
+4. В проде `TRANSCRIBE_DEFAULT_MODE=deepinfra` (docker-compose.bot-v2.yml:66). НО `_resolve_default_adapter` в auto-режиме предпочитает OpenRouter если `OPENROUTER_API_KEY` задан (строка 85-89 в `__init__.py`). При явном mode=deepinfra → DeepInfraAdapter.
+5. OpenRouterAdapter.transcribe → `_transcribe_bytes` (single или chunked) → POST `https://openrouter.ai/api/v1/audio/transcriptions`.
+6. При 429: `raise_for_status()` → `HTTPError` (subclass of `RequestException`) → caught at line 134 → retry с `time.sleep(2 ** attempt)` (2s, 4s, 8s). max_retries=3. После 3 попыток — return `{"status": "error", ...}`.
+7. `default_transcribe_media` видит status=error → `raise RuntimeError(f"Transcription failed: {error_msg}")`.
+8. Pipeline stage raises → `run_media_pipeline` except (line 78) → `logger.exception` + re-raise.
+9. `job_worker.py` `_handle_failure` (line 199): `error_message = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))` → `fail_job(job.id, error_message=error_message)` → `job.error = error_message[:4000]` (RAW TRACEBACK).
+10. `logger.exception("Job failed")` — полный traceback в логах воркера (это корректно).
 
-### Root-level `bot/` package (отдельный от `transkribator_modules/bot/`)
+**Утечка traceback пользователю:**
+- `job.error` содержит сырой traceback (шаг 9 выше).
+- Telegram: `default_deliver_results` (`services.py:360`) отправляет ТОЛЬКО success-сообщения. При failure pipeline не доходит до deliver stage. НО:
+  - `core_api/api/v1/internal_bot.py:61` — `GET /jobs/{job_id}` отдаёт `"error": job.error` (raw traceback). Это потребляет miniapp и любой поллинг.
+  - `core_api/domains/ingestion/media_service.py:104` — `get_job_status` → `JobStatusResponse.error` (raw traceback) → `GET /api/v1/ingest/job/{job_id}`.
+  - `max_bot/native_handlers.py:203` — `api.edit_message(chat_id, msg_id, f"❌ Ошибка обработки: {row.get('error')}")` — raw traceback через editMessageText (MAX бот).
+  - `max_bot/native_service.py:63` — `api.send_message(chat_id, f"❌ Ошибка обработки:\n{error_text}")` — raw traceback через sendMessage.
+  - `transkribator_modules/bot/handlers.py:1358,1360` — `await _safe_edit_message(status_msg, str(exc))` — утечка `str(exc)` для GDrive/Dropbox ошибок скачивания (не transcription traceback, но тот же паттерн).
+- Финальное сообщение об ошибке для Telegram-пользователя: при failure job помечается failed, deliver stage не выполняется. Пользователь видит "✅ Файл принят! Транскрипция началась…" и затем... ничего (если нет поллинга в боте). НО если пользователь открывает miniapp или повторно запрашивает статус — получает raw traceback через API.
 
-В корне репозитория существует отдельный пакет `bot/` (НЕ `transkribator_modules/bot/`):
-- `bot/handlers.py` (1287 строк) — «чистый перезапуск» бота, описанный как новый подход
-- `bot/main.py`, `bot/config.py`, `bot/db.py`, `bot/core_api_client.py`, `bot/jobs.py`, `bot/minimal.py`
-- Импортируется только из `bot/main.py` и нескольких patch-скриптов (`patch_handlers_stage3.py`, `max_bot/`, `insert_qa_callback.py`)
-- Не является основным entrypoint продакшена (продакшен использует `transkribator_modules/bot/handlers.py` через `cyberkitty_modular.py`)
-- **ВНИМАНИЕ:** INVENTORY.md упоминает `handlers.py` в корне как legacy — фактически корневого `handlers.py` НЕТ, но есть `bot/handlers.py` (отдельный пакет). Корневой `handlers.py` либо был удалён, либо никогда не существовал в текущем worktree.
-
-### Contracts (из ARCHITECTURE_AGENT_FIRST.md, short)
-- Job: `{id, device_id, file_uri, privacy_profile, prefs, created_at}`
-- TranscriptionResult: `{job_id, segments[], text, model, meta}`
-- MemoryEntry: `{id, embedding, text, source_refs, tags, created_at}`
-- AgentAction: `{type, payload, confidence, rationale, created_at}`
-
-### Технический долг (по docs/INVENTORY.md, приоритеты H/M/L)
-
-КРИТИЧНО (H):
-- Вложенный дублирующий пакет `transkribator_modules/transkribator_modules/` — существовал в git-истории (подтверждено: `git log --all --diff-filter=A` показывает добавление). В текущем worktree (commit dfb2465) ОТСУТСТВУЕТ — удалён. Риск остаточных импортов требует проверки.
-- `transcriber_v4.py` (1987 строк) — монолит: ASR + chunking + форматирование + закомментированная DeepInfra-логика. Разделить на функции.
-- `format_transcript_with_llm` — нет защиты от артефактов («та-та-та…»), нет пост-валидации (повторы, искажение длины/содержания, факты/даты).
-- Bot handlers (`transkribator_modules/bot/handlers.py`, 2262 строки) смешаны старые/новые подходы (AGENT_FIRST, FEATURE_BETA_MODE) — разбить на подмодули (video/audio/text/agent).
-- Summary quality: потенциальная подмена фактов в `notes.summary` (пример с датой 1 февраля) — ужесточить промпты, добавить пост-валидацию.
-
-СРЕДНЕЕ (M):
-- 18 docker-compose файлов (1 эталонный bot-v2 + 17 альтернатив), 11 Dockerfile — зафиксировать один эталонный prod, остальные пометить legacy/dev.
-- `job_worker.py` — проинвентаризировать job_type, отключить неиспользуемые.
-- `api_server.py` — мёртвые эндпоинты, пересечение логики с ботом. core_api частично решает.
-- DB: таблицы users/transcriptions/notes — поля под старые фичи (DeepInfra, старые планы).
-- Логи не стандартизированы — нет user_id/media_id/job_id в одном сообщении (ADR-2026-001 требует).
-- Beta-ветки — описать реальное использование, отключить мёртвые.
-- `transkribator_modules/agent/dialog.py` — промпты зашиты в код, вынести в отдельный модуль.
-- Тесты не покрывают длинные транскрипции с артефактами и искажением фактов.
-
-НИЗКОЕ (L):
-- `miniapp/` + `miniapp_dist/` — выяснить, какая сборка реально отдаётся в проде.
-- `setup_and_build.sh`, `deploy*.sh`, `scripts/**` — одноразовые скрипты, описать реальный деплой.
-
-### Известные проблемы (выявлены при исследовании)
-
-1. **Сломанный тест:** `tests/test_content_processor.py` импортирует `from transkribator_modules.beta.content_processor import _unwrap_json_content` — файл перемещён в `core_api/domains/agent/core/content_processor.py` (commit 3e469c3). Импорт сломан: `_unwrap_json_content` больше не доступен по старому пути. Тест не пройдет без исправления импорта.
-2. **Makefile conflict:** два `test:` target (строки 7 и 160). Второй перекрывает первый. `make test` запускает `pytest -q` локально, а не в Docker. Make выдаёт warning: `overriding recipe for target 'test'`.
-3. **`openapi.yaml` отсутствует** в текущем worktree — упоминался в задаче как untracked, но в worktree (commit a4b499e) его нет. Не является стартовой точкой для MVP #1 в этом состоянии репозитория.
-
-### Состояние очереди задач
-- 0 открытых задач в control-room, 0 raw записей в памяти.
-- Система готова к новому циклу разработки.
-
-### История разработки (SESSION_COMPLETION_SUMMARY.md)
-- 22 major tasks (TASK-00..TASK-22) за 11 месяцев (Mar 2025 — Feb 2026).
-- ~2,470 часов, 1 разработчик.
-- TASK-00..11: Original development phases (~1,870h) — completed.
-- TASK-12..22: Queue/Worker migration phase (~600h) — in progress.
+**AttributeError: 'NoneType' object has no attribute 'from_user':**
+- `transkribator_modules/main.py` — НЕТ вызова `application.add_error_handler(...)`. PTB при отсутствии error handler логирует unhandled exception через стандартный logging, но не показывает пользователю.
+- Ошибка возникает когда update не содержит message/callback_query (например edited_message, channel_post, или пустой update при `allowed_updates=Update.ALL_TYPES`). Handlers обращаются к `update.message.from_user` или `update.callback_query.from_user` без None-проверок:
+  - `bot/handlers.py:227` — `(update.message.text or "").strip()` (если update.message None → AttributeError на .text, не .from_user).
+  - `bot/commands.py:656` — `update.message.from_user.id` в start_command (через commands.py).
+  - `bot/commands.py:1092,1134,1176,1212,1270` — `update.message.from_user.id` в различных handlers.
+  - `max_bot/adapter.py:80` — `self.from_user = None` (FakeMessage, но это MAX).
 
 ## Acceptance Criteria
 
-Эпик — исследование и документирование. Acceptance criteria для deliverable (комплексное описание проекта в RESEARCH.md):
+### 1. Fix 429 rate limiting in transcribe_client/openrouter.py
+- **AC1.1:** `OpenRouterAdapter._transcribe_bytes` должен делать до 6 попыток (настраиваемо через env `OPENROUTER_MAX_RETRIES`, default 6) при 429/502/503/504.
+- **AC1.2:** Backoff — экспоненциальный с jitter: 2s, 4s, 8s, 16s, 30s (cap 30s). При наличии `Retry-After` header в 429 response — использовать его значение (но не более 60s).
+- **AC1.3:** Каждая retry-попытка логируется с timestamp, номером попытки, HTTP status, и backoff-задержкой (через `logger.warning` с `extra={"attempt": N, "status": 429, "backoff_sec": X}`).
+- **AC1.4:** При persisting 429 (все retry исчерпаны) — `transcribe()` возвращает `{"status": "error", "meta": {"error": ..., "provider": "openrouter", "rate_limited": True}}` вместо raise. Вышестоящий код (`TranscribeClient` или `default_transcribe_media`) должен инициировать fallback на DeepInfra.
+- **AC1.5:** Fallback: при ошибке OpenRouter (status=error с rate_limited=True или любой TranscriptionError) — `TranscribeClient.transcribe` (или `default_transcribe_media`) пытается переключиться на DeepInfra (`TRANSCRIBE_DEFAULT_MODE=deepinfra` или явный `DeepInfraAdapter`), если `DEEPINFRA_API_KEY` доступен. Fallback логируется.
+- **AC1.6:** Троттлинг: при последовательных 429 — chunk-запросы идут последовательно (не параллельно). В текущем коде chunking уже последовательный (цикл for в transcribe), но это нужно сохранить и не вводить asyncio.gather.
 
-1. **Stack зафиксирован полностью** — все версии зависимостей извлечены из `requirements/*.txt` (base/bot/api/payments), не placeholder. Включая: Python 3.10, FastAPI 0.108.0, python-telegram-bot 22.1, SQLAlchemy 2.0.25, Alembic 1.13.1, psycopg 3.3.2, pgvector 0.2.4, redis 5.0.4, OpenAI 1.14.0, yt-dlp 2025.9.26, gdown 5.1.0, mega.py 1.0.8, yookassa 3.0.0, google-api-python-client 2.119.0, pytest 8.1.1, python-multipart 0.0.6, pydantic 2.5.3, uvicorn 0.25.0, google-auth 2.28.0, numpy 1.26.4, cryptography 42.0.5.
-2. **Архитектура описана с привязкой к файлам** — каждый компонент (Device Agent, Sync Gateway, File Preparer, Queue+Workers, Core Transcriber, Processing Module, Agent Orchestrator, LTM, API/Bot/UI, Governance) сопоставлен с реальными файлами/директориями в репозитории (по mapping в ARCHITECTURE_AGENT_FIRST.md + фактическая структура `transkribator_modules/`, `core_api/`, `transcribe_client/`, `tools/`).
-3. **Технический долг зафиксирован по приоритетам** — каждый пункт из docs/INVENTORY.md включён с приоритетом (H/M/L), статусом (core/legacy/dup/remove/mixed) и planned actions. КРИТИЧЕСКИЙ пункт (вложенный дублирующий пакет) проверен фактически: подтверждено наличие в git-истории и отсутствие в текущем worktree.
-4. **Build/test команды актуальны** — извлечены из Makefile, включая `make test` (с указанием конфликта двух target'ов), `make docker-test`, `make install`, `make migrate`, `make smoke`, `make backup-postgres`, `make docs-validate`.
-5. **Стек деплоя зафиксирован** — docker-compose.bot-v2.yml как эталон, перечень сервисов (postgres, bot, worker, core-api, telegram-bot-api в профиле donotstart), альтернативные compose-файлы перечислены (18 total: 1 эталон + 11 disabled + 6 active non-эталон) и помечены как legacy/dev.
-6. **Приоритетные пробелы MVP зафиксированы** — 5 пунктов из ARCHITECTURE_AGENT_FIRST.md (контракты OpenAPI, transcribe_client adapter, Processing Module, Agent Orchestrator, LTM) с текущим статусом каждого (stub/прототип/частично) и указанием актуального пути файла (content_processor.py перемещён в core_api).
-7. **Engineering notes содержат конкретные constraints** — Python 3.10 EOL, `from __future__ import annotations` требование, OpenRouter multipart/form-data (fix #6), auto-chunk >20MB, WireGuard VPN для telegram-bot-api, pgvector embeddings 1536-мерные, сломанный тест test_content_processor.py, конфликт Makefile test target.
+### 2. Hide raw tracebacks from users
+- **AC2.1:** `job_worker.py` `_handle_failure` — хранить в `job.error` краткое сообщение (например `f"Processing failed: {type(exc).__name__}: {str(exc)[:200]}"`), а НЕ полный traceback. Полный traceback уже логируется через `logger.exception("Job failed")` (строка 215) — это остаётся в логах воркера.
+- **AC2.2:** `fail_job` в `queue.py` — дополнительно sanitize: если `error_message` содержит подстроку `Traceback (most recent call last)` — заменить на `"Internal processing error"`. Это defence-in-depth на случай если другой caller передаёт traceback.
+- **AC2.3:** Все точки отображения ошибки пользователю показывают дружелюбное сообщение вместо raw error:
+  - `max_bot/native_handlers.py:203` — `f"❌ Ошибка обработки: {row.get('error') or 'Неизвестная ошибка'}"` → `f"❌ Произошла ошибка при обработке. Попробуйте позже или обратитесь в поддержку."` (НЕ показывать job.error).
+  - `max_bot/native_service.py:63` — `f"❌ Ошибка обработки:\n{error_text}"` → то же дружелюбное сообщение.
+  - `transkribator_modules/bot/handlers.py:1358,1360` — `str(exc)` → дружелюбное сообщение для download-ошибок.
+- **AC2.4:** API endpoints (`internal_bot.py:61`, `media_service.py:104`) — могут возвращать `job.error` (он уже sanitize после AC2.1), но miniapp/front-end должен отображать его только в debug-режиме. Для users — показывать generic message. Это помечается как recommendation в engineering notes, не blocking.
+
+### 3. Fix AttributeError: 'NoneType' object has no attribute 'from_user'
+- **AC3.1:** В `transkribator_modules/main.py` `main()` — зарегистрировать error handler: `application.add_error_handler(_error_handler)`. Handler логирует exception (через `logger.exception`) и, если update валиден и есть effective_chat, отправляет `await context.bot.send_message(chat_id, "Произошла ошибка. Попробуйте позже.")`.
+- **AC3.2:** Error handler должен корректно обрабатывать `update is None` (не падать сам).
+- **AC3.3:** Handlers, обращающиеся к `update.message.from_user` / `update.callback_query.from_user` без проверки — должны использовать `update.effective_user` (возвращает None-safe User или None) или добавить None-проверки. Минимум: `handle_message` в `handlers.py` должна early-return если `update.effective_user is None` или `update.message is None`.
 
 ## Engineering Notes
 
-- **Python 3.10 constraint:** EOL Oct 2026. Код уже использует `from __future__ import annotations` для PEP 604 union syntax (`int | None`) на 3.10. Миграция на 3.11+ запланирована. ВАЖНО: `make test` запускает `pytest -q` локально (на установленном Python), а НЕ через Docker `python:3.11-slim` — Makefile содержит два `test:` target, второй (строка 160) перекрывает первый (строка 7).
-- **OpenRouter audio:** multipart/form-data обязательно (commit 623a64d, fix #6). Auto-chunking для файлов >20MB (commit 0367180). Retry на 502 transient errors (commit d89a895).
-- **Video pipeline:** PCM codec несовместим с .ogg container (commit c602753). Детект video streams через ffprobe для .media файлов (commit 27292e9).
-- **Telegram Bot API:** запускается как native процесс в VPN namespace (WireGuard, 10.8.0.2/24, внешний IP 185.125.216.254), НЕ в Docker. Контейнерный telegram-bot-api в compose помечен `profiles: [donotstart]`. Скрипты: `run-telegram-bot-api-native-vpn.sh`, `run-telegram-vpn-proxy.sh`.
-- **DB/queue:** Postgres-таблица `processing_jobs` (ADR-2026-001). Бот НЕ блокирует на `await transcribe_audio()` — использует `enqueue_media_job()`. Миграции через Alembic, в core-api контейнере alembic файлы копируются и миграции запускаются на startup (commit f8fb184).
-- **pgvector:** embeddings 1536-мерные (соответствие OpenAI text-embedding-ada-002 / OpenRouter). Образ `ankane/pgvector`.
-- **core_api vs api_server.py:** core_api — domain-driven (api/v1 router: agent/auth/ingest/internal_bot/memory/payments/system/transcribe). api_server.py — legacy монолит (1365 строк). При разработке новых эндпоинтов использовать core_api, не api_server.py.
-- **transcribe_client:** 6 адаптеров (deepinfra, openrouter, di_worker, gpu, local, stub). Унификация вызовов ASR — приоритетный пробел MVP #2. `TRANSCRIBE_DEFAULT_MODE=deepinfra` в compose.
-- **content_processor.py — ПЕРЕМЕЩЁН:** Processing Module находится в `core_api/domains/agent/core/content_processor.py` (366 строк), НЕ в `transkribator_modules/beta/content_processor.py` (перемещён в commit 3e469c3). ARCHITECTURE_AGENT_FIRST.md всё ещё ссылается на старый путь — устаревшая ссылка. Приоритет MVP #3.
-- **Сломанный тест:** `tests/test_content_processor.py` импортирует `from transkribator_modules.beta.content_processor import _unwrap_json_content` — файл перемещён, импорт сломан. Функция `_unwrap_json_content` теперь в `core_api/domains/agent/core/content_processor.py` (строка 76). Тест не пройдёт без исправления импорта.
-- **agent/dialog.py — ПРОТОТИП:** Agent Orchestrator не реализован. 190 строк, промпты зашиты в код. Требуется decision policy + audit trail. Приоритет MVP #4.
-- **LTM:** pgvector упомянут, search/ модуль есть, но ingestion pipeline и миграции для memory entries не завершены. Приоритет MVP #5.
-- **Вложенный дублирующий пакет:** `transkribator_modules/transkribator_modules/` существовал в git-истории (добавлен в коммитах, виден через `git log --all --diff-filter=A`). В текущем worktree (commit dfb2465) УДАЛЁН — директория отсутствует. Однако при рефакторинге импортов необходимо проверить, что ни один модуль не ссылается на вложенный путь (риск silent legacy import).
-- **Root `bot/` пакет:** существует отдельный от `transkribator_modules/bot/` пакет `bot/` в корне репозитория (handlers.py 1287 строк, main.py, config.py, db.py, core_api_client.py). Не является основным entrypoint продакшена. Используется только из `bot/main.py` и patch-скриптов.
-- **Логи:** не стандартизированы. ADR-2026-001 требует `job_id`, `user_id`, `media_id` в одном сообщении для traceability. Текущее состояние — ключевые события разнесены, трудно собирать полную трассу.
-- **Тесты:** pytest.ini: `testpaths=tests`, `asyncio_mode=auto`, `python_files=test_*.py`. 15 файлов в tests/. Не покрывают: длинные транскрипции с артефактами, искажение фактов/дат в LLM-формате, регресс на повторы токенов. Один тест сломан (test_content_processor.py — см. выше).
-- **Файлы в корне (untracked в реальном репо, отсутствуют в worktree):** `openapi.yaml`, `branch_protection.json`, `deploy_proxy.sh`, `deploy_proxy_sync.sh` — не в git, не в текущем worktree. `docs/GITHUB_ACTIONS_SETUP.md` — единственный untracked файл в текущем worktree.
-- **Docker:** `.dockerignore` исключает `audio/`, `*.mp3`, `*.wav`, `*.ogg`, `telegram-bot-api-data/`, `*.mp4`, `*.mkv`, `.venv*`. 4 prod-сервиса: bot, worker, core-api, postgres. Volumes: media, data, core_api, transkribator_modules, transcribe_client, audio, telegram-bot-api-data (ro).
-- **Git:** branch protection настроена (branch_protection.json — untracked в реальном репо), GitHub Actions CI есть (`.github/workflows/ci.yml`, `pr-review.yml`), pre-commit config (`.pre-commit-config.yaml`). Base commit worktree: a4b499e. Git warning: `Makefile:161: overriding recipe for target 'test'`.
-- **CI/CD:** GitHub Actions workflows — `ci.yml` (основной CI), `pr-review.yml` (review automation). Copilot instructions в `.github/COPILOT_INSTRUCTIONS.md`, Codex instructions в `.github/CODEX_INSTRUCTIONS.md`.
-- **Не трогать без необходимости:** `.env` (секреты: BOT_TOKEN, DEEPINFRA_API_KEY, TELEGRAM_API_ID/HASH, POSTGRES_PASSWORD, OpenRouter keys, YooKassa, Google OAuth client_secret). `client_secret_*.json` в реальном репо — Google OAuth credentials.
+### transcribe_client/openrouter.py
+- Строки 256–314 — ДУБЛИРУЮТ логику chunked transcription (строки 198–254). Это мёртвый код (unreachable после `return` на строке 243). Инженер может удалить строки 256–314 для чистоты, но это опционально — не часть задачи.
+- `_transcribe_bytes` line 116: retry только для `(502, 503, 504)`. 429 попадает в `except RequestException` (line 134) через `raise_for_status()` → `HTTPError`. Это работает, но нечитаемо. Инженер должен явно добавить 429 в retry-условие и обрабатывать `Retry-After` header.
+- `requests` импортируется через try/except (line 16–19) — может быть None. Проверка `if requests is None` есть в `transcribe()` (line 166), но не в `_transcribe_bytes`.
+- Текущий `max_retries=3` (hardcoded line 106). Заменить на `int(os.getenv("OPENROUTER_MAX_RETRIES", "6"))`.
+- Backoff: текущий `time.sleep(2 ** attempt)` → 2s, 4s, 8s. Заменить на `min(2 ** attempt, 30)` + добавить jitter `random.uniform(0, backoff * 0.1)`.
+
+### transcribe_client/__init__.py — fallback
+- `TranscribeClient.transcribe` (line 126–138) оборачивает exception в `TranscriptionError` — НЕ пытается fallback.
+- `default_transcribe_media` (`services.py:120`) — лучший место для fallback: после `client.transcribe` check `result["status"] == "error"` → если `result["meta"].get("rate_limited")` → создать `TranscribeClient(default_mode="deepinfra")` и retry. Это держит логику в services.py, не трогая TranscribeClient.
+- Альтернатива: добавить fallback в `TranscribeClient.transcribe` — но это усложняет абстракцию. Рекомендуется fallback в `default_transcribe_media`.
+
+### transcriber_v4.py — параллельный путь
+- `transcribe_segment_with_openrouter_gemini` (line 1799) — отдельный путь транскрипции через chat/completions (не audio/transcriptions). Используется в `transcribe_whole_audio_with_gemini` (line 1043). Этот путь также получает 429 (line 1953) и делает `continue` БЕЗ backoff sleep. НО этот путь активируется только если `_try_transcribe_with_client` вернул None (TRANSCRIBE_CLIENT_ENABLED=0 или transcribe_client не смог). В проде с `TRANSCRIBE_DEFAULT_MODE=deepinfra` и `TRANSCRIBE_CLIENT_ENABLED=1` — основной путь через `transcribe_client`. Инженер должен проверить: если `TRANSCRIBE_CLIENT_ENABLED=1` (default в проде?), то transcriber_v4.py gemini path — это fallback. Если 0 — это primary. Нужно зафиксировать backoff для 429 в `transcribe_segment_with_openrouter_gemini` (line 1953): добавить `await asyncio.sleep(min(2 ** attempt, 30))` перед continue.
+- `LLM_FORMAT_RETRY_ATTEMPTS=3` (line 24, env). `format_transcript_with_openrouter` (line 590) уже имеет backoff `min(10, 2 ** attempt)` (line 746) и обрабатывает 429 (line 718, transient_statuses). Этот путь ОК.
+
+### job_worker.py — error_message truncation
+- `_handle_failure` (line 199–219): для `UnknownJobTypeError` — уже краткое сообщение. Для остальных — `traceback.format_exception(...)`. Заменить на: `error_message = f"{type(exc).__name__}: {str(exc)[:500]}"`. Полный traceback остаётся в `logger.exception` (line 215).
+- `fail_job` (`queue.py:194`) — `job.error = error_message[:4000]`. Добавить sanitize: если `"Traceback (most recent call last)" in error_message` → `error_message = "Internal processing error"`.
+
+### Telegram bot error handler
+- `transkribator_modules/main.py` line 164: `application.add_handler(CallbackQueryHandler(handle_callback_query))` — последний handler. После него добавить: `application.add_error_handler(_error_handler)`.
+- `_error_handler` должна быть async, signature: `async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None`. Доступ к `context.error` (Exception). Логировать через `logger.exception("Unhandled telegram error", extra={...})`. Отправлять пользователю `await context.bot.send_message(chat_id, "Произошла ошибка. Попробуйте позже.")` только если `update` имеет `effective_chat`.
+- PTB 22.1: `Application.add_error_handler(callback)` — принимает async callback `(update, context)`. `context.error` содержит exception. `context.bot` доступен для send_message.
+- Guard в `handle_message` (`handlers.py`): добавить early return если `update.effective_user is None` или `update.message is None` в начале функции (до любых обращений к `.from_user`, `.text` и т.д.).
+
+### Тесты
+- Существующие: `tests/test_transcribe_client.py` — StubAdapter, 2 теста. `tests/test_job_queue_db.py` — enqueue/acquire/complete (НЕ fail_job).
+- Новые тесты (инженер должен добавить):
+  - `tests/test_openrouter_retry.py` — mock `requests.post` возвращать 429 N раз, проверить retry count, backoff delays (mock `time.sleep`), и最终的 return `{"status": "error", "meta": {"rate_limited": True}}`.
+  - `tests/test_fail_job_sanitize.py` — `fail_job` с traceback-сообщением → `job.error` не содержит "Traceback".
+  - `tests/test_error_handler.py` — mock Application, проверить что `_error_handler` вызывается и логирует.
+- `make test` → `pytest -q`. Все тесты должны проходить.
+
+### Constraints
+- НЕ ломать существующий DeepInfra path — fallback должен работать только при OpenRouter failure, не заменять primary adapter.
+- `TRANSCRIBE_DEFAULT_MODE=deepinfra` в docker-compose.bot-v2.yml — значит в проде primary УЖЕ DeepInfra. OpenRouter fallback в transcribe_client не нужен если primary deepinfra. НО: `_resolve_default_adapter` auto-режим предпочитает OpenRouter (line 85). Нужно проверить какой mode реальный в проде: если `TRANSCRIBE_DEFAULT_MODE=deepinfra` → DeepInfraAdapter directly, OpenRouter НЕ участвует. Тогда 429 от OpenRouter возникает только через `transcriber_v4.py` gemini path (если TRANSCRIBE_CLIENT_ENABLED=0) ИЛИ через `format_transcript_with_openrouter` (LLM форматирование, line 590). Задача говорит "OpenRouter возвращает 429 при аудио-транскрибации" — значит OpenRouter IS used for transcription. Это означает либо `TRANSCRIBE_DEFAULT_MODE=openrouter`, либо auto-режим с `OPENROUTER_API_KEY`. Инженер должен фиксить ОБА пути: `transcribe_client/openrouter.py` И `transcriber_v4.py:1799`.
+- `SUPPRESS_FAILURE_MESSAGES=true` (config.py:173) — уже есть env для подавления сообщений об ошибках. Это существующий механизм, но он не работает для job.error path (только для inline error messages в handlers).
+- Не коммитить, не пушить — только локальные изменения в worktree.
+- Соблюдать стиль: `from __future__ import annotations`, logging через `logger` из `transkribator_modules.config`, `extra={...}` для structured logging.
