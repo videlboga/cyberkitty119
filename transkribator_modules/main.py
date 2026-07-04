@@ -163,6 +163,12 @@ def main() -> None:
     # Обработчики для кнопок (оставляем только общий)
     application.add_handler(CallbackQueryHandler(handle_callback_query))
 
+    # Глобальный error handler — логирует исключения вместо "No error handlers are registered"
+    async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.error("Unhandled exception in handler: %s", context.error, exc_info=context.error)
+
+    application.add_error_handler(_on_error)
+
     # Запуск бота
     logger.info("Бот запущен и слушает сообщения...", extra={"instance": instance_id})
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)

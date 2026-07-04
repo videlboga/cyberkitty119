@@ -148,6 +148,13 @@ def main() -> None:
     app = build_app()
     register_handlers(app)
 
+    # Глобальный error handler — логирует исключения вместо
+    # "No error handlers are registered, logging exception."
+    async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.error("Unhandled exception in handler: %s", context.error, exc_info=context.error)
+
+    app.add_error_handler(_on_error)
+
     logger.info("🤖 Бот инициализирован. Запускаю polling...")
     logger.info(f"📲 Используем токен: {BOT_TOKEN[:10]}...")
     logger.info(f"📡 Локальный API: {USE_LOCAL_BOT_API}")

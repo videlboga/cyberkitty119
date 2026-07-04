@@ -664,6 +664,9 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def handle_media_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Основной обработчик медиафайлов."""
     msg: Message = update.message
+    if not msg or not msg.from_user:
+        logger.debug("handle_media_file: update.message or from_user is None, skipping (likely channel post)")
+        return
     telegram_id = msg.from_user.id
     logger.info(f"📎 Обработка медиафайла от {telegram_id}")
 

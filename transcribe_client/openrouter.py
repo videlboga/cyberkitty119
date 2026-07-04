@@ -103,7 +103,7 @@ class OpenRouterAdapter:
             }
         }
 
-        max_retries = 3
+        max_retries = 5
         last_err = None
         for attempt in range(1, max_retries + 1):
             try:
@@ -113,9 +113,10 @@ class OpenRouterAdapter:
                     data=json.dumps(payload),
                     timeout=self.request_timeout,
                 )
-                if resp.status_code in (502, 503, 504) and attempt < max_retries:
-                    logger.warning(f"OpenRouter {resp.status_code} attempt {attempt}/{max_retries}, retrying in {2**attempt}s…")
-                    time.sleep(2 ** attempt)
+                if resp.status_code in (429, 502, 503, 504) and attempt < max_retries:
+                    backoff = min(2 ** attempt, 30)
+                    logger.warning(f"OpenRouter {resp.status_code} attempt {attempt}/{max_retries}, retrying in {backoff}s…")
+                    time.sleep(backoff)
                     continue
                 resp.raise_for_status()
                 result = resp.json()
@@ -141,8 +142,9 @@ class OpenRouterAdapter:
                         err_msg = f"{err_msg} - {e.response.text[:300]}"
                 last_err = err_msg
                 if attempt < max_retries:
-                    logger.warning(f"OpenRouter attempt {attempt}/{max_retries} failed: {err_msg[:300]}, retrying in {2**attempt}s…")
-                    time.sleep(2 ** attempt)
+                    backoff = min(2 ** attempt, 30)
+                    logger.warning(f"OpenRouter attempt {attempt}/{max_retries} failed: {err_msg[:300]}, retrying in {backoff}s…")
+                    time.sleep(backoff)
                     continue
                 break
 
@@ -227,70 +229,20 @@ class OpenRouterAdapter:
                     raw_data = f.read()
                 result = self._transcribe_bytes(raw_data, "mp3", start_time)
                 if result["status"] == "error":
+                    err_str = str(result["meta"].get("error", ""))
+                    if "429" in err_str and i + 1 < len(chunks):
+                        throttle_sec = int(os.getenv("OPENROUTER_429_THROTTLE_SEC", "30"))
+                        logger.warning(
+                            f"Chunk {i+1}/{len(chunks)} hit 429 rate limit; "
+                            f"sleeping {throttle_sec}s before next chunk"
+                        )
+                        time.sleep(throttle_sec)
+                        time_offset += chunk_duration_sec
+                        continue
                     logger.error(f"Chunk {i+1} transcription failed: {result['meta'].get('error')}")
                     raise RuntimeError(f"Chunk {i+1}/{len(chunks)} transcription failed: {result['meta'].get('error')}")
                 all_texts.append(result["text"])
                 # Offset segment timestamps
-                for seg in result.get("segments", []):
-                    seg = dict(seg)
-                    seg["start"] = seg.get("start", 0) + time_offset
-                    seg["end"] = seg.get("end", 0) + time_offset
-                    all_segments.append(seg)
-                time_offset += chunk_duration_sec
-
-        elapsed = time.monotonic() - start_time
-        full_text = " ".join(t.strip() for t in all_texts if t.strip())
-        return {
-            "status": "ok",
-            "text": full_text,
-            "segments": all_segments,
-            "model": self.model,
-            "meta": {
-                "provider": "openrouter",
-                "latency": elapsed,
-                "model": self.model,
-                "chunks": len(chunks),
-            },
-        }
-
-        if file_size <= max_bytes:
-            with open(path, "rb") as f:
-                raw_data = f.read()
-            return self._transcribe_bytes(raw_data, audio_format, start_time)
-
-        # File too large — split into chunks
-        duration = self._get_audio_duration_seconds(path)
-        if duration <= 0:
-            logger.warning("Could not determine audio duration; attempting direct upload despite large size")
-            with open(path, "rb") as f:
-                raw_data = f.read()
-            return self._transcribe_bytes(raw_data, audio_format, start_time)
-
-        bytes_per_sec = file_size / duration
-        chunk_duration_sec = max(30, int(target_chunk_bytes / bytes_per_sec))
-        logger.info(f"File {file_size/1024/1024:.1f} MB > limit {max_bytes/1024/1024:.0f} MB; "
-                    f"splitting {duration:.0f}s audio into {chunk_duration_sec}s chunks")
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            try:
-                chunks = self._split_audio_into_chunks(path, chunk_duration_sec, tmp_dir)
-            except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"ffmpeg chunking failed: {e.stderr.decode()[:500]}") from e
-
-            all_texts: List[str] = []
-            all_segments: List[dict] = []
-            time_offset = 0.0
-
-            for i, chunk_path in enumerate(chunks):
-                chunk_size = chunk_path.stat().st_size
-                logger.info(f"Transcribing chunk {i+1}/{len(chunks)}: {chunk_path.name} ({chunk_size/1024:.0f} KB)")
-                with open(chunk_path, "rb") as f:
-                    raw_data = f.read()
-                result = self._transcribe_bytes(raw_data, "mp3", start_time)
-                if result["status"] == "error":
-                    logger.error(f"Chunk {i+1} transcription failed: {result['meta'].get('error')}")
-                    raise RuntimeError(f"Chunk {i+1}/{len(chunks)} transcription failed: {result['meta'].get('error')}")
-                all_texts.append(result["text"])
                 for seg in result.get("segments", []):
                     seg = dict(seg)
                     seg["start"] = seg.get("start", 0) + time_offset
