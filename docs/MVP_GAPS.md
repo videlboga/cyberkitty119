@@ -11,7 +11,7 @@ related: [RESEARCH.md, docs/INVENTORY.md, docs/PROJECT_OVERVIEW.md]
 
 Five priority gaps between the current codebase and the MVP target for the
 "Second Brain" headless API + cognitive agent. Each gap lists its canonical
-file paths (verified against the worktree at base commit `0a6273d1`), the
+file paths (verified against the worktree at base commit `87b00346`), the
 current implementation state, and what remains to close it.
 
 Paths are repo-relative. All paths below were confirmed present in the
@@ -85,9 +85,10 @@ into `TranscriptionError` but performs **no fallback** between adapters.
 `_resolve_default_adapter` picks one adapter in auto-mode (OpenRouter →
 DeepInfra → GPU → Local → di_worker → stub) and stops. DeepInfra's own
 in-adapter fallback to local whisper is the only cross-provider fallback that
-exists today. In `openrouter.py`, `_transcribe_bytes` already retries on
-429/502/503/504 for up to 5 attempts with exponential backoff capped at 30s;
-however it still lacks jitter, `Retry-After` handling, and the
+exists today. In `openrouter.py`, `_transcribe_bytes` retries on
+429/502/503/504 for up to **5 hardcoded attempts** with exponential backoff
+(`min(2 ** attempt, 30)`); however it still lacks jitter, `Retry-After`
+handling, the `OPENROUTER_MAX_RETRIES` env override, and the
 `{"status": "error", "meta": {"rate_limited": True, ...}}` envelope. The
 parallel OpenRouter Gemini path in `transcriber_v4.py:1953` still does a plain
 `continue` on 429/500/502/503/504 without any sleep. RESEARCH.md AC1.4–AC1.5

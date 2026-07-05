@@ -1,6 +1,6 @@
 import pytest
 
-from transkribator_modules.beta.content_processor import _unwrap_json_content
+from core_api.domains.agent.core.content_processor import _unwrap_json_content
 
 
 @pytest.mark.parametrize(
