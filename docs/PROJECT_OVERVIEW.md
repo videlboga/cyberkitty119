@@ -32,7 +32,7 @@ Paths are relative to repo root. Corrected per the INVENTORY fixes (content_proc
 
 | Component                         | Path                                                | Role |
 |-----------------------------------|-----------------------------------------------------|------|
-| Bot entrypoint                    | `transkribator_modules/main.py`                     | PTB `Application` setup in `main()` (lines 78–168). No `add_error_handler` registered. |
+| Bot entrypoint                    | `transkribator_modules/main.py`                     | PTB `Application` setup in `main()` (lines 78–170). Registers `_on_error` via `add_error_handler` (line 170). |
 | Bot handlers                      | `transkribator_modules/bot/handlers.py`             | 2262 lines. `handle_message`, `process_*_file`, `_process_external_audio`. Single canonical handler file (legacy root `handlers.py` removed). |
 | ASR orchestrator                  | `transkribator_modules/transcribe/transcriber_v4.py`| `transcribe_segment_with_openrouter_gemini` (line 1799), `_try_transcribe_with_client` (line 183), `format_transcript_with_openrouter` (line 590). |
 | Transcribe client core            | `transcribe_client/__init__.py`                     | `TranscribeClient`, `_resolve_default_adapter`. Auto mode prefers OpenRouter when `OPENROUTER_API_KEY` is set. |
@@ -102,8 +102,8 @@ Build images:
 
 ## Production notes & known issues
 
-1. **No PTB error handler.** `transkribator_modules/main.py` never calls `application.add_error_handler(...)`. Unhandled exceptions are logged by PTB but not surfaced to the user; `AttributeError: 'NoneType' object has no attribute 'from_user'` occurs on updates without `message`/`callback_query` (e.g. `edited_message`, `channel_post`) because handlers dereference `update.message.from_user` without None-checks.
-2. **Raw traceback leaks via `job.error`.** `job_worker.py:_handle_failure` stores `traceback.format_exception(...)` into `job.error` (truncated to 4000 chars). This propagates raw to users through `core_api/api/v1/internal_bot.py:61`, `core_api/domains/ingestion/media_service.py:104`, `max_bot/native_handlers.py:203`, `max_bot/native_service.py:63`, and `transkribator_modules/bot/handlers.py:1358,1360`.
+1. **PTB error handler is registered.** `transkribator_modules/main.py` calls `application.add_error_handler(_on_error)` at line 170; `_on_error` logs `context.error` with `exc_info`. The handler does not yet send a user-visible message. The remaining risk is handlers that dereference `update.message.from_user` without None-checks on updates such as `edited_message`, `channel_post`, or empty updates under `allowed_updates=Update.ALL_TYPES`.
+2. **Raw traceback leaks via `job.error`.** `job_worker.py:_handle_failure` stores `traceback.format_exception(...)` into `job.error` (truncated to 4000 chars). This propagates raw to users through `core_api/api/v1/internal_bot.py:61`, `core_api/domains/ingestion/media_service.py:104`, `max_bot/native_handlers.py:203`, `max_bot/native_service.py:63`. The GDrive/Dropbox/Mega/Yandex.Disk download error sites at `transkribator_modules/bot/handlers.py` leak download error strings to users (those messages are already user-friendly Russian text from the downloader modules, but they bypass the bot's generic error wrapper).
 3. **OpenRouter 429 handling.** `transcribe_client/openrouter.py:_transcribe_bytes` retries on 502/503/504 with `time.sleep(2 ** attempt)` (max 3, no jitter, no `Retry-After`). 429 is caught indirectly via `HTTPError`. No fallback to DeepInfra on persistent rate limiting.
 4. **Duplicate package shadows.** `transkribator_modules/transkribator_modules/...` nested package duplicates the canonical `transkribator_modules/` tree and can be imported by mistake (INVENTORY §2, §4).
 5. **`ContentProcessor` stub.** `core_api/domains/agent/core/content_processor.py` is marked stub; real summary/tag logic lives in `_build_summary_and_tags`.

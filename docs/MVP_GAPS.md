@@ -85,9 +85,15 @@ into `TranscriptionError` but performs **no fallback** between adapters.
 `_resolve_default_adapter` picks one adapter in auto-mode (OpenRouter →
 DeepInfra → GPU → Local → di_worker → stub) and stops. DeepInfra's own
 in-adapter fallback to local whisper is the only cross-provider fallback that
-exists today. RESEARCH.md AC1.4–AC1.5 specifies that on persistent 429 /
-`rate_limited=True` from OpenRouter, the caller should retry on DeepInfra when
-`DEEPINFRA_API_KEY` is set — this is not implemented.
+exists today. In `openrouter.py`, `_transcribe_bytes` already retries on
+429/502/503/504 for up to 5 attempts with exponential backoff capped at 30s;
+however it still lacks jitter, `Retry-After` handling, and the
+`{"status": "error", "meta": {"rate_limited": True, ...}}` envelope. The
+parallel OpenRouter Gemini path in `transcriber_v4.py:1953` still does a plain
+`continue` on 429/500/502/503/504 without any sleep. RESEARCH.md AC1.4–AC1.5
+specifies that on persistent 429 / `rate_limited=True` from OpenRouter, the
+caller should retry on DeepInfra when `DEEPINFRA_API_KEY` is set — this is not
+implemented.
 
 Gap to close:
 - Implement OpenRouter 429 retry with exponential backoff + jitter + respect
@@ -239,7 +245,7 @@ Gap to close:
 | # | Gap | Canonical path | Status |
 |---|-----|----------------|--------|
 | 1 | OpenAPI contracts | `openapi.yaml` (missing) → `core_api/main.py` + `core_api/api/v1/*.py` | No committed spec; only FastAPI auto-gen |
-| 2 | transcribe_client unification | `transcribe_client/__init__.py` + adapters | Adapters exist; no cross-adapter fallback, 429 backoff incomplete |
+| 2 | transcribe_client unification | `transcribe_client/__init__.py` + adapters | Adapters exist; `openrouter.py` now retries on 429/502/503/504 with exponential backoff capped at 30s (max 5 attempts). `transcriber_v4.py` gemini 429 path still has no backoff sleep. No cross-adapter fallback to DeepInfra yet. |
 | 3 | Processing Module | `core_api/domains/agent/core/content_processor.py` | `ContentProcessor.process()` is a stub; real logic sits in module functions |
 | 4 | Agent Orchestrator | `core_api/domains/agent/core/agent_runtime.py` | ReAct loop + headless endpoint exist; Telegram path not yet unified |
 | 5 | LTM | `alembic/versions/0003_*`, `0004_*`, `0009_*` + `core_api/domains/memory/search_service.py` | Vector store migrated; agent-tool wiring + ingestion guarantee missing |

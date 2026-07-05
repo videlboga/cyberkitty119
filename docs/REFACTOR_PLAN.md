@@ -41,9 +41,10 @@ change for production paths.
 
 **Scope:**
 - Delete the duplicated dead chunked-transcription block in
-  `transcribe_client/openrouter.py` (lines ~256–314, unreachable after
-  the `return` on line 243 — flagged in RESEARCH.md Engineering Notes
-  and TDR §2).
+  `transcribe_client/openrouter.py` if it is still present (RESEARCH.md
+  Engineering Notes and TDR §2 flagged lines ~256–314 as unreachable after
+  the `return` on line 243). Re-verify after each run because the file has
+  already been edited by previous engineering commits.
 - Classify and remove one-shot patch/fix scripts at repo root:
   `patch_*.py`, `fix_*.py`, `insert_qa_callback.py`, `patcher.py`,
   `strangel.py`, `test3.py`, `tmp_core.py`, and stray `*.bak` /
@@ -57,7 +58,7 @@ change for production paths.
   already gone; this phase only prunes what is still present.
 
 **Affected files:**
-- `transcribe_client/openrouter.py`
+- `transcribe_client/openrouter.py` (re-check dead block)
 - repo-root `patch_*.py`, `fix_*.py`, misc one-off scripts
 - `miniapp_dist/**` (conditional)
 
