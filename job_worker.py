@@ -209,9 +209,9 @@ class JobWorker:
                 },
             )
         else:
-            error_message = "".join(
-                traceback.format_exception(type(exc), exc, exc.__traceback__)
-            )
+            # Store a short, user-safe summary in job.error.
+            # The full traceback is preserved in worker logs via logger.exception below.
+            error_message = f"Processing failed: {type(exc).__name__}: {str(exc)[:500]}"
             logger.exception(
                 "Job failed",
                 extra={"job_id": job.id, "worker_id": self.config.worker_id},

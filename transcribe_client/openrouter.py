@@ -6,6 +6,7 @@ import time
 import base64
 import json
 import logging
+import random
 import subprocess
 import tempfile
 from pathlib import Path
@@ -90,8 +91,37 @@ class OpenRouterAdapter:
         logger.info(f"Split produced {len(chunks)} chunks")
         return chunks
 
+    def _compute_backoff(self, attempt: int, response=None) -> float:
+        """Exponential backoff with jitter, capped at 30s.
+
+        If a 429 response includes a Retry-After header, honour it
+        (capped at 60s) instead of the computed backoff.
+        """
+        retry_after = None
+        if response is not None:
+            try:
+                raw_ra = response.headers.get("Retry-After")
+                if raw_ra:
+                    retry_after = min(float(raw_ra), 60.0)
+            except (TypeError, ValueError):
+                retry_after = None
+        if retry_after is not None:
+            return retry_after
+        base = min(2 ** attempt, 30)
+        jitter = random.uniform(0, base * 0.1)
+        return base + jitter
+
     def _transcribe_bytes(self, raw_data: bytes, audio_format: str, start_time: float) -> dict:
         """Send a single raw audio payload to OpenRouter as base64 JSON."""
+        if requests is None:
+            return {
+                "status": "error",
+                "text": "",
+                "segments": [],
+                "model": self.model,
+                "meta": {"error": "requests library not available", "provider": "openrouter"},
+            }
+
         base64_audio = base64.b64encode(raw_data).decode("utf-8")
         url = self._build_url()
         headers = self._build_headers()
@@ -103,8 +133,16 @@ class OpenRouterAdapter:
             }
         }
 
-        max_retries = 5
+        try:
+            max_retries = int(os.getenv("OPENROUTER_MAX_RETRIES", "6"))
+        except ValueError:
+            max_retries = 6
+
+        retry_statuses = {429, 502, 503, 504}
         last_err = None
+        last_status = None
+        rate_limited = False
+
         for attempt in range(1, max_retries + 1):
             try:
                 resp = requests.post(
@@ -113,11 +151,36 @@ class OpenRouterAdapter:
                     data=json.dumps(payload),
                     timeout=self.request_timeout,
                 )
-                if resp.status_code in (429, 502, 503, 504) and attempt < max_retries:
-                    backoff = min(2 ** attempt, 30)
-                    logger.warning(f"OpenRouter {resp.status_code} attempt {attempt}/{max_retries}, retrying in {backoff}s…")
-                    time.sleep(backoff)
-                    continue
+                last_status = resp.status_code
+
+                if resp.status_code in retry_statuses:
+                    rate_limited = rate_limited or resp.status_code == 429
+                    # Build error detail from response body for logging/meta
+                    try:
+                        err_body = resp.json()
+                        last_err = f"HTTP {resp.status_code}: {err_body}"
+                    except Exception:
+                        last_err = f"HTTP {resp.status_code}: {resp.text[:300]}"
+
+                    if attempt < max_retries:
+                        backoff = self._compute_backoff(attempt, resp)
+                        logger.warning(
+                            "OpenRouter %s attempt %d/%d, retrying in %.1fs",
+                            resp.status_code,
+                            attempt,
+                            max_retries,
+                            backoff,
+                            extra={
+                                "attempt": attempt,
+                                "status": resp.status_code,
+                                "backoff_sec": round(backoff, 1),
+                            },
+                        )
+                        time.sleep(backoff)
+                        continue
+                    # Retries exhausted — fall through to error return
+                    break
+
                 resp.raise_for_status()
                 result = resp.json()
                 elapsed = time.monotonic() - start_time
@@ -135,6 +198,8 @@ class OpenRouterAdapter:
             except requests.exceptions.RequestException as e:
                 err_msg = str(e)
                 if hasattr(e, "response") and e.response is not None:
+                    last_status = e.response.status_code
+                    rate_limited = rate_limited or e.response.status_code == 429
                     try:
                         err_body = e.response.json()
                         err_msg = f"{err_msg} - {err_body}"
@@ -142,8 +207,19 @@ class OpenRouterAdapter:
                         err_msg = f"{err_msg} - {e.response.text[:300]}"
                 last_err = err_msg
                 if attempt < max_retries:
-                    backoff = min(2 ** attempt, 30)
-                    logger.warning(f"OpenRouter attempt {attempt}/{max_retries} failed: {err_msg[:300]}, retrying in {backoff}s…")
+                    backoff = self._compute_backoff(attempt, e.response if hasattr(e, "response") else None)
+                    logger.warning(
+                        "OpenRouter attempt %d/%d failed: %s, retrying in %.1fs",
+                        attempt,
+                        max_retries,
+                        err_msg[:300],
+                        backoff,
+                        extra={
+                            "attempt": attempt,
+                            "status": last_status or 0,
+                            "backoff_sec": round(backoff, 1),
+                        },
+                    )
                     time.sleep(backoff)
                     continue
                 break
@@ -156,6 +232,7 @@ class OpenRouterAdapter:
             "meta": {
                 "error": last_err or "Unknown error",
                 "provider": "openrouter",
+                "rate_limited": rate_limited,
             },
         }
 
@@ -230,6 +307,7 @@ class OpenRouterAdapter:
                 result = self._transcribe_bytes(raw_data, "mp3", start_time)
                 if result["status"] == "error":
                     err_str = str(result["meta"].get("error", ""))
+                    chunk_rate_limited = result["meta"].get("rate_limited", False)
                     if "429" in err_str and i + 1 < len(chunks):
                         throttle_sec = int(os.getenv("OPENROUTER_429_THROTTLE_SEC", "30"))
                         logger.warning(
@@ -240,7 +318,19 @@ class OpenRouterAdapter:
                         time_offset += chunk_duration_sec
                         continue
                     logger.error(f"Chunk {i+1} transcription failed: {result['meta'].get('error')}")
-                    raise RuntimeError(f"Chunk {i+1}/{len(chunks)} transcription failed: {result['meta'].get('error')}")
+                    # Return error dict with rate_limited flag instead of raising,
+                    # so callers can initiate fallback.
+                    return {
+                        "status": "error",
+                        "text": "",
+                        "segments": [],
+                        "model": self.model,
+                        "meta": {
+                            "error": f"Chunk {i+1}/{len(chunks)} transcription failed: {result['meta'].get('error')}",
+                            "provider": "openrouter",
+                            "rate_limited": chunk_rate_limited,
+                        },
+                    }
                 all_texts.append(result["text"])
                 # Offset segment timestamps
                 for seg in result.get("segments", []):

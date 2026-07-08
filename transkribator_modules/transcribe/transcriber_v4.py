@@ -1957,6 +1957,15 @@ async def transcribe_segment_with_openrouter_gemini(segment_path, max_retries=3)
                             f"{error_text[:200]}"
                         )
                         last_error = f"http_{response.status}"
+                        # Exponential backoff with cap for transient errors (especially 429).
+                        # The `continue` below jumps to the next loop iteration, but
+                        # the existing `if attempt > 0` sleep at the top of the loop
+                        # only fires on attempt > 0, so on the first attempt (attempt=0)
+                        # a 429 would retry immediately without delay. Ensure we always
+                        # sleep here before continuing.
+                        if attempt < max_retries - 1:
+                            backoff = min(2 ** (attempt + 1), 30)
+                            await asyncio.sleep(backoff)
                         continue
                     
                     else:

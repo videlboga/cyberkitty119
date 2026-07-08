@@ -165,13 +165,58 @@ def default_transcribe_media(context: "MediaPipelineContext", media_path: str) -
             return text
         else:
             error_msg = result.get("meta", {}).get("error", "Unknown error")
+            rate_limited = result.get("meta", {}).get("rate_limited", False)
             logger.warning(
                 "Transcribe client returned error",
                 extra={
                     "job_id": context.job.id,
                     "error": error_msg,
+                    "rate_limited": rate_limited,
+                    "mode": mode,
                 },
             )
+
+            # Fallback to DeepInfra if OpenRouter was rate-limited and
+            # a DeepInfra key is available. This keeps the primary path
+            # untouched while providing resilience against 429 storms.
+            if rate_limited and mode != "deepinfra" and os.getenv("DEEPINFRA_API_KEY"):
+                logger.info(
+                    "OpenRouter rate-limited; falling back to DeepInfra",
+                    extra={"job_id": context.job.id},
+                )
+                try:
+                    fallback_client = TranscribeClient(default_mode="deepinfra")
+                    fb_result = fallback_client.transcribe(media_path, mode="deepinfra")
+                    if fb_result.get("status") == "ok":
+                        text = fb_result.get("text", "")
+                        context.artifacts["transcription_meta"] = fb_result.get("meta")
+                        segments_payload = fb_result.get("segments")
+                        if isinstance(segments_payload, list):
+                            context.artifacts["segments"] = segments_payload
+                        logger.info(
+                            "DeepInfra fallback transcription successful",
+                            extra={
+                                "job_id": context.job.id,
+                                "text_length": len(text),
+                                "model": fb_result.get("model"),
+                            }
+                        )
+                        return text
+                    fb_error = fb_result.get("meta", {}).get("error", "Unknown error")
+                    logger.error(
+                        "DeepInfra fallback also failed",
+                        extra={"job_id": context.job.id, "error": fb_error},
+                    )
+                    raise RuntimeError(f"Transcription failed (OpenRouter rate-limited, DeepInfra fallback also failed): {fb_error}")
+                except RuntimeError:
+                    raise
+                except Exception as fb_exc:
+                    logger.exception(
+                        "DeepInfra fallback invocation failed",
+                        extra={"job_id": context.job.id},
+                    )
+                    raise RuntimeError(f"Transcription failed: {str(fb_exc)[:200]}") from fb_exc
+
             # Raise so pipeline marks job as failed and can retry,
             # instead of saving the error string as transcript text.
             raise RuntimeError(f"Transcription failed: {error_msg}")

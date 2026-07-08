@@ -1354,10 +1354,18 @@ async def _handle_gdrive_link(
             source_url=url,
         )
     except GDriveDownloadError as exc:
+        logger.warning(
+            "Google Drive download failed",
+            extra={"error": str(exc), "url": url, "user_id": user_id, "file_id": file_id},
+        )
+        error_text = (
+            "⚠️ Не удалось скачать файл с Google Drive. "
+            "Проверьте, что ссылка публичная и файл доступен."
+        )
         if status_msg:
-            await _safe_edit_message(status_msg, str(exc))
+            await _safe_edit_message(status_msg, error_text)
         else:
-            await update.message.reply_text(str(exc))
+            await update.message.reply_text(error_text)
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "Unexpected error processing Google Drive link",

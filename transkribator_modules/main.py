@@ -163,9 +163,20 @@ def main() -> None:
     # Обработчики для кнопок (оставляем только общий)
     application.add_handler(CallbackQueryHandler(handle_callback_query))
 
-    # Глобальный error handler — логирует исключения вместо "No error handlers are registered"
+    # Глобальный error handler — логирует исключения и уведомляет пользователя
     async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Unhandled exception in handler: %s", context.error, exc_info=context.error)
+        # Try to notify the user if we have a valid chat
+        try:
+            if update is not None:
+                effective_chat = getattr(update, "effective_chat", None)
+                if effective_chat is not None:
+                    await context.bot.send_message(
+                        effective_chat.id,
+                        "Произошла ошибка. Попробуйте позже.",
+                    )
+        except Exception:
+            logger.debug("error_handler: failed to send user notification", exc_info=True)
 
     application.add_error_handler(_on_error)
 

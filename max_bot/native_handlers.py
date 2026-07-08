@@ -200,7 +200,7 @@ def _poll_max_job_progress(chat_id: str, msg_id: str, job_id: int, filename: str
         
         if status == "failed":
             try:
-                api.edit_message(chat_id, msg_id, f"📂 {filename}\n❌ Ошибка обработки: {row.get('error') or 'Неизвестная ошибка'}")
+                api.edit_message(chat_id, msg_id, f"📂 {filename}\n❌ Произошла ошибка при обработке. Попробуйте позже или обратитесь в поддержку.")
             except Exception:
                 pass
             return

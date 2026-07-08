@@ -197,6 +197,10 @@ def fail_job(job_id: int, error_message: str) -> None:
         if not job:
             logger.warning("Fail skipped; job missing", extra={"job_id": job_id})
             return
+        # Defence-in-depth: never store raw tracebacks in job.error.
+        # The full traceback is already in worker logs via logger.exception.
+        if "Traceback (most recent call last)" in error_message:
+            error_message = "Internal processing error"
         job.status = ProcessingJobStatus.FAILED.value
         job.finished_at = _utcnow()
         job.error = error_message[:4000]

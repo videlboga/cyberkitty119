@@ -58,9 +58,8 @@ def _poll_completed_jobs(api: MaxAPI):
                             except Exception as e:
                                 logger.error(f"Failed to send result to max for job {job.id}: {e}")
                         elif job.status == "failed":
-                            error_text = job.error or "Неизвестная ошибка"
                             try:
-                                api.send_message(chat_id, f"❌ Ошибка обработки:\n{error_text}")
+                                api.send_message(chat_id, "❌ Произошла ошибка при обработке. Попробуйте позже или обратитесь в поддержку.")
                             except Exception as e:
                                 logger.error(f"Failed to send error to max for job {job.id}: {e}")
                         
