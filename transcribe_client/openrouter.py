@@ -75,20 +75,36 @@ class OpenRouterAdapter:
             return 0.0
 
     def _split_audio_into_chunks(self, file_path: Path, chunk_duration_sec: int, tmp_dir: str) -> List[Path]:
-        """Split audio into equal-duration MP3 chunks using ffmpeg segment muxer."""
+        """Split audio into equal-duration MP3 chunks using ffmpeg segment muxer.
+
+        Re-encodes to MP3 (libmp3lame) instead of ``-c copy`` so that any
+        input codec (Opus/OGG, AAC/M4A, WAV, FLAC …) can be segmented without
+        container/codec mismatches.
+        """
         chunk_pattern = os.path.join(tmp_dir, "chunk_%04d.mp3")
         cmd = [
             "ffmpeg", "-y", "-i", str(file_path),
             "-f", "segment",
             "-segment_time", str(chunk_duration_sec),
-            "-c", "copy",
+            "-c:a", "libmp3lame",
+            "-b:a", "128k",
             "-reset_timestamps", "1",
             chunk_pattern,
         ]
-        logger.info(f"Splitting {file_path.name} into {chunk_duration_sec}s chunks…")
-        subprocess.run(cmd, capture_output=True, check=True, timeout=600)
+        logger.info("Splitting %s into %ss chunks…", file_path.name, chunk_duration_sec)
+        try:
+            subprocess.run(cmd, capture_output=True, check=True, timeout=600)
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode(errors="replace")[:800] if e.stderr else ""
+            raise RuntimeError(f"ffmpeg chunking failed (exit {e.returncode}): {stderr}") from e
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("ffmpeg chunking timed out after 600s") from None
+        except FileNotFoundError:
+            raise RuntimeError("ffmpeg binary not found in PATH — is it installed in the container?") from None
         chunks = sorted(Path(tmp_dir).glob("chunk_*.mp3"))
-        logger.info(f"Split produced {len(chunks)} chunks")
+        if not chunks:
+            raise RuntimeError("ffmpeg produced no chunks — input may be empty or unreadable")
+        logger.info("Split produced %d chunks", len(chunks))
         return chunks
 
     def _compute_backoff(self, attempt: int, response=None) -> float:
@@ -292,8 +308,12 @@ class OpenRouterAdapter:
         with tempfile.TemporaryDirectory() as tmp_dir:
             try:
                 chunks = self._split_audio_into_chunks(path, chunk_duration_sec, tmp_dir)
-            except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"ffmpeg chunking failed: {e.stderr.decode()[:500]}") from e
+            except RuntimeError as e:
+                # Chunking failed — fall back to direct upload of the whole file
+                logger.warning("Chunking failed (%s); attempting direct upload of %s", e, path.name)
+                with open(path, "rb") as f:
+                    raw_data = f.read()
+                return self._transcribe_bytes(raw_data, audio_format, start_time)
 
             all_texts: List[str] = []
             all_segments: List[dict] = []
