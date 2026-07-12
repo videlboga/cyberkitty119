@@ -74,7 +74,7 @@ else:
 # ===== API КЛЮЧИ ДЛЯ AI СЕРВИСОВ =====
 DEEPINFRA_API_KEY = os.getenv('DEEPINFRA_API_KEY', '')
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY', '')
-OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'google/gemini-2.5-flash-lite')
+OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'deepseek/deepseek-v4-flash')
 EMBEDDING_PROVIDER = os.getenv('EMBEDDING_PROVIDER', 'openrouter')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'openai/text-embedding-3-small')
 EMBEDDING_TIMEOUT = float(os.getenv('EMBEDDING_TIMEOUT', '15'))
@@ -115,7 +115,7 @@ for directory in [VIDEOS_DIR, AUDIO_DIR, TRANSCRIPTIONS_DIR]:
 
 # ===== ФИЧЕФЛАГИ И НОВЫЕ СЕРВИСЫ =====
 FEATURE_BETA_MODE = os.getenv('FEATURE_BETA_MODE', 'false').lower() == 'true'
-ROUTER_MODEL = os.getenv('ROUTER_MODEL', 'google/gemini-2.5-flash-lite')
+ROUTER_MODEL = os.getenv('ROUTER_MODEL', 'deepseek/deepseek-v4-flash')
 ROUTER_CONF_HIGH = float(os.getenv('ROUTER_CONF_HIGH', '0.80'))
 ROUTER_CONF_MID = float(os.getenv('ROUTER_CONF_MID', '0.55'))
 SEARCH_BACKEND = os.getenv('SEARCH_BACKEND', 'pgvector')
