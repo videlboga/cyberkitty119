@@ -383,8 +383,14 @@ class AgentSession:
         if (
             original_query
             and question_like
-            and not search_executed and not self.active_note_id
+            and not response_text
+            and not actions
+            and not search_executed
+            and not self.active_note_id
         ):
+            # Trust the LLM's decision by default: only fall back to a notes
+            # search when the model returned neither a response nor any tool
+            # calls, which suggests it failed to act on a notes-related query.
             await _progress_safe_update(progress, "🔍 Дополнительно ищу в заметках…")
             extra_search = await self._invoke_tool(
                 "search_notes",
