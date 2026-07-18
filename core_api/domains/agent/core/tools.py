@@ -796,14 +796,25 @@ async def _tool_create_task(session: "AgentSession", db, args: dict[str, Any]) -
     return ToolResult(message=format_note_saved_message(note=note))
 
 
-@_with_session
-async def _tool_search_notes(session: "AgentSession", db, args: dict[str, Any]) -> ToolResult:
-    query = args.get("query") or args.get("text")
-    if not (query and query.strip()):
-        return ToolResult(message="Нет запроса для поиска.")
+async def _search_and_summarize(
+    session: "AgentSession",
+    db,
+    query: str,
+    k: int = 3,
+) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]], Optional[dict[str, Any]]]:
+    """Shared search + active-note biasing + LLM summarization pipeline.
 
+    Returns ``(lines, link_entries, notes_payload, summary_payload)``:
+      - ``lines``: formatted "• #id: [summary](link)" strings for the top notes.
+      - ``link_entries``: ``{note_id, url, summary}`` dicts (used as note_links).
+      - ``notes_payload``: raw note dicts fed to the summarizer.
+      - ``summary_payload``: ``{summary, highlights}`` from the LLM or None.
+
+    Used by both ``_tool_search_notes`` (listing) and ``_tool_answer_question``
+    (structured answer) so the search/bias/format logic is not duplicated.
+    """
     index = IndexService()
-    k_value = int(args.get("k") or 3)
+    k_value = int(k or 3)
     results = await _maybe_await(index.search(session.user_db_id, query.strip(), k=k_value))
     # If there's an active note in the session, prefer it: prepend it to
     # the results if it's not already present. This biases summaries and
@@ -839,7 +850,7 @@ async def _tool_search_notes(session: "AgentSession", db, args: dict[str, Any]) 
     try:
         note_ids = [item.get("note", {}).get("id") for item in (results or [])][:5]
         logger.info(
-            "DEBUG: search_notes executed",
+            "DEBUG: search executed",
             extra={
                 "user_id": session.user_db_id,
                 "query": query.strip(),
@@ -850,9 +861,9 @@ async def _tool_search_notes(session: "AgentSession", db, args: dict[str, Any]) 
         )
     except Exception:
         # Don't let logging break the tool
-        logger.debug("Failed to log search_notes debug info", exc_info=True)
+        logger.debug("Failed to log search debug info", exc_info=True)
     if not results:
-        return ToolResult(message="По запросу ничего не нашлось.")
+        return [], [], [], None
 
     lines: list[str] = []
     notes_payload: list[dict[str, Any]] = []
@@ -884,33 +895,227 @@ async def _tool_search_notes(session: "AgentSession", db, args: dict[str, Any]) 
         notes_payload.append(note)
 
     summary_payload = await _generate_answer_for_query(query.strip(), notes_payload)
+    return lines, link_entries, notes_payload, summary_payload
+
+
+def _format_highlights(
+    summary_payload: Optional[dict[str, Any]],
+    link_entries: list[dict[str, Any]],
+) -> list[str]:
+    """Render highlight lines ("• [#id](url): insight") from a summary payload."""
+    if not summary_payload:
+        return []
+    highlights = summary_payload.get("highlights") or []
+    if not highlights:
+        return []
+    link_map = {
+        entry["note_id"]: entry["url"]
+        for entry in link_entries
+        if "note_id" in entry and "url" in entry
+    }
+    out: list[str] = []
+    for item in highlights:
+        note_id = item.get("note_id")
+        insight = item.get("insight")
+        if not note_id or not insight:
+            continue
+        link = link_map.get(note_id)
+        label = f"[#{note_id}]({link})" if link else f"#{note_id}"
+        out.append(f"• {label}: {insight}")
+    return out
+
+
+@_with_session
+async def _tool_search_notes(session: "AgentSession", db, args: dict[str, Any]) -> ToolResult:
+    query = args.get("query") or args.get("text")
+    if not (query and query.strip()):
+        return ToolResult(message="Нет запроса для поиска.")
+
+    lines, link_entries, _, summary_payload = await _search_and_summarize(
+        session, db, query, args.get("k") or 3
+    )
+    if not lines:
+        return ToolResult(message="По запросу ничего не нашлось.")
 
     parts: list[str] = []
     if summary_payload:
         summary_text = summary_payload.get("summary")
         if summary_text:
             parts.append(f"Сводка:\n{summary_text}")
-
-        highlights = summary_payload.get("highlights") or []
-        if highlights:
-            highlight_lines: list[str] = []
-            link_map = {entry["note_id"]: entry["url"] for entry in link_entries if "note_id" in entry and "url" in entry}
-            for item in highlights:
-                note_id = item.get("note_id")
-                insight = item.get("insight")
-                if not note_id or not insight:
-                    continue
-                link = link_map.get(note_id)
-                label = f"[#{note_id}]({link})" if link else f"#{note_id}"
-                highlight_lines.append(f"• {label}: {insight}")
-            if highlight_lines:
-                parts.append("Основные моменты:")
-                parts.extend(highlight_lines)
+        highlight_lines = _format_highlights(summary_payload, link_entries)
+        if highlight_lines:
+            parts.append("Основные моменты:")
+            parts.extend(highlight_lines)
 
     parts.append("Релевантные заметки:")
     parts.extend(lines)
     details = {"note_links": link_entries} if link_entries else None
     return ToolResult(message="\n".join(parts), details=details)
+
+
+@_with_session
+async def _tool_answer_question(session: "AgentSession", db, args: dict[str, Any]) -> ToolResult:
+    """Answer a user question over their notes with a structured summary + highlights.
+
+    Unlike ``search_notes`` (which lists matching notes), this tool emphasises the
+    synthesized answer: ``details`` always carries ``summary``, ``highlights`` and
+    ``note_links`` so callers can render a structured response.
+    """
+    query = args.get("query") or args.get("text")
+    if not (query and query.strip()):
+        return ToolResult(message="Нет вопроса для ответа.", status="blocked")
+
+    lines, link_entries, _, summary_payload = await _search_and_summarize(
+        session, db, query, args.get("k") or 3
+    )
+    if not lines:
+        return ToolResult(message="По вопросу ничего не нашлось в заметках.")
+
+    summary_text: Optional[str] = None
+    highlights: list[dict[str, Any]] = []
+    if summary_payload:
+        summary_text = summary_payload.get("summary")
+        highlights = summary_payload.get("highlights") or []
+
+    parts: list[str] = []
+    if summary_text:
+        parts.append(f"Сводка:\n{summary_text}")
+    highlight_lines = _format_highlights(summary_payload, link_entries)
+    if highlight_lines:
+        parts.append("Основные моменты:")
+        parts.extend(highlight_lines)
+    parts.append("Релевантные заметки:")
+    parts.extend(lines)
+
+    details = {
+        "summary": summary_text,
+        "highlights": highlights,
+        "note_links": link_entries,
+    }
+    return ToolResult(message="\n".join(parts), details=details)
+
+
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_readable(html: str) -> tuple[str, Optional[str]]:
+    """Extract readable article text + title from an HTML document.
+
+    Uses ``trafilatura`` when available; falls back to a stdlib regex strip
+    (scripts/styles/tags removed) so the tool degrades gracefully in minimal
+    environments where trafilatura isn't installed.
+    """
+    try:
+        import trafilatura  # type: ignore
+    except ImportError:
+        trafilatura = None  # type: ignore
+
+    text: Optional[str] = None
+    title: Optional[str] = None
+    if trafilatura is not None:
+        try:
+            text = trafilatura.extract(html, include_comments=False, include_tables=False)
+        except Exception:
+            text = None
+        try:
+            meta = trafilatura.extract_metadata(html)
+            title = getattr(meta, "title", None) if meta else None
+        except Exception:
+            title = None
+
+    if not text:
+        # Last-resort stdlib extraction: drop scripts/styles, strip tags.
+        stripped = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.DOTALL | re.IGNORECASE)
+        stripped = re.sub(r"<style[^>]*>.*?</style>", " ", stripped, flags=re.DOTALL | re.IGNORECASE)
+        stripped = re.sub(r"<[^>]+>", " ", stripped)
+        stripped = re.sub(r"\s+", " ", stripped).strip()
+        text = stripped or None
+
+    if not title:
+        m = _TITLE_RE.search(html)
+        if m:
+            title = m.group(1).strip() or None
+
+    return text or "", title
+
+
+@_with_session
+async def _tool_fetch_url(session: "AgentSession", db, args: dict[str, Any]) -> ToolResult:
+    """Fetch a URL, extract readable text, and (optionally) save it as a note."""
+    url = (args.get("url") or "").strip()
+    if not url:
+        return ToolResult(message="Нет URL для загрузки.", status="blocked")
+
+    save_as_note = args.get("save_as_note")
+    if save_as_note is None:
+        save_as_note = True  # default: persist fetched pages as notes
+
+    user_service = UserService(db)
+    user = user_service.get_user_by_id(session.user_db_id)
+    if not user:
+        return ToolResult(message="Пользователь не найден.", status="error")
+
+    # Fetch the page. httpx is already a core_api dependency (requirements/base.txt).
+    try:
+        import httpx  # type: ignore
+    except ImportError as e:
+        return ToolResult(message=f"Не удалось загрузить страницу: httpx недоступен ({e})", status="error")
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http:
+            resp = await http.get(url)
+    except Exception as e:
+        logger.warning("fetch_url HTTP error for %s: %s", url, e)
+        return ToolResult(message=f"Не удалось загрузить страницу: {e}", status="error")
+
+    if resp.status_code != 200:
+        return ToolResult(
+            message=f"Не удалось загрузить страницу: HTTP {resp.status_code}",
+            status="error",
+        )
+
+    html = resp.text or ""
+    text, title = _extract_readable(html)
+    if not text:
+        return ToolResult(message="Не удалось извлечь текст из страницы.", status="error")
+    if not title:
+        title = _shorten(text, 80) or url
+
+    note_id: Optional[int] = None
+    if save_as_note:
+        note_service = NoteService(db)
+        note = note_service.create_note(
+            user=user,
+            text=text,
+            source="link",
+            summary=title,
+            tags=["url"],
+            raw_link=url,
+            links={"source_url": url},
+            type_hint="link",
+        )
+        await _maybe_await(
+            IndexService().add(
+                note.id,
+                session.user_db_id,
+                note.text or "",
+                summary=note.summary or "",
+                type_hint="link",
+            )
+        )
+        session.set_active_note(note, links=_coerce_links(note.links))
+        note_id = note.id
+
+    snippet = _shorten(text, 160)
+    message = f"📄 {title}"
+    if snippet:
+        message += f"\n{snippet}"
+    if note_id:
+        message += f"\n\n📌 Заметка #{note_id}"
+    return ToolResult(
+        message=message,
+        details={"note_id": note_id, "url": url, "title": title},
+    )
 
 
 @_with_session
@@ -1573,9 +1778,21 @@ TOOLS: list[AgentTool] = [
     ),
     AgentTool(
         name="search_notes",
-        description="Запускает семантический поиск по заметкам пользователя.",
+        description="Запускает семантический поиск по заметкам пользователя и возвращает список релевантных заметок со сводкой.",
         args_schema={"query": "str", "k": "int|optional"},
         func=_tool_search_notes,
+    ),
+    AgentTool(
+        name="answer_question",
+        description="Отвечает на вопрос пользователя по заметкам: ищет релевантные, генерирует сводку и основные моменты. Предпочитай этот инструмент для вопросов.",
+        args_schema={"query": "str", "k": "int|optional"},
+        func=_tool_answer_question,
+    ),
+    AgentTool(
+        name="fetch_url",
+        description="Загружает веб-страницу по URL, извлекает читаемый текст и сохраняет как заметку (source=link). Используй для ссылок от пользователя.",
+        args_schema={"url": "str", "save_as_note": "bool|optional"},
+        func=_tool_fetch_url,
     ),
 ]
 
